@@ -12,7 +12,19 @@ SHORT_ACKS = {
     "yes",
     "no",
     "تمام",
+    "تماما",
+    "تم",
+    "اوكي",
+    "أوكي",
+    "حاضر",
+    "ماشي",
     "شكرا",
+    "شكرًا",
+    "تسلم",
+    "اه",
+    "ايوه",
+    "طيب",
+    "اشطا",
 }
 
 
@@ -38,6 +50,7 @@ def is_simple_variable_update(message: str) -> bool:
         "my phone",
         "my number",
         "whatsapp",
+        "whats app",
         "no calls",
         "don't call",
         "dont call",
@@ -46,6 +59,19 @@ def is_simple_variable_update(message: str) -> bool:
         "morning",
         "afternoon",
         "evening",
+        "في الواتساب",
+        "واتساب",
+        "واتس",
+        "ماتتصلش",
+        "ما تتصلش",
+        "متتصلش",
+        "كلمني واتساب",
+        "رقمي",
+        "نمرة",
+        "بكرة",
+        "الصبح",
+        "بعد الظهر",
+        "بليل",
     ]
 
     return any(marker in text for marker in update_markers)
@@ -68,8 +94,6 @@ def should_skip_generation(message: str, variable_updates: dict, intent: str) ->
 
 
 def build_no_llm_answer(message: str, variables: dict, variable_updates: dict, missing_variables: list) -> str:
-    text = message.lower().strip()
-
     if is_short_ack(message):
         return "Got it."
 
