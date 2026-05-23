@@ -391,10 +391,7 @@ def should_use_cached_rag(message, route):
     if not RAG_CACHE_ENABLED:
         return False
 
-    if not route.get("needs_rag", True):
-        return False
-
-    text = message.lower().strip()
+    text = (message or "").lower().strip()
 
     followup_markers = [
         "it",
@@ -412,6 +409,10 @@ def should_use_cached_rag(message, route):
         "available",
         "book it",
         "see it",
+        "price",
+        "same one",
+        "the car",
+        "the bmw",
         "ده",
         "دي",
         "دا",
@@ -419,7 +420,13 @@ def should_use_cached_rag(message, route):
         "العربيه",
         "متاح",
         "اوتوماتيك",
+        "مانيوال",
         "كام كيلو",
+        "بكام",
+        "سعرها",
+        "نفسها",
+        "احجزها",
+        "اشوفها",
     ]
 
     return any(marker in text for marker in followup_markers)
@@ -529,30 +536,43 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     knowledge = []
     knowledge_source = "none"
 
-    if route.get("needs_rag", True):
+    cached = None
+    if RAG_CACHE_ENABLED:
         cached = get_rag_cache(req.conversation_id, RAG_CACHE_MAX_AGE_MINUTES)
 
-        if cached and should_use_cached_rag(req.message, route):
-            knowledge = cached.get("compressed_payload") or cached.get("knowledge_payload") or []
-            knowledge_source = "cache"
-        else:
-            raw_knowledge = search_knowledge(
-                req.assistant_id,
-                req.message,
-                limit=KNOWLEDGE_TOP_K,
-            )
-            knowledge = compress_knowledge(raw_knowledge, req.message)
-            knowledge_source = "qdrant"
+    use_cached_followup = bool(cached) and should_use_cached_rag(
+        req.message,
+        {
+            **route,
+            "needs_rag": True,
+        },
+    )
 
-            if raw_knowledge:
-                save_rag_cache(
-                    conversation_id=req.conversation_id,
-                    assistant_id=req.assistant_id,
-                    user_id=req.user_id,
-                    query=req.message,
-                    knowledge_payload=raw_knowledge,
-                    compressed_payload=knowledge,
-                )
+    if use_cached_followup:
+        knowledge = cached.get("compressed_payload") or cached.get("knowledge_payload") or []
+        knowledge_source = "cache"
+        route["needs_rag"] = True
+        route["rag_cache_hit"] = True
+
+    elif route.get("needs_rag", True):
+        raw_knowledge = search_knowledge(
+            req.assistant_id,
+            req.message,
+            limit=KNOWLEDGE_TOP_K,
+        )
+        knowledge = compress_knowledge(raw_knowledge, req.message)
+        knowledge_source = "qdrant"
+        route["rag_cache_hit"] = False
+
+        if raw_knowledge:
+            save_rag_cache(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                query=req.message,
+                knowledge_payload=raw_knowledge,
+                compressed_payload=knowledge,
+            )
 
     memories = []
     if route.get("needs_memory", True):
@@ -634,6 +654,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "answer_mode": route.get("answer_mode"),
             "needs_rag": route.get("needs_rag"),
             "needs_memory": route.get("needs_memory"),
+            "rag_cache_hit": route.get("rag_cache_hit", False),
         },
     )
 
