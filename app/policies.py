@@ -217,6 +217,67 @@ def _previous_assistant_question(recent_messages: list[dict]) -> str:
     return ""
 
 
+def _next_relevant_question(variables: dict, missing_variables: list[str], arabic: bool) -> str:
+    variables = variables or {}
+    intent = variables.get("intent", "")
+
+    if missing_variables:
+        labels = _labels_for_missing(missing_variables, arabic)
+
+        if arabic:
+            return "لسه محتاج " + _clean_join(labels) + " عشان أكمل."
+
+        return "I still need " + _english_join(labels) + " to continue."
+
+    if intent == "car_search":
+        if not variables.get("transmission"):
+            if arabic:
+                return "تحبها أوتوماتيك ولا مانيوال؟"
+            return "Do you prefer automatic or manual?"
+
+        if not variables.get("car_brand"):
+            if arabic:
+                return "تحب نوع عربية معين؟"
+            return "Do you have a preferred car brand?"
+
+        if not variables.get("budget_max"):
+            if arabic:
+                return "ميزانيتك في حدود كام؟"
+            return "What budget range should I look within?"
+
+        if arabic:
+            return "تحب موديل معين أو سنة معينة؟"
+
+        return "Do you prefer a specific model or year?"
+
+    if intent == "booking_request":
+        needed = []
+
+        if not variables.get("service_needed"):
+            needed.append("service_needed")
+
+        if not variables.get("appointment_date"):
+            needed.append("appointment_date")
+
+        if not variables.get("appointment_time"):
+            needed.append("appointment_time")
+
+        if needed:
+            labels = _labels_for_missing(needed, arabic)
+
+            if arabic:
+                return "لسه محتاج " + _clean_join(labels) + " عشان أكمل الحجز."
+
+            return "I still need " + _english_join(labels) + " to continue the booking."
+
+        if arabic:
+            return "تحب نكمل بيانات الحجز؟"
+
+        return "Would you like to continue with the booking details?"
+
+    return ""
+
+
 def _contextual_ack_answer(
     message: str,
     variables: dict,
@@ -225,15 +286,15 @@ def _contextual_ack_answer(
     recommended_next_action: str,
 ) -> str:
     arabic = is_arabic_message(message)
+    variables = variables or {}
     missing_variables = missing_variables or []
 
-    if missing_variables:
-        labels = _labels_for_missing(missing_variables, arabic)
+    next_question = _next_relevant_question(variables, missing_variables, arabic)
 
+    if next_question:
         if arabic:
-            return "تمام، لسه محتاج " + _clean_join(labels) + " عشان أكمل."
-
-        return "Got it — I still need " + _english_join(labels) + " to continue."
+            return "تمام، " + next_question
+        return "Got it — " + next_question
 
     previous_question = _previous_assistant_question(recent_messages)
 
@@ -362,16 +423,14 @@ def build_no_llm_answer(
             if "needs_human" in variable_updates and variable_updates.get("needs_human"):
                 parts.append("محتاج متابعة من شخص من الفريق")
 
-            if parts:
-                response = "تمام، سجلت: " + _clean_join(parts) + "."
+            response = "تمام، سجلت: " + _clean_join(parts) + "." if parts else "تمام، حدثت البيانات."
 
-                if missing_variables:
-                    labels = _labels_for_missing(missing_variables, arabic)
-                    response += " لسه محتاج " + _clean_join(labels) + " عشان أكمل."
+            next_question = _next_relevant_question(variables, missing_variables, arabic=True)
 
-                return response
+            if next_question:
+                response += " " + next_question
 
-            return "تمام، حدثت البيانات."
+            return response
 
         parts = []
 
@@ -418,16 +477,14 @@ def build_no_llm_answer(
         if "needs_human" in variable_updates and variable_updates.get("needs_human"):
             parts.append("human follow-up needed")
 
-        if parts:
-            response = "Got it — I updated " + ", ".join(parts) + "."
+        response = "Got it — I updated " + ", ".join(parts) + "." if parts else "Got it — I updated your details."
 
-            if missing_variables:
-                labels = _labels_for_missing(missing_variables, arabic=False)
-                response += " I still need " + _english_join(labels) + " to continue."
+        next_question = _next_relevant_question(variables, missing_variables, arabic=False)
 
-            return response
+        if next_question:
+            response += " " + next_question
 
-        return "Got it — I updated your details."
+        return response
 
     if missing_variables:
         if arabic:
@@ -436,6 +493,13 @@ def build_no_llm_answer(
 
         labels = _labels_for_missing(missing_variables, arabic=False)
         return "Got it — I still need " + _english_join(labels) + " to continue."
+
+    next_question = _next_relevant_question(variables, missing_variables, arabic)
+
+    if next_question:
+        if arabic:
+            return "تمام، " + next_question
+        return "Got it — " + next_question
 
     if arabic:
         return "تمام."
