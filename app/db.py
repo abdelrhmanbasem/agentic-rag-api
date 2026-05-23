@@ -30,7 +30,8 @@ def init_db():
                 system_prompt TEXT NOT NULL,
                 tone TEXT DEFAULT '',
                 memory_policy TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT NOW()
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
             );
             """)
 
@@ -63,6 +64,7 @@ def init_db():
                 assistant_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
+                message_count INT DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT NOW()
             );
             """)
@@ -85,6 +87,49 @@ def init_db():
             );
             """)
 
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_documents (
+                assistant_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                chunk_count INT DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (assistant_id, document_id)
+            );
+            """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS long_term_memories (
+                id BIGSERIAL PRIMARY KEY,
+                assistant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_text TEXT NOT NULL,
+                memory_type TEXT DEFAULT 'other',
+                importance NUMERIC DEFAULT 0.5,
+                confidence NUMERIC DEFAULT 0.5,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE (assistant_id, user_id, memory_key)
+            );
+            """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS model_usage (
+                id BIGSERIAL PRIMARY KEY,
+                assistant_id TEXT,
+                conversation_id TEXT,
+                user_id TEXT,
+                model TEXT,
+                purpose TEXT,
+                input_tokens INT DEFAULT 0,
+                output_tokens INT DEFAULT 0,
+                estimated_cost_usd NUMERIC DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
 
 def save_message(conversation_id, assistant_id, user_id, role, content):
     with get_conn() as conn:
@@ -93,6 +138,17 @@ def save_message(conversation_id, assistant_id, user_id, role, content):
                 INSERT INTO messages (conversation_id, assistant_id, user_id, role, content)
                 VALUES (%s, %s, %s, %s, %s)
             """, (conversation_id, assistant_id, user_id, role, content))
+
+
+def count_messages(conversation_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM messages
+                WHERE conversation_id = %s
+            """, (conversation_id,))
+            return cur.fetchone()[0]
 
 
 def get_recent_messages(conversation_id, limit=10):
@@ -169,14 +225,15 @@ def upsert_assistant(assistant_id, name, system_prompt, tone, memory_policy):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO assistants (id, name, system_prompt, tone, memory_policy)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO assistants (id, name, system_prompt, tone, memory_policy, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (id)
                 DO UPDATE SET
                     name = EXCLUDED.name,
                     system_prompt = EXCLUDED.system_prompt,
                     tone = EXCLUDED.tone,
-                    memory_policy = EXCLUDED.memory_policy
+                    memory_policy = EXCLUDED.memory_policy,
+                    updated_at = NOW()
             """, (assistant_id, name, system_prompt, tone, memory_policy))
 
 
@@ -240,12 +297,151 @@ def get_summary(conversation_id):
 
 
 def save_summary(conversation_id, assistant_id, user_id, summary):
+    message_count = count_messages(conversation_id)
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO conversation_summaries
-                (conversation_id, assistant_id, user_id, summary, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                (conversation_id, assistant_id, user_id, summary, message_count, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (conversation_id)
-                DO UPDATE SET summary = EXCLUDED.summary, updated_at = NOW()
-            """, (conversation_id, assistant_id, user_id, summary))
+                DO UPDATE SET
+                    summary = EXCLUDED.summary,
+                    message_count = EXCLUDED.message_count,
+                    updated_at = NOW()
+            """, (conversation_id, assistant_id, user_id, summary, message_count))
+
+
+def get_summary_message_count(conversation_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT message_count
+                FROM conversation_summaries
+                WHERE conversation_id = %s
+            """, (conversation_id,))
+            row = cur.fetchone()
+            return row[0] if row else 0
+
+
+def upsert_knowledge_document(assistant_id, document_id, title, metadata, chunk_count):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO knowledge_documents
+                (assistant_id, document_id, title, metadata, chunk_count, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (assistant_id, document_id)
+                DO UPDATE SET
+                    title = EXCLUDED.title,
+                    metadata = EXCLUDED.metadata,
+                    chunk_count = EXCLUDED.chunk_count,
+                    updated_at = NOW()
+            """, (
+                assistant_id,
+                document_id,
+                title,
+                json.dumps(metadata or {}),
+                chunk_count,
+            ))
+
+
+def list_knowledge_documents(assistant_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT document_id, title, metadata, chunk_count, updated_at
+                FROM knowledge_documents
+                WHERE assistant_id = %s
+                ORDER BY updated_at DESC
+            """, (assistant_id,))
+            rows = cur.fetchall()
+
+    return [
+        {
+            "document_id": r[0],
+            "title": r[1],
+            "metadata": r[2],
+            "chunk_count": r[3],
+            "updated_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
+def make_memory_key(memory_type, memory_text):
+    normalized = " ".join(memory_text.lower().strip().split())
+    return f"{memory_type}:{normalized[:180]}"
+
+
+def upsert_long_term_memory(assistant_id, user_id, memory_text, memory_type, importance, confidence):
+    memory_key = make_memory_key(memory_type, memory_text)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO long_term_memories
+                (assistant_id, user_id, memory_key, memory_text, memory_type, importance, confidence, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (assistant_id, user_id, memory_key)
+                DO UPDATE SET
+                    memory_text = EXCLUDED.memory_text,
+                    memory_type = EXCLUDED.memory_type,
+                    importance = GREATEST(long_term_memories.importance, EXCLUDED.importance),
+                    confidence = GREATEST(long_term_memories.confidence, EXCLUDED.confidence),
+                    updated_at = NOW()
+                RETURNING memory_key
+            """, (
+                assistant_id,
+                user_id,
+                memory_key,
+                memory_text,
+                memory_type,
+                importance,
+                confidence,
+            ))
+            return cur.fetchone()[0]
+
+
+def list_long_term_memories(assistant_id, user_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT memory_text, memory_type, importance, confidence, updated_at
+                FROM long_term_memories
+                WHERE assistant_id = %s AND user_id = %s
+                ORDER BY importance DESC, updated_at DESC
+                LIMIT 50
+            """, (assistant_id, user_id))
+            rows = cur.fetchall()
+
+    return [
+        {
+            "text": r[0],
+            "type": r[1],
+            "importance": float(r[2]),
+            "confidence": float(r[3]),
+            "updated_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
+def log_model_usage(assistant_id, conversation_id, user_id, model, purpose, input_tokens=0, output_tokens=0, estimated_cost_usd=0):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO model_usage
+                (assistant_id, conversation_id, user_id, model, purpose, input_tokens, output_tokens, estimated_cost_usd)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                assistant_id,
+                conversation_id,
+                user_id,
+                model,
+                purpose,
+                input_tokens,
+                output_tokens,
+                estimated_cost_usd,
+            ))
