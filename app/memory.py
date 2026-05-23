@@ -1,7 +1,24 @@
-from app.config import MOCK_MODE
+from app.config import MOCK_MODE, SUMMARY_TRIGGER_MESSAGE_COUNT
 from app.llm import chat_json, memory_model
-from app.db import get_recent_messages, get_summary, save_summary
+from app.db import (
+    get_recent_messages,
+    get_summary,
+    save_summary,
+    get_summary_message_count,
+    count_messages,
+    upsert_long_term_memory,
+)
 from app.rag import write_memory
+
+
+def should_update_summary(conversation_id):
+    total_messages = count_messages(conversation_id)
+    last_summary_count = get_summary_message_count(conversation_id)
+
+    if total_messages < SUMMARY_TRIGGER_MESSAGE_COUNT:
+        return False
+
+    return (total_messages - last_summary_count) >= SUMMARY_TRIGGER_MESSAGE_COUNT
 
 
 def mock_update_summary(old_summary, recent_messages, variables):
@@ -13,14 +30,13 @@ def mock_update_summary(old_summary, recent_messages, variables):
     if variables:
         parts.append(f"Current known variables: {variables}")
 
-    if recent_messages:
-        latest_user_messages = [
-            m["content"] for m in recent_messages
-            if m.get("role") == "user"
-        ][-3:]
+    latest_user_messages = [
+        m["content"] for m in recent_messages
+        if m.get("role") == "user"
+    ][-3:]
 
-        if latest_user_messages:
-            parts.append("Recent user messages: " + " | ".join(latest_user_messages))
+    if latest_user_messages:
+        parts.append("Recent user messages: " + " | ".join(latest_user_messages))
 
     summary = "\n".join(parts)
     return summary[:2500]
@@ -30,7 +46,7 @@ def update_conversation_summary(conversation_id, assistant_id, user_id, variable
     old_summary = get_summary(conversation_id)
     recent_messages = get_recent_messages(conversation_id, limit=12)
 
-    if len(recent_messages) < 4:
+    if not should_update_summary(conversation_id):
         return old_summary
 
     if MOCK_MODE:
@@ -76,7 +92,7 @@ Return JSON only:
     return new_summary
 
 
-def mock_memory_decision(assistant_id, user_id, conversation_id, variables):
+def mock_memory_decision(variables):
     memories = []
 
     preferred_contact = variables.get("preferred_contact_method") or variables.get("preferred_contact")
@@ -155,27 +171,9 @@ def decide_and_write_long_term_memories(
     variables,
 ):
     if MOCK_MODE:
-        memories = mock_memory_decision(
-            assistant_id,
-            user_id,
-            conversation_id,
-            variables,
-        )
-
-        for memory in memories:
-            write_memory(
-                assistant_id=assistant_id,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                text=memory["text"],
-                memory_type=memory["type"],
-                importance=memory["importance"],
-                confidence=memory["confidence"],
-            )
-
-        return memories
-
-    prompt = f"""
+        memories = mock_memory_decision(variables)
+    else:
+        prompt = f"""
 You are a long-term memory manager.
 
 Decide what should be remembered about the user for future conversations.
@@ -218,32 +216,43 @@ Return JSON only:
   ]
 }}
 """
-
-    result = chat_json(
-        memory_model(),
-        [{"role": "user", "content": prompt}],
-        max_tokens=600,
-    )
-
-    memories = result.get("memories", [])
+        result = chat_json(
+            memory_model(),
+            [{"role": "user", "content": prompt}],
+            max_tokens=600,
+        )
+        memories = result.get("memories", [])
 
     written = []
+
     for memory in memories:
         text = memory.get("text", "").strip()
+        memory_type = memory.get("type", "other")
         importance = float(memory.get("importance", 0.5))
         confidence = float(memory.get("confidence", 0.5))
-        memory_type = memory.get("type", "other")
 
-        if text and importance >= 0.5 and confidence >= 0.65:
-            write_memory(
-                assistant_id=assistant_id,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                text=text,
-                memory_type=memory_type,
-                importance=importance,
-                confidence=confidence,
-            )
-            written.append(memory)
+        if not text or importance < 0.5 or confidence < 0.65:
+            continue
+
+        upsert_long_term_memory(
+            assistant_id=assistant_id,
+            user_id=user_id,
+            memory_text=text,
+            memory_type=memory_type,
+            importance=importance,
+            confidence=confidence,
+        )
+
+        write_memory(
+            assistant_id=assistant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            text=text,
+            memory_type=memory_type,
+            importance=importance,
+            confidence=confidence,
+        )
+
+        written.append(memory)
 
     return written
