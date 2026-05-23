@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Any
 
 from fastapi import FastAPI, Header, HTTPException
@@ -274,16 +275,88 @@ def read_user_memories(assistant_id: str, user_id: str, x_api_key: str = Header(
     }
 
 
+def extract_prices_from_text(text):
+    text = (text or "").lower()
+    prices = []
+
+    for match in re.findall(r"(\d{5,})\s*egp", text):
+        try:
+            prices.append(int(match))
+        except Exception:
+            pass
+
+    for match in re.findall(r"(\d{5,})\s*جنيه", text):
+        try:
+            prices.append(int(match))
+        except Exception:
+            pass
+
+    return prices
+
+
+def choose_best_knowledge_for_variables(knowledge, variables):
+    if not knowledge:
+        return None
+
+    brand = (variables.get("car_brand") or "").lower()
+    budget = variables.get("budget_max")
+
+    brand_aliases = {
+        "bmw": ["bmw", "بي ام", "بي ام دبليو"],
+        "mercedes": ["mercedes", "مرسيدس"],
+        "hyundai": ["hyundai", "هيونداي"],
+        "toyota": ["toyota", "تويوتا"],
+        "kia": ["kia", "كيا"],
+        "nissan": ["nissan", "نيسان"],
+        "audi": ["audi", "اودي"],
+    }
+
+    def score_item(item):
+        text = (item.get("text") or "").lower()
+        score = 0
+
+        if brand:
+            aliases = brand_aliases.get(brand, [brand])
+            if any(alias in text for alias in aliases):
+                score += 120
+            else:
+                score -= 60
+
+        if budget:
+            prices = extract_prices_from_text(text)
+
+            if prices:
+                best_price = min(prices)
+
+                if best_price <= budget:
+                    score += 90
+                else:
+                    score -= 90
+
+        if variables.get("transmission"):
+            transmission = str(variables.get("transmission")).lower()
+            if transmission in text:
+                score += 30
+
+        score += float(item.get("score", 0.0) or 0.0) * 5
+
+        return score
+
+    ranked = sorted(knowledge, key=score_item, reverse=True)
+    return ranked[0]
+
+
 def build_mock_answer(intent, variables, missing_variables, knowledge):
     if intent == "car_search":
         brand = variables.get("car_brand", "a suitable car")
         budget = variables.get("budget_max")
         condition = variables.get("car_condition", "")
 
-        if knowledge:
-            first_match = knowledge[0]
-            title = first_match.get("title", "the knowledge base")
-            text = first_match.get("text", "")
+        best_match = choose_best_knowledge_for_variables(knowledge, variables)
+
+        if best_match:
+            title = best_match.get("title", "the knowledge base")
+            text = best_match.get("text", "")
 
             if budget:
                 return (
