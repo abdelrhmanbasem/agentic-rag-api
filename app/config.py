@@ -32,3 +32,12 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "700"))
 
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.0"))
 MEMORY_MIN_SCORE = float(os.getenv("MEMORY_MIN_SCORE", "0.0"))
+
+RAG_CACHE_ENABLED = os.getenv("RAG_CACHE_ENABLED", "true").lower() == "true"
+RAG_CACHE_MAX_AGE_MINUTES = int(os.getenv("RAG_CACHE_MAX_AGE_MINUTES", "30"))
+RAG_CACHE_MAX_ITEMS = int(os.getenv("RAG_CACHE_MAX_ITEMS", "4"))
+
+KNOWLEDGE_COMPRESS_ENABLED = os.getenv("KNOWLEDGE_COMPRESS_ENABLED", "true").lower() == "true"
+KNOWLEDGE_COMPRESS_MAX_CHARS = int(os.getenv("KNOWLEDGE_COMPRESS_MAX_CHARS", "700"))
+
+ESTIMATE_CHARS_PER_TOKEN = int(os.getenv("ESTIMATE_CHARS_PER_TOKEN", "4"))
