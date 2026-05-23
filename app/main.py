@@ -98,6 +98,26 @@ def check_auth(x_api_key: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def calculate_missing_required_variables(schema: Dict[str, Any], variables: Dict[str, Any]) -> list[str]:
+    missing = []
+
+    for key, config in (schema or {}).items():
+        if key == "intent":
+            continue
+
+        required = config.get("required", False) if isinstance(config, dict) else False
+
+        if not required:
+            continue
+
+        value = (variables or {}).get(key)
+
+        if value is None or value == "":
+            missing.append(key)
+
+    return missing
+
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -465,12 +485,34 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if extraction.get("intent"):
         updated_variables["intent"] = extraction["intent"]
 
+    missing_required_variables = calculate_missing_required_variables(
+        schema=schema,
+        variables=updated_variables,
+    )
+
+    if not missing_required_variables:
+        missing_required_variables = extraction.get("missing_variables", [])
+
     save_variables(
         req.conversation_id,
         req.assistant_id,
         req.user_id,
         updated_variables,
     )
+
+    recommended_next_action = "continue_conversation"
+
+    if missing_required_variables:
+        recommended_next_action = "ask_clarifying_question"
+
+    if extraction.get("intent") == "booking_request":
+        recommended_next_action = "collect_booking_details"
+
+    if extraction.get("intent") == "complaint":
+        recommended_next_action = "consider_human_handoff"
+
+    if extraction.get("intent") == "urgent_medical_issue":
+        recommended_next_action = "urgent_human_handoff"
 
     skip_generation = should_skip_generation(
         message=req.message,
@@ -526,7 +568,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             message=req.message,
             variables=updated_variables,
             variable_updates=extraction.get("updates", {}),
-            missing_variables=extraction.get("missing_variables", []),
+            missing_variables=missing_required_variables,
+            recent_messages=recent_messages,
+            recommended_next_action=recommended_next_action,
         )
         model = "none"
         tier = "no_llm"
@@ -540,7 +584,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             memories=memories,
             user_message=req.message,
             intent=extraction.get("intent", "general_question"),
-            missing_variables=extraction.get("missing_variables", []),
+            missing_variables=missing_required_variables,
             selected_model_tier=route.get("selected_model_tier", "normal"),
         )
 
@@ -567,20 +611,6 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         recent_messages=get_recent_messages(req.conversation_id, limit=8),
         variables=updated_variables,
     )
-
-    recommended_next_action = "continue_conversation"
-
-    if extraction.get("missing_variables"):
-        recommended_next_action = "ask_clarifying_question"
-
-    if extraction.get("intent") == "booking_request":
-        recommended_next_action = "collect_booking_details"
-
-    if extraction.get("intent") == "complaint":
-        recommended_next_action = "consider_human_handoff"
-
-    if extraction.get("intent") == "urgent_medical_issue":
-        recommended_next_action = "urgent_human_handoff"
 
     log_estimated_usage(
         assistant_id=req.assistant_id,
@@ -615,7 +645,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "variables": updated_variables,
         "variable_updates": extraction.get("updates", {}),
         "variable_deletions": extraction.get("deletions", []),
-        "missing_variables": extraction.get("missing_variables", []),
+        "missing_variables": missing_required_variables,
         "recommended_next_action": recommended_next_action,
         "route": route,
         "knowledge_used": knowledge,
