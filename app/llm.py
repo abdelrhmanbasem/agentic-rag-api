@@ -7,6 +7,7 @@ from app.config import (
     MODEL_NORMAL,
     MODEL_STRONG,
     MODEL_EXTRACTION,
+    MODEL_MEMORY,
 )
 
 _client = None
@@ -73,3 +74,7 @@ def choose_model(message):
 
 def extraction_model():
     return MODEL_EXTRACTION
+
+
+def memory_model():
+    return MODEL_MEMORY
