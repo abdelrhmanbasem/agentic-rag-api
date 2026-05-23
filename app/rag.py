@@ -8,6 +8,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -90,19 +91,45 @@ def chunk_text(text, chunk_size=700, overlap=100):
     return chunks
 
 
+def document_filter(assistant_id, document_id):
+    return Filter(
+        must=[
+            FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id)),
+            FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+        ]
+    )
+
+
+def assistant_filter(assistant_id):
+    return Filter(
+        must=[
+            FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id)),
+        ]
+    )
+
+
+def memory_filter(assistant_id, user_id):
+    return Filter(
+        must=[
+            FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id)),
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+    )
+
+
 def delete_document_chunks(assistant_id, document_id):
     qdrant.delete(
         collection_name="knowledge",
-        points_selector=Filter(
-            must=[
-                FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id)),
-                FieldCondition(key="document_id", match=MatchValue(value=document_id)),
-            ]
+        points_selector=FilterSelector(
+            filter=document_filter(assistant_id, document_id)
         ),
+        wait=True,
     )
 
 
 def ingest_document(assistant_id, document_id, title, text):
+    ensure_qdrant()
+
     chunks = chunk_text(text)
 
     delete_document_chunks(assistant_id, document_id)
@@ -124,29 +151,57 @@ def ingest_document(assistant_id, document_id, title, text):
         )
 
     if points:
-        qdrant.upsert(collection_name="knowledge", points=points)
+        qdrant.upsert(
+            collection_name="knowledge",
+            points=points,
+            wait=True,
+        )
 
     return len(chunks)
 
 
-def search_knowledge(assistant_id, query, limit=4):
-    try:
-        results = qdrant.search(
-            collection_name="knowledge",
-            query_vector=embed(query),
-            query_filter=Filter(
-                must=[
-                    FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id))
-                ]
-            ),
+def query_collection(collection_name, query_vector, query_filter, limit):
+    if hasattr(qdrant, "query_points"):
+        response = qdrant.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            query_filter=query_filter,
             limit=limit,
         )
-        return [r.payload for r in results]
-    except Exception:
-        return []
+        return response.points
+
+    return qdrant.search(
+        collection_name=collection_name,
+        query_vector=query_vector,
+        query_filter=query_filter,
+        limit=limit,
+    )
 
 
-def write_memory(assistant_id, user_id, conversation_id, text, memory_type="preference", importance=0.5, confidence=0.5):
+def search_knowledge(assistant_id, query, limit=4):
+    ensure_qdrant()
+
+    results = query_collection(
+        collection_name="knowledge",
+        query_vector=embed(query),
+        query_filter=assistant_filter(assistant_id),
+        limit=limit,
+    )
+
+    return [r.payload for r in results]
+
+
+def write_memory(
+    assistant_id,
+    user_id,
+    conversation_id,
+    text,
+    memory_type="preference",
+    importance=0.5,
+    confidence=0.5,
+):
+    ensure_qdrant()
+
     if not text.strip():
         return
 
@@ -167,22 +222,18 @@ def write_memory(assistant_id, user_id, conversation_id, text, memory_type="pref
                 },
             )
         ],
+        wait=True,
     )
 
 
 def search_memories(assistant_id, user_id, query, limit=5):
-    try:
-        results = qdrant.search(
-            collection_name="memories",
-            query_vector=embed(query),
-            query_filter=Filter(
-                must=[
-                    FieldCondition(key="assistant_id", match=MatchValue(value=assistant_id)),
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                ]
-            ),
-            limit=limit,
-        )
-        return [r.payload for r in results]
-    except Exception:
-        return []
+    ensure_qdrant()
+
+    results = query_collection(
+        collection_name="memories",
+        query_vector=embed(query),
+        query_filter=memory_filter(assistant_id, user_id),
+        limit=limit,
+    )
+
+    return [r.payload for r in results]
