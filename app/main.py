@@ -3,7 +3,13 @@ from typing import Dict, Any
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from app.config import APP_SECRET, MOCK_MODE
+from app.config import (
+    APP_SECRET,
+    MOCK_MODE,
+    RECENT_MESSAGES_LIMIT,
+    KNOWLEDGE_TOP_K,
+    MEMORY_TOP_K,
+)
 from app.db import (
     init_db,
     upsert_assistant,
@@ -16,8 +22,11 @@ from app.db import (
     get_schema,
     get_variables,
     save_variables,
+    upsert_knowledge_document,
+    list_knowledge_documents,
+    list_long_term_memories,
 )
-from app.llm import chat_text, choose_model
+from app.llm import chat_text, route_message, model_for_tier
 from app.rag import (
     ensure_qdrant,
     ingest_document,
@@ -51,6 +60,7 @@ class IngestRequest(BaseModel):
     document_id: str
     title: str
     text: str
+    metadata: Dict[str, Any] = {}
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -145,6 +155,15 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
         document_id=req.document_id,
         title=req.title,
         text=req.text,
+        metadata=req.metadata,
+    )
+
+    upsert_knowledge_document(
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        metadata=req.metadata,
+        chunk_count=chunks,
     )
 
     return {
@@ -152,6 +171,16 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
         "assistant_id": req.assistant_id,
         "document_id": req.document_id,
         "chunks": chunks,
+    }
+
+
+@app.get("/knowledge/{assistant_id}")
+def read_knowledge_documents(assistant_id: str, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    return {
+        "assistant_id": assistant_id,
+        "documents": list_knowledge_documents(assistant_id),
     }
 
 
@@ -201,6 +230,17 @@ def patch_variables(req: PatchVariablesRequest, x_api_key: str = Header(default=
         "status": "updated",
         "conversation_id": req.conversation_id,
         "variables": updated,
+    }
+
+
+@app.get("/memories/{assistant_id}/{user_id}")
+def read_user_memories(assistant_id: str, user_id: str, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    return {
+        "assistant_id": assistant_id,
+        "user_id": user_id,
+        "memories": list_long_term_memories(assistant_id, user_id),
     }
 
 
@@ -262,11 +302,12 @@ def generate_answer(
     user_message,
     intent,
     missing_variables,
+    selected_model_tier,
 ):
-    model, tier = choose_model(user_message)
+    model = model_for_tier(selected_model_tier)
 
     if MOCK_MODE:
-        return build_mock_answer(intent, variables, missing_variables, knowledge), model, tier
+        return build_mock_answer(intent, variables, missing_variables, knowledge), model, selected_model_tier
 
     system_prompt = f"""
 {assistant["system_prompt"]}
@@ -313,7 +354,7 @@ Missing variables:
     messages.extend(recent_messages)
 
     answer = chat_text(model, messages, max_tokens=700)
-    return answer, model, tier
+    return answer, model, selected_model_tier
 
 
 @app.post("/chat")
@@ -337,17 +378,35 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         req.message,
     )
 
-    recent_messages = get_recent_messages(req.conversation_id, limit=10)
-    old_summary = get_summary(req.conversation_id)
+    recent_messages = get_recent_messages(req.conversation_id, limit=RECENT_MESSAGES_LIMIT)
+    summary = get_summary(req.conversation_id)
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
 
-    extraction = extract_variables(
-        schema=schema,
-        existing_variables=existing_variables,
+    route = route_message(
+        assistant=assistant,
+        summary=summary,
+        variables=existing_variables,
         recent_messages=recent_messages,
         user_message=req.message,
     )
+
+    if route.get("needs_variable_extraction", True):
+        extraction = extract_variables(
+            schema=schema,
+            existing_variables=existing_variables,
+            recent_messages=recent_messages,
+            user_message=req.message,
+        )
+    else:
+        extraction = {
+            "intent": existing_variables.get("intent", route.get("intent_hint", "general_question")),
+            "updates": {},
+            "deletions": [],
+            "missing_variables": [],
+            "confidence": 1.0,
+            "notes": "Variable extraction skipped by router.",
+        }
 
     updated_variables = apply_variable_patch(
         existing_variables,
@@ -365,25 +424,30 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         updated_variables,
     )
 
-    knowledge = search_knowledge(req.assistant_id, req.message, limit=4)
+    knowledge = []
+    if route.get("needs_rag", True):
+        knowledge = search_knowledge(req.assistant_id, req.message, limit=KNOWLEDGE_TOP_K)
 
-    memories = search_memories(
-        req.assistant_id,
-        req.user_id,
-        req.message,
-        limit=5,
-    )
+    memories = []
+    if route.get("needs_memory", True):
+        memories = search_memories(
+            req.assistant_id,
+            req.user_id,
+            req.message,
+            limit=MEMORY_TOP_K,
+        )
 
     answer, model, tier = generate_answer(
         assistant=assistant,
         recent_messages=recent_messages,
-        summary=old_summary,
+        summary=summary,
         variables=updated_variables,
         knowledge=knowledge,
         memories=memories,
         user_message=req.message,
         intent=extraction.get("intent", "general_question"),
         missing_variables=extraction.get("missing_variables", []),
+        selected_model_tier=route.get("selected_model_tier", "normal"),
     )
 
     save_message(
@@ -434,6 +498,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "variable_deletions": extraction.get("deletions", []),
         "missing_variables": extraction.get("missing_variables", []),
         "recommended_next_action": recommended_next_action,
+        "route": route,
         "knowledge_used": knowledge,
         "memories_used": memories,
         "summary": updated_summary,
