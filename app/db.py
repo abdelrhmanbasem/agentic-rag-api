@@ -6,6 +6,7 @@ from app.config import (
     POSTGRES_DB,
     POSTGRES_USER,
     POSTGRES_PASSWORD,
+    ESTIMATE_CHARS_PER_TOKEN,
 )
 
 
@@ -126,9 +127,70 @@ def init_db():
                 input_tokens INT DEFAULT 0,
                 output_tokens INT DEFAULT 0,
                 estimated_cost_usd NUMERIC DEFAULT 0,
+                metadata JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT NOW()
             );
             """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_rag_cache (
+                conversation_id TEXT PRIMARY KEY,
+                assistant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                query TEXT NOT NULL DEFAULT '',
+                knowledge_payload JSONB NOT NULL DEFAULT '[]',
+                compressed_payload JSONB NOT NULL DEFAULT '[]',
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            cur.execute("""
+            ALTER TABLE assistants
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+            """)
+
+            cur.execute("""
+            ALTER TABLE conversation_summaries
+            ADD COLUMN IF NOT EXISTS message_count INT DEFAULT 0;
+            """)
+
+            cur.execute("""
+            ALTER TABLE model_usage
+            ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
+            """)
+
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_conversation_id
+            ON messages (conversation_id);
+            """)
+
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+            ON messages (conversation_id, created_at DESC);
+            """)
+
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_long_term_memories_user
+            ON long_term_memories (assistant_id, user_id);
+            """)
+
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_rag_cache_conversation
+            ON conversation_rag_cache (conversation_id);
+            """)
+
+
+def estimate_tokens_from_text(text):
+    if not text:
+        return 0
+    return max(1, int(len(str(text)) / ESTIMATE_CHARS_PER_TOKEN))
+
+
+def estimate_tokens_from_obj(obj):
+    try:
+        return estimate_tokens_from_text(json.dumps(obj, ensure_ascii=False))
+    except Exception:
+        return estimate_tokens_from_text(str(obj))
 
 
 def save_message(conversation_id, assistant_id, user_id, role, content):
@@ -428,13 +490,70 @@ def list_long_term_memories(assistant_id, user_id):
     ]
 
 
-def log_model_usage(assistant_id, conversation_id, user_id, model, purpose, input_tokens=0, output_tokens=0, estimated_cost_usd=0):
+def save_rag_cache(conversation_id, assistant_id, user_id, query, knowledge_payload, compressed_payload):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO conversation_rag_cache
+                (conversation_id, assistant_id, user_id, query, knowledge_payload, compressed_payload, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (conversation_id)
+                DO UPDATE SET
+                    assistant_id = EXCLUDED.assistant_id,
+                    user_id = EXCLUDED.user_id,
+                    query = EXCLUDED.query,
+                    knowledge_payload = EXCLUDED.knowledge_payload,
+                    compressed_payload = EXCLUDED.compressed_payload,
+                    updated_at = NOW()
+            """, (
+                conversation_id,
+                assistant_id,
+                user_id,
+                query,
+                json.dumps(knowledge_payload or []),
+                json.dumps(compressed_payload or []),
+            ))
+
+
+def get_rag_cache(conversation_id, max_age_minutes=30):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT query, knowledge_payload, compressed_payload, updated_at
+                FROM conversation_rag_cache
+                WHERE conversation_id = %s
+                AND updated_at >= NOW() - (%s || ' minutes')::interval
+            """, (conversation_id, str(max_age_minutes)))
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "query": row[0],
+        "knowledge_payload": row[1] or [],
+        "compressed_payload": row[2] or [],
+        "updated_at": row[3].isoformat() if row[3] else None,
+    }
+
+
+def log_model_usage(
+    assistant_id,
+    conversation_id,
+    user_id,
+    model,
+    purpose,
+    input_tokens=0,
+    output_tokens=0,
+    estimated_cost_usd=0,
+    metadata=None,
+):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO model_usage
-                (assistant_id, conversation_id, user_id, model, purpose, input_tokens, output_tokens, estimated_cost_usd)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (assistant_id, conversation_id, user_id, model, purpose, input_tokens, output_tokens, estimated_cost_usd, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 assistant_id,
                 conversation_id,
@@ -444,4 +563,31 @@ def log_model_usage(assistant_id, conversation_id, user_id, model, purpose, inpu
                 input_tokens,
                 output_tokens,
                 estimated_cost_usd,
+                json.dumps(metadata or {}),
             ))
+
+
+def log_estimated_usage(
+    assistant_id,
+    conversation_id,
+    user_id,
+    model,
+    purpose,
+    input_obj=None,
+    output_text="",
+    metadata=None,
+):
+    input_tokens = estimate_tokens_from_obj(input_obj or {})
+    output_tokens = estimate_tokens_from_text(output_text or "")
+
+    log_model_usage(
+        assistant_id=assistant_id,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        model=model,
+        purpose=purpose,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost_usd=0,
+        metadata=metadata or {},
+    )
