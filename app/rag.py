@@ -21,6 +21,8 @@ from app.config import (
     QDRANT_API_KEY,
     EMBED_MODEL,
     VECTOR_SIZE,
+    RAG_MIN_SCORE,
+    MEMORY_MIN_SCORE,
 )
 
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
@@ -127,9 +129,10 @@ def delete_document_chunks(assistant_id, document_id):
     )
 
 
-def ingest_document(assistant_id, document_id, title, text):
+def ingest_document(assistant_id, document_id, title, text, metadata=None):
     ensure_qdrant()
 
+    metadata = metadata or {}
     chunks = chunk_text(text)
 
     delete_document_chunks(assistant_id, document_id)
@@ -146,6 +149,7 @@ def ingest_document(assistant_id, document_id, title, text):
                     "title": title,
                     "chunk_index": index,
                     "text": chunk,
+                    "metadata": metadata,
                 },
             )
         )
@@ -178,6 +182,10 @@ def query_collection(collection_name, query_vector, query_filter, limit):
     )
 
 
+def result_score(result):
+    return float(getattr(result, "score", 0.0) or 0.0)
+
+
 def search_knowledge(assistant_id, query, limit=4):
     ensure_qdrant()
 
@@ -188,7 +196,15 @@ def search_knowledge(assistant_id, query, limit=4):
         limit=limit,
     )
 
-    return [r.payload for r in results]
+    payloads = []
+    for r in results:
+        score = result_score(r)
+        if score >= RAG_MIN_SCORE:
+            payload = dict(r.payload or {})
+            payload["score"] = score
+            payloads.append(payload)
+
+    return payloads
 
 
 def write_memory(
@@ -236,4 +252,12 @@ def search_memories(assistant_id, user_id, query, limit=5):
         limit=limit,
     )
 
-    return [r.payload for r in results]
+    payloads = []
+    for r in results:
+        score = result_score(r)
+        if score >= MEMORY_MIN_SCORE:
+            payload = dict(r.payload or {})
+            payload["score"] = score
+            payloads.append(payload)
+
+    return payloads
