@@ -28,6 +28,28 @@ SHORT_ACKS = {
 }
 
 
+ARABIC_ACKS = {
+    "تمام",
+    "تماما",
+    "تم",
+    "اوكي",
+    "أوكي",
+    "حاضر",
+    "ماشي",
+    "شكرا",
+    "شكرًا",
+    "تسلم",
+    "اه",
+    "ايوه",
+    "طيب",
+    "اشطا",
+}
+
+
+def is_arabic_message(message: str) -> bool:
+    return bool(re.search(r"[\u0600-\u06FF]", message))
+
+
 def is_short_ack(message: str) -> bool:
     text = message.lower().strip()
     return text in SHORT_ACKS or len(text) <= 3
@@ -94,30 +116,50 @@ def should_skip_generation(message: str, variable_updates: dict, intent: str) ->
 
 
 def build_no_llm_answer(message: str, variables: dict, variable_updates: dict, missing_variables: list) -> str:
+    arabic = is_arabic_message(message)
+    text = message.lower().strip()
+
     if is_short_ack(message):
+        if arabic:
+            return "تمام."
         return "Got it."
 
     if is_phone_only(message) or "phone_number" in variable_updates:
+        if arabic:
+            return "تمام، سجلت رقمك."
         return "Got it — I saved your phone number."
 
     if "preferred_contact_method" in variable_updates:
         method = variable_updates.get("preferred_contact_method")
+        if arabic:
+            return f"تمام، هستخدم {method} كطريقة التواصل المفضلة."
         return f"Got it — I’ll use {method} as your preferred contact method."
 
     if "budget_max" in variable_updates:
         budget = variable_updates.get("budget_max")
         currency = variables.get("currency", "")
+        if arabic:
+            return f"تمام، حدثت الميزانية لـ {budget} {currency}."
         return f"Got it — I updated your budget to {budget} {currency}."
 
     if "appointment_date" in variable_updates or "appointment_time" in variable_updates:
         date = variables.get("appointment_date", "")
         time = variables.get("appointment_time", "")
+        if arabic:
+            return f"تمام، حدثت ميعادك المفضل لـ {date} {time}."
         return f"Got it — I updated your appointment preference to {date} {time}."
 
     if variable_updates:
+        if arabic:
+            return "تمام، حدثت البيانات."
         return "Got it — I updated your details."
 
     if missing_variables:
+        if arabic:
+            return "تمام. لسه محتاج شوية تفاصيل عشان أكمل."
         return "Got it. I still need a few details to continue."
+
+    if arabic:
+        return "تمام."
 
     return "Got it."
