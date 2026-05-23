@@ -1,18 +1,48 @@
-import os
 from typing import Dict, Any
 
-import psycopg
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-from openai import OpenAI
+
+from app.config import APP_SECRET, MOCK_MODE
+from app.db import (
+    init_db,
+    upsert_assistant,
+    get_or_create_assistant,
+    ensure_conversation,
+    save_message,
+    get_recent_messages,
+    get_summary,
+    save_summary,
+    save_schema,
+    get_schema,
+    get_variables,
+    save_variables,
+)
+from app.llm import chat_text, choose_model
+from app.rag import ensure_qdrant, ingest_document, search_knowledge, search_memories, write_memory
+from app.variables import extract_variables, apply_variable_patch
 
 app = FastAPI(title="Agentic RAG API")
 
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL_ROUTER = os.getenv("MODEL_ROUTER", "gpt-4.1-nano")
-MODEL_NORMAL = os.getenv("MODEL_NORMAL", "gpt-4.1-mini")
-MODEL_STRONG = os.getenv("MODEL_STRONG", "gpt-4.1")
+class AssistantRequest(BaseModel):
+    assistant_id: str
+    name: str
+    system_prompt: str
+    tone: str = "clear, helpful, concise"
+    memory_policy: str = "Remember stable preferences, goals, constraints, and important facts."
+
+
+class SchemaRequest(BaseModel):
+    assistant_id: str
+    schema: Dict[str, Any]
+
+
+class IngestRequest(BaseModel):
+    assistant_id: str
+    document_id: str
+    title: str
+    text: str
 
 
 class ChatRequest(BaseModel):
@@ -24,166 +54,148 @@ class ChatRequest(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
-class AssistantRequest(BaseModel):
+class PatchVariablesRequest(BaseModel):
     assistant_id: str
-    name: str
-    system_prompt: str
-    tone: str = "clear, helpful, concise"
-    memory_policy: str = "Remember stable preferences, goals, constraints, and important facts."
+    user_id: str
+    conversation_id: str
+    updates: Dict[str, Any] = {}
+    deletions: list[str] = []
 
 
 def check_auth(x_api_key: str):
-    if x_api_key != os.getenv("APP_SECRET"):
+    if x_api_key != APP_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-def db():
-    return psycopg.connect(
-        host=os.getenv("POSTGRES_HOST", "postgres"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        dbname=os.getenv("POSTGRES_DB", "rag_db"),
-        user=os.getenv("POSTGRES_USER", "rag_user"),
-        password=os.getenv("POSTGRES_PASSWORD"),
-        autocommit=True,
-    )
-
-
-def init_db():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS assistants (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                system_prompt TEXT NOT NULL,
-                tone TEXT DEFAULT '',
-                memory_policy TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-            """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
-                assistant_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                channel TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
-            );
-            """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id BIGSERIAL PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                assistant_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-            """)
 
 
 @app.on_event("startup")
 def startup():
     init_db()
+    ensure_qdrant()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "mock_mode": MOCK_MODE,
+    }
 
 
-def save_message(conversation_id, assistant_id, user_id, role, content):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO messages (conversation_id, assistant_id, user_id, role, content)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (conversation_id, assistant_id, user_id, role, content))
+@app.post("/assistants")
+def create_assistant(req: AssistantRequest, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    upsert_assistant(
+        req.assistant_id,
+        req.name,
+        req.system_prompt,
+        req.tone,
+        req.memory_policy,
+    )
+
+    return {
+        "status": "saved",
+        "assistant_id": req.assistant_id,
+    }
 
 
-def get_recent_messages(conversation_id, limit=10):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT role, content
-                FROM messages
-                WHERE conversation_id = %s
-                ORDER BY id DESC
-                LIMIT %s
-            """, (conversation_id, limit))
-            rows = cur.fetchall()
+@app.post("/schemas")
+def create_schema(req: SchemaRequest, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+    save_schema(req.assistant_id, req.schema)
 
-    rows.reverse()
-    return [{"role": r[0], "content": r[1]} for r in rows]
+    return {
+        "status": "saved",
+        "assistant_id": req.assistant_id,
+        "schema_keys": list(req.schema.keys()),
+    }
 
 
-def get_or_create_assistant(assistant_id):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, name, system_prompt, tone, memory_policy
-                FROM assistants
-                WHERE id = %s
-            """, (assistant_id,))
-            row = cur.fetchone()
+@app.get("/schemas/{assistant_id}")
+def read_schema(assistant_id: str, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
 
-            if row:
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "system_prompt": row[2],
-                    "tone": row[3],
-                    "memory_policy": row[4]
-                }
-
-            default_prompt = "You are a helpful AI assistant. Answer clearly and helpfully."
-            cur.execute("""
-                INSERT INTO assistants (id, name, system_prompt, tone, memory_policy)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                assistant_id,
-                assistant_id,
-                default_prompt,
-                "clear, helpful, concise",
-                "Remember stable preferences, goals, constraints, and important facts."
-            ))
-
-            return {
-                "id": assistant_id,
-                "name": assistant_id,
-                "system_prompt": default_prompt,
-                "tone": "clear, helpful, concise",
-                "memory_policy": "Remember stable preferences, goals, constraints, and important facts."
-            }
+    return {
+        "assistant_id": assistant_id,
+        "schema": get_schema(assistant_id),
+    }
 
 
-def ensure_conversation(conversation_id, assistant_id, user_id, channel):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO conversations (id, assistant_id, user_id, channel, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (id)
-                DO UPDATE SET updated_at = NOW()
-            """, (conversation_id, assistant_id, user_id, channel))
+@app.post("/ingest")
+def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    chunks = ingest_document(
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        text=req.text,
+    )
+
+    return {
+        "status": "ingested",
+        "assistant_id": req.assistant_id,
+        "document_id": req.document_id,
+        "chunks": chunks,
+    }
 
 
-def choose_model(message):
-    lowered = message.lower()
-    angry_words = ["angry", "refund", "complaint", "unacceptable", "lawsuit", "terrible"]
+@app.get("/variables/{conversation_id}")
+def read_variables(conversation_id: str, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
 
-    if len(message) < 25:
-        return MODEL_ROUTER, "cheap"
-
-    if any(word in lowered for word in angry_words):
-        return MODEL_STRONG, "strong"
-
-    return MODEL_NORMAL, "normal"
+    return {
+        "conversation_id": conversation_id,
+        "variables": get_variables(conversation_id),
+    }
 
 
-def generate_answer(model, assistant, recent_messages):
+@app.patch("/variables")
+def patch_variables(req: PatchVariablesRequest, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    existing = get_variables(req.conversation_id)
+    updated = apply_variable_patch(existing, req.updates, req.deletions)
+
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated,
+    )
+
+    return {
+        "status": "updated",
+        "conversation_id": req.conversation_id,
+        "variables": updated,
+    }
+
+
+def build_mock_answer(intent, variables, missing_variables, knowledge):
+    if intent == "car_search":
+        brand = variables.get("car_brand", "a suitable car")
+        budget = variables.get("budget_max")
+        condition = variables.get("car_condition", "")
+
+        if budget:
+            return f"Got it — you're looking for a {condition} {brand} up to {budget}. I can help narrow that down. What model or body type do you prefer?"
+        return f"Got it — you're interested in {brand}. What budget range should I look within?"
+
+    if intent == "booking_request":
+        return "Sure — I can help with booking. What day and time works best for you?"
+
+    if intent == "complaint":
+        return "I’m sorry about that. I’ll help you resolve it. Can you share a few more details so I can escalate it properly?"
+
+    return "Got it. I updated the details I understood. How can I help next?"
+
+
+def generate_answer(assistant, recent_messages, summary, variables, knowledge, memories, user_message, intent, missing_variables):
+    model, tier = choose_model(user_message)
+
+    if MOCK_MODE:
+        return build_mock_answer(intent, variables, missing_variables, knowledge), model, tier
+
     system_prompt = f"""
 {assistant["system_prompt"]}
 
@@ -194,48 +206,41 @@ Memory policy:
 {assistant["memory_policy"]}
 
 Rules:
-- Use the recent conversation context.
+- Use current variables when relevant.
+- Use retrieved knowledge when relevant.
+- Ask for missing important variables naturally.
 - Be concise and useful.
-- Do not mention internal systems.
+- Do not reveal internal routing, memory, or RAG.
 """
 
-    messages = [{"role": "system", "content": system_prompt}]
+    context = f"""
+Conversation summary:
+{summary}
+
+Current variables:
+{variables}
+
+Relevant long-term memories:
+{memories}
+
+Relevant knowledge:
+{knowledge}
+
+Intent:
+{intent}
+
+Missing variables:
+{missing_variables}
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": context},
+    ]
     messages.extend(recent_messages)
 
-    response = openai_client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.4,
-        max_tokens=600,
-    )
-
-    return response.choices[0].message.content
-
-
-@app.post("/assistants")
-def create_assistant(req: AssistantRequest, x_api_key: str = Header(default="")):
-    check_auth(x_api_key)
-
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO assistants (id, name, system_prompt, tone, memory_policy)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (id)
-                DO UPDATE SET
-                    name = EXCLUDED.name,
-                    system_prompt = EXCLUDED.system_prompt,
-                    tone = EXCLUDED.tone,
-                    memory_policy = EXCLUDED.memory_policy
-            """, (
-                req.assistant_id,
-                req.name,
-                req.system_prompt,
-                req.tone,
-                req.memory_policy
-            ))
-
-    return {"status": "saved", "assistant_id": req.assistant_id}
+    answer = chat_text(model, messages, max_tokens=700)
+    return answer, model, tier
 
 
 @app.post("/chat")
@@ -248,17 +253,84 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     save_message(req.conversation_id, req.assistant_id, req.user_id, "user", req.message)
 
     recent_messages = get_recent_messages(req.conversation_id, limit=10)
+    summary = get_summary(req.conversation_id)
+    schema = get_schema(req.assistant_id)
+    existing_variables = get_variables(req.conversation_id)
 
-    model, tier = choose_model(req.message)
-    answer = generate_answer(model, assistant, recent_messages)
+    extraction = extract_variables(
+        schema=schema,
+        existing_variables=existing_variables,
+        recent_messages=recent_messages,
+        user_message=req.message,
+    )
+
+    updated_variables = apply_variable_patch(
+        existing_variables,
+        extraction.get("updates", {}),
+        extraction.get("deletions", []),
+    )
+
+    if extraction.get("intent"):
+        updated_variables["intent"] = extraction["intent"]
+
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated_variables,
+    )
+
+    knowledge = search_knowledge(req.assistant_id, req.message, limit=4)
+    memories = search_memories(req.assistant_id, req.user_id, req.message, limit=5)
+
+    answer, model, tier = generate_answer(
+        assistant=assistant,
+        recent_messages=recent_messages,
+        summary=summary,
+        variables=updated_variables,
+        knowledge=knowledge,
+        memories=memories,
+        user_message=req.message,
+        intent=extraction.get("intent", "general_question"),
+        missing_variables=extraction.get("missing_variables", []),
+    )
 
     save_message(req.conversation_id, req.assistant_id, req.user_id, "assistant", answer)
+
+    if extraction.get("updates"):
+        memory_text = f"User variables updated: {extraction.get('updates')}"
+        write_memory(
+            assistant_id=req.assistant_id,
+            user_id=req.user_id,
+            conversation_id=req.conversation_id,
+            text=memory_text,
+            memory_type="variables",
+            importance=0.6,
+            confidence=extraction.get("confidence", 0.5),
+        )
+
+    recommended_next_action = "continue_conversation"
+    if extraction.get("missing_variables"):
+        recommended_next_action = "ask_clarifying_question"
+    if extraction.get("intent") == "booking_request":
+        recommended_next_action = "collect_booking_details"
+    if extraction.get("intent") == "complaint":
+        recommended_next_action = "consider_human_handoff"
 
     return {
         "answer": answer,
         "assistant_id": req.assistant_id,
         "conversation_id": req.conversation_id,
+        "intent": extraction.get("intent", "general_question"),
+        "variables": updated_variables,
+        "variable_updates": extraction.get("updates", {}),
+        "variable_deletions": extraction.get("deletions", []),
+        "missing_variables": extraction.get("missing_variables", []),
+        "recommended_next_action": recommended_next_action,
+        "knowledge_used": knowledge,
+        "memories_used": memories,
         "model_used": model,
         "model_tier": tier,
-        "memory_saved": True
+        "mock_mode": MOCK_MODE,
+        "memory_saved": bool(extraction.get("updates")),
     }
