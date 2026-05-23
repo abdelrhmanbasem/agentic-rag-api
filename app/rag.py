@@ -312,13 +312,9 @@ def rerank_knowledge_items(items, query):
 
         score = 0
 
-        # Keep Qdrant score as a weak signal.
         score += float(item.get("score", 0.0) or 0.0) * 5
-
-        # Keyword overlap.
         score += len(words.intersection(query_words)) * 10
 
-        # Strong brand boosts.
         for brand, aliases in brand_aliases.items():
             brand_in_query = brand in requested_brands
             brand_in_item = any(alias in combined for alias in aliases)
@@ -329,7 +325,6 @@ def rerank_knowledge_items(items, query):
             if requested_brands and not brand_in_query and brand_in_item:
                 score -= 60
 
-        # Budget awareness.
         if budget:
             prices = extract_prices_from_text(combined)
 
@@ -341,7 +336,6 @@ def rerank_knowledge_items(items, query):
                 else:
                     score -= 90
 
-        # Helpful matching terms.
         if "automatic" in query_text and "automatic" in combined:
             score += 30
 
@@ -359,25 +353,112 @@ def rerank_knowledge_items(items, query):
     return sorted(items, key=item_score, reverse=True)
 
 
-def search_knowledge(assistant_id, query, limit=4):
+def scroll_knowledge_candidates(assistant_id, limit=100):
     ensure_qdrant()
 
-    results = query_collection(
+    points, _ = qdrant.scroll(
         collection_name="knowledge",
-        query_vector=embed(query),
-        query_filter=assistant_filter(assistant_id),
+        scroll_filter=assistant_filter(assistant_id),
         limit=limit,
+        with_payload=True,
+        with_vectors=False,
     )
 
     payloads = []
-    for r in results:
+    for point in points:
+        payload = dict(point.payload or {})
+        payload["score"] = 0.0
+        payloads.append(payload)
+
+    return payloads
+
+
+def query_has_lexical_signal(query):
+    text = (query or "").lower()
+
+    signals = [
+        "bmw",
+        "mercedes",
+        "hyundai",
+        "toyota",
+        "kia",
+        "nissan",
+        "audi",
+        "under",
+        "up to",
+        "million",
+        "egp",
+        "price",
+        "available",
+        "automatic",
+        "manual",
+        "بي ام",
+        "مرسيدس",
+        "هيونداي",
+        "تويوتا",
+        "كيا",
+        "نيسان",
+        "اودي",
+        "لحد",
+        "مليون",
+        "جنيه",
+        "متاح",
+        "اوتوماتيك",
+        "مانيوال",
+    ]
+
+    return any(signal in text for signal in signals)
+
+
+def search_knowledge(assistant_id, query, limit=4):
+    ensure_qdrant()
+
+    vector_results = query_collection(
+        collection_name="knowledge",
+        query_vector=embed(query),
+        query_filter=assistant_filter(assistant_id),
+        limit=max(limit, 10),
+    )
+
+    payloads = []
+    seen = set()
+
+    for r in vector_results:
         score = result_score(r)
+
         if score >= RAG_MIN_SCORE:
             payload = dict(r.payload or {})
             payload["score"] = score
-            payloads.append(payload)
 
-    return rerank_knowledge_items(payloads, query)
+            dedupe_key = (
+                payload.get("assistant_id"),
+                payload.get("document_id"),
+                payload.get("chunk_index"),
+                payload.get("text"),
+            )
+
+            if dedupe_key not in seen:
+                seen.add(dedupe_key)
+                payloads.append(payload)
+
+    if MOCK_MODE or query_has_lexical_signal(query):
+        lexical_candidates = scroll_knowledge_candidates(assistant_id, limit=100)
+
+        for payload in lexical_candidates:
+            dedupe_key = (
+                payload.get("assistant_id"),
+                payload.get("document_id"),
+                payload.get("chunk_index"),
+                payload.get("text"),
+            )
+
+            if dedupe_key not in seen:
+                seen.add(dedupe_key)
+                payloads.append(payload)
+
+    reranked = rerank_knowledge_items(payloads, query)
+
+    return reranked[:limit]
 
 
 def compress_single_knowledge_item(item, query):
