@@ -73,6 +73,7 @@ Rules:
 - Include user goals, preferences, constraints, decisions, unresolved needs, and changed information.
 - If the user changed their mind, keep the latest value.
 - Do not include small talk.
+- Support English, Arabic, and Egyptian Arabic.
 - Keep it concise.
 
 Return JSON only:
@@ -122,6 +123,15 @@ def mock_memory_decision(variables):
             "confidence": 0.7,
         })
 
+    transmission = variables.get("transmission")
+    if transmission:
+        memories.append({
+            "text": f"User prefers {transmission} transmission.",
+            "type": "preference",
+            "importance": 0.6,
+            "confidence": 0.7,
+        })
+
     budget = variables.get("budget_max")
     currency = variables.get("currency", "")
     if budget:
@@ -159,6 +169,24 @@ def mock_memory_decision(variables):
             "confidence": 0.75,
         })
 
+    appointment_time = variables.get("appointment_time")
+    if appointment_time:
+        memories.append({
+            "text": f"User prefers appointments in the {appointment_time}.",
+            "type": "preference",
+            "importance": 0.55,
+            "confidence": 0.65,
+        })
+
+    insurance_provider = variables.get("insurance_provider")
+    if insurance_provider:
+        memories.append({
+            "text": f"User mentioned insurance preference/provider: {insurance_provider}.",
+            "type": "preference",
+            "importance": 0.55,
+            "confidence": 0.65,
+        })
+
     return memories
 
 
@@ -193,6 +221,7 @@ Remember only durable information:
 - recurring interests
 - budget range
 - preferred brand/service/doctor/branch
+- preferred appointment time
 - important constraints
 - unresolved long-term needs
 
@@ -203,6 +232,8 @@ Do not remember:
 - low-confidence assumptions
 
 If the user changed their mind, remember only the latest preference.
+
+Support English, Arabic, and Egyptian Arabic.
 
 Return JSON only:
 {{
