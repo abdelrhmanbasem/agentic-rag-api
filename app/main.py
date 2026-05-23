@@ -9,6 +9,8 @@ from app.config import (
     RECENT_MESSAGES_LIMIT,
     KNOWLEDGE_TOP_K,
     MEMORY_TOP_K,
+    RAG_CACHE_ENABLED,
+    RAG_CACHE_MAX_AGE_MINUTES,
 )
 from app.db import (
     init_db,
@@ -25,6 +27,9 @@ from app.db import (
     upsert_knowledge_document,
     list_knowledge_documents,
     list_long_term_memories,
+    save_rag_cache,
+    get_rag_cache,
+    log_estimated_usage,
 )
 from app.llm import chat_text, route_message, model_for_tier
 from app.rag import (
@@ -32,6 +37,7 @@ from app.rag import (
     ingest_document,
     search_knowledge,
     search_memories,
+    compress_knowledge,
 )
 from app.variables import extract_variables, apply_variable_patch
 from app.memory import (
@@ -103,6 +109,7 @@ def health():
     return {
         "status": "ok",
         "mock_mode": MOCK_MODE,
+        "rag_cache_enabled": RAG_CACHE_ENABLED,
     }
 
 
@@ -195,11 +202,13 @@ def knowledge_search(req: KnowledgeSearchRequest, x_api_key: str = Header(defaul
         limit=req.limit,
     )
 
+    compressed = compress_knowledge(results, req.query)
+
     return {
         "assistant_id": req.assistant_id,
         "query": req.query,
-        "count": len(results),
-        "results": results,
+        "count": len(compressed),
+        "results": compressed,
     }
 
 
@@ -358,6 +367,44 @@ Missing variables:
     return answer, model, selected_model_tier
 
 
+def should_use_cached_rag(message, route):
+    if not RAG_CACHE_ENABLED:
+        return False
+
+    if not route.get("needs_rag", True):
+        return False
+
+    text = message.lower().strip()
+
+    followup_markers = [
+        "it",
+        "that",
+        "this",
+        "its",
+        "is it",
+        "does it",
+        "what about",
+        "how many",
+        "automatic",
+        "manual",
+        "km",
+        "color",
+        "available",
+        "book it",
+        "see it",
+        "ده",
+        "دي",
+        "دا",
+        "العربية",
+        "العربيه",
+        "متاح",
+        "اوتوماتيك",
+        "كام كيلو",
+    ]
+
+    return any(marker in text for marker in followup_markers)
+
+
 @app.post("/chat")
 def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
@@ -438,8 +485,32 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         route["selected_model_tier"] = "cheap"
 
     knowledge = []
+    knowledge_source = "none"
+
     if route.get("needs_rag", True):
-        knowledge = search_knowledge(req.assistant_id, req.message, limit=KNOWLEDGE_TOP_K)
+        cached = get_rag_cache(req.conversation_id, RAG_CACHE_MAX_AGE_MINUTES)
+
+        if cached and should_use_cached_rag(req.message, route):
+            knowledge = cached.get("compressed_payload") or cached.get("knowledge_payload") or []
+            knowledge_source = "cache"
+        else:
+            raw_knowledge = search_knowledge(
+                req.assistant_id,
+                req.message,
+                limit=KNOWLEDGE_TOP_K,
+            )
+            knowledge = compress_knowledge(raw_knowledge, req.message)
+            knowledge_source = "qdrant"
+
+            if raw_knowledge:
+                save_rag_cache(
+                    conversation_id=req.conversation_id,
+                    assistant_id=req.assistant_id,
+                    user_id=req.user_id,
+                    query=req.message,
+                    knowledge_payload=raw_knowledge,
+                    compressed_payload=knowledge,
+                )
 
     memories = []
     if route.get("needs_memory", True):
@@ -511,6 +582,31 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if extraction.get("intent") == "urgent_medical_issue":
         recommended_next_action = "urgent_human_handoff"
 
+    log_estimated_usage(
+        assistant_id=req.assistant_id,
+        conversation_id=req.conversation_id,
+        user_id=req.user_id,
+        model=model,
+        purpose="chat",
+        input_obj={
+            "message": req.message,
+            "summary": summary,
+            "variables": updated_variables,
+            "knowledge": knowledge,
+            "memories": memories,
+            "route": route,
+        },
+        output_text=answer,
+        metadata={
+            "mock_mode": MOCK_MODE,
+            "knowledge_source": knowledge_source,
+            "model_tier": tier,
+            "answer_mode": route.get("answer_mode"),
+            "needs_rag": route.get("needs_rag"),
+            "needs_memory": route.get("needs_memory"),
+        },
+    )
+
     return {
         "answer": answer,
         "assistant_id": req.assistant_id,
@@ -523,6 +619,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "recommended_next_action": recommended_next_action,
         "route": route,
         "knowledge_used": knowledge,
+        "knowledge_source": knowledge_source,
         "memories_used": memories,
         "summary": updated_summary,
         "long_term_memories_written": long_term_memories_written,
