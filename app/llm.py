@@ -13,6 +13,33 @@ from app.config import (
 _client = None
 
 
+SHORT_ACKS = {
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "yes",
+    "no",
+    "تمام",
+    "تماما",
+    "تم",
+    "اوكي",
+    "أوكي",
+    "حاضر",
+    "ماشي",
+    "شكرا",
+    "شكرًا",
+    "تسلم",
+    "اه",
+    "ايوه",
+    "طيب",
+    "اشطا",
+}
+
+
 def get_client():
     global _client
     if _client is None:
@@ -73,7 +100,7 @@ def mock_route_message(user_message, variables):
         "reason": "Mock router decision.",
     }
 
-    if len(text) <= 3 or text in ["hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "yes", "no"]:
+    if len(text) <= 3 or text in SHORT_ACKS:
         route.update({
             "needs_rag": False,
             "needs_memory": False,
@@ -107,6 +134,18 @@ def mock_route_message(user_message, variables):
         "clinic",
         "appointment",
         "booking",
+        "متاح",
+        "السعر",
+        "سعر",
+        "بكام",
+        "تكلفة",
+        "دكتور",
+        "طبيب",
+        "عيادة",
+        "حجز",
+        "موعد",
+        "تأمين",
+        "فرع",
     ]
 
     if any(keyword in text for keyword in rag_keywords):
@@ -125,6 +164,16 @@ def mock_route_message(user_message, variables):
         "chest pain",
         "report you",
         "cancel",
+        "غاضب",
+        "شكوى",
+        "غير مقبول",
+        "طوارئ",
+        "مستعجل",
+        "ألم شديد",
+        "نزيف",
+        "ألم في الصدر",
+        "إلغاء",
+        "الغي",
     ]
 
     if any(keyword in text for keyword in risk_keywords):
