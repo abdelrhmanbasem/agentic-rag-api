@@ -38,6 +38,7 @@ from app.memory import (
     update_conversation_summary,
     decide_and_write_long_term_memories,
 )
+from app.policies import should_skip_generation, build_no_llm_answer
 
 app = FastAPI(title="Agentic RAG API")
 
@@ -424,6 +425,18 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         updated_variables,
     )
 
+    skip_generation = should_skip_generation(
+        message=req.message,
+        variable_updates=extraction.get("updates", {}),
+        intent=extraction.get("intent", "general_question"),
+    )
+
+    if skip_generation:
+        route["answer_mode"] = "no_llm"
+        route["needs_rag"] = False
+        route["needs_memory"] = False
+        route["selected_model_tier"] = "cheap"
+
     knowledge = []
     if route.get("needs_rag", True):
         knowledge = search_knowledge(req.assistant_id, req.message, limit=KNOWLEDGE_TOP_K)
@@ -437,18 +450,28 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             limit=MEMORY_TOP_K,
         )
 
-    answer, model, tier = generate_answer(
-        assistant=assistant,
-        recent_messages=recent_messages,
-        summary=summary,
-        variables=updated_variables,
-        knowledge=knowledge,
-        memories=memories,
-        user_message=req.message,
-        intent=extraction.get("intent", "general_question"),
-        missing_variables=extraction.get("missing_variables", []),
-        selected_model_tier=route.get("selected_model_tier", "normal"),
-    )
+    if route.get("answer_mode") == "no_llm":
+        answer = build_no_llm_answer(
+            message=req.message,
+            variables=updated_variables,
+            variable_updates=extraction.get("updates", {}),
+            missing_variables=extraction.get("missing_variables", []),
+        )
+        model = "none"
+        tier = "no_llm"
+    else:
+        answer, model, tier = generate_answer(
+            assistant=assistant,
+            recent_messages=recent_messages,
+            summary=summary,
+            variables=updated_variables,
+            knowledge=knowledge,
+            memories=memories,
+            user_message=req.message,
+            intent=extraction.get("intent", "general_question"),
+            missing_variables=extraction.get("missing_variables", []),
+            selected_model_tier=route.get("selected_model_tier", "normal"),
+        )
 
     save_message(
         req.conversation_id,
