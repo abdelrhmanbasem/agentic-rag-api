@@ -227,6 +227,138 @@ def result_score(result):
     return float(getattr(result, "score", 0.0) or 0.0)
 
 
+def clean_words(text):
+    return set(
+        w.lower()
+        for w in re.findall(r"[\w\u0600-\u06FF]+", text or "")
+        if len(w) > 1
+    )
+
+
+def parse_budget_from_query(query_text):
+    query_text = (query_text or "").lower()
+
+    patterns = [
+        r"under\s+(\d+(?:\.\d+)?)\s*(million|m|k|thousand)?",
+        r"up to\s+(\d+(?:\.\d+)?)\s*(million|m|k|thousand)?",
+        r"budget\s+(\d+(?:\.\d+)?)\s*(million|m|k|thousand)?",
+        r"لحد\s+(\d+(?:\.\d+)?)\s*(مليون|الف|ألف)?",
+        r"حدود\s+(\d+(?:\.\d+)?)\s*(مليون|الف|ألف)?",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, query_text)
+        if not match:
+            continue
+
+        number = float(match.group(1))
+        unit = match.group(2)
+
+        if unit in ["million", "m", "مليون"]:
+            number *= 1000000
+        elif unit in ["k", "thousand", "الف", "ألف"]:
+            number *= 1000
+
+        return int(number)
+
+    return None
+
+
+def extract_prices_from_text(text):
+    text = (text or "").lower()
+    prices = []
+
+    for match in re.findall(r"(\d{5,})\s*egp", text):
+        try:
+            prices.append(int(match))
+        except Exception:
+            pass
+
+    for match in re.findall(r"(\d{5,})\s*جنيه", text):
+        try:
+            prices.append(int(match))
+        except Exception:
+            pass
+
+    return prices
+
+
+def rerank_knowledge_items(items, query):
+    query_text = (query or "").lower()
+    query_words = clean_words(query_text)
+    budget = parse_budget_from_query(query_text)
+
+    requested_brands = []
+
+    brand_aliases = {
+        "bmw": ["bmw", "بي ام", "بي ام دبليو"],
+        "mercedes": ["mercedes", "مرسيدس"],
+        "hyundai": ["hyundai", "هيونداي"],
+        "toyota": ["toyota", "تويوتا"],
+        "kia": ["kia", "كيا"],
+        "nissan": ["nissan", "نيسان"],
+        "audi": ["audi", "اودي"],
+    }
+
+    for normalized_brand, aliases in brand_aliases.items():
+        if any(alias in query_text for alias in aliases):
+            requested_brands.append(normalized_brand)
+
+    def item_score(item):
+        text = (item.get("text") or "").lower()
+        title = (item.get("title") or "").lower()
+        combined = text + " " + title
+        words = clean_words(combined)
+
+        score = 0
+
+        # Keep Qdrant score as a weak signal.
+        score += float(item.get("score", 0.0) or 0.0) * 5
+
+        # Keyword overlap.
+        score += len(words.intersection(query_words)) * 10
+
+        # Strong brand boosts.
+        for brand, aliases in brand_aliases.items():
+            brand_in_query = brand in requested_brands
+            brand_in_item = any(alias in combined for alias in aliases)
+
+            if brand_in_query and brand_in_item:
+                score += 120
+
+            if requested_brands and not brand_in_query and brand_in_item:
+                score -= 60
+
+        # Budget awareness.
+        if budget:
+            prices = extract_prices_from_text(combined)
+
+            if prices:
+                best_price = min(prices)
+
+                if best_price <= budget:
+                    score += 90
+                else:
+                    score -= 90
+
+        # Helpful matching terms.
+        if "automatic" in query_text and "automatic" in combined:
+            score += 30
+
+        if "manual" in query_text and "manual" in combined:
+            score += 30
+
+        if "اوتوماتيك" in query_text and "اوتوماتيك" in combined:
+            score += 30
+
+        if "مانيوال" in query_text and "مانيوال" in combined:
+            score += 30
+
+        return score
+
+    return sorted(items, key=item_score, reverse=True)
+
+
 def search_knowledge(assistant_id, query, limit=4):
     ensure_qdrant()
 
@@ -245,15 +377,7 @@ def search_knowledge(assistant_id, query, limit=4):
             payload["score"] = score
             payloads.append(payload)
 
-    return payloads
-
-
-def clean_words(text):
-    return set(
-        w.lower()
-        for w in re.findall(r"[\w\u0600-\u06FF]+", text)
-        if len(w) > 1
-    )
+    return rerank_knowledge_items(payloads, query)
 
 
 def compress_single_knowledge_item(item, query):
