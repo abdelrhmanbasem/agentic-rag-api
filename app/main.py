@@ -23,9 +23,12 @@ from app.rag import (
     ingest_document,
     search_knowledge,
     search_memories,
-    write_memory,
 )
 from app.variables import extract_variables, apply_variable_patch
+from app.memory import (
+    update_conversation_summary,
+    decide_and_write_long_term_memories,
+)
 
 app = FastAPI(title="Agentic RAG API")
 
@@ -113,6 +116,7 @@ def create_assistant(req: AssistantRequest, x_api_key: str = Header(default=""))
 @app.post("/schemas")
 def create_schema(req: SchemaRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
+
     save_schema(req.assistant_id, req.schema)
 
     return {
@@ -234,7 +238,16 @@ def build_mock_answer(intent, variables, missing_variables, knowledge):
         return "Sure — I can help with booking. What day and time works best for you?"
 
     if intent == "complaint":
-        return "I’m sorry about that. I’ll help you resolve it. Can you share a few more details so I can escalate it properly?"
+        return (
+            "I’m sorry about that. I’ll help you resolve it. "
+            "Can you share a few more details so I can escalate it properly?"
+        )
+
+    if intent == "urgent_medical_issue":
+        return (
+            "This may need urgent medical attention. Please contact emergency services "
+            "or the clinic directly right away."
+        )
 
     return "Got it. I updated the details I understood. How can I help next?"
 
@@ -267,6 +280,7 @@ Memory policy:
 Rules:
 - Use current variables when relevant.
 - Use retrieved knowledge when relevant.
+- Use long-term memories only when relevant.
 - Ask for missing important variables naturally.
 - Be concise and useful.
 - Do not reveal internal routing, memory, or RAG.
@@ -307,12 +321,24 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
 
     assistant = get_or_create_assistant(req.assistant_id)
-    ensure_conversation(req.conversation_id, req.assistant_id, req.user_id, req.channel)
 
-    save_message(req.conversation_id, req.assistant_id, req.user_id, "user", req.message)
+    ensure_conversation(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        req.channel,
+    )
+
+    save_message(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        "user",
+        req.message,
+    )
 
     recent_messages = get_recent_messages(req.conversation_id, limit=10)
-    summary = get_summary(req.conversation_id)
+    old_summary = get_summary(req.conversation_id)
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
 
@@ -340,12 +366,18 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     )
 
     knowledge = search_knowledge(req.assistant_id, req.message, limit=4)
-    memories = search_memories(req.assistant_id, req.user_id, req.message, limit=5)
+
+    memories = search_memories(
+        req.assistant_id,
+        req.user_id,
+        req.message,
+        limit=5,
+    )
 
     answer, model, tier = generate_answer(
         assistant=assistant,
         recent_messages=recent_messages,
-        summary=summary,
+        summary=old_summary,
         variables=updated_variables,
         knowledge=knowledge,
         memories=memories,
@@ -354,19 +386,29 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         missing_variables=extraction.get("missing_variables", []),
     )
 
-    save_message(req.conversation_id, req.assistant_id, req.user_id, "assistant", answer)
+    save_message(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        "assistant",
+        answer,
+    )
 
-    if extraction.get("updates"):
-        memory_text = f"User variables updated: {extraction.get('updates')}"
-        write_memory(
-            assistant_id=req.assistant_id,
-            user_id=req.user_id,
-            conversation_id=req.conversation_id,
-            text=memory_text,
-            memory_type="variables",
-            importance=0.6,
-            confidence=extraction.get("confidence", 0.5),
-        )
+    updated_summary = update_conversation_summary(
+        conversation_id=req.conversation_id,
+        assistant_id=req.assistant_id,
+        user_id=req.user_id,
+        variables=updated_variables,
+    )
+
+    long_term_memories_written = decide_and_write_long_term_memories(
+        assistant_id=req.assistant_id,
+        user_id=req.user_id,
+        conversation_id=req.conversation_id,
+        summary=updated_summary,
+        recent_messages=get_recent_messages(req.conversation_id, limit=8),
+        variables=updated_variables,
+    )
 
     recommended_next_action = "continue_conversation"
 
@@ -378,6 +420,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
     if extraction.get("intent") == "complaint":
         recommended_next_action = "consider_human_handoff"
+
+    if extraction.get("intent") == "urgent_medical_issue":
+        recommended_next_action = "urgent_human_handoff"
 
     return {
         "answer": answer,
@@ -391,8 +436,10 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "recommended_next_action": recommended_next_action,
         "knowledge_used": knowledge,
         "memories_used": memories,
+        "summary": updated_summary,
+        "long_term_memories_written": long_term_memories_written,
         "model_used": model,
         "model_tier": tier,
         "mock_mode": MOCK_MODE,
-        "memory_saved": bool(extraction.get("updates")),
+        "memory_saved": bool(long_term_memories_written),
     }
