@@ -12,14 +12,19 @@ from app.db import (
     save_message,
     get_recent_messages,
     get_summary,
-    save_summary,
     save_schema,
     get_schema,
     get_variables,
     save_variables,
 )
 from app.llm import chat_text, choose_model
-from app.rag import ensure_qdrant, ingest_document, search_knowledge, search_memories, write_memory
+from app.rag import (
+    ensure_qdrant,
+    ingest_document,
+    search_knowledge,
+    search_memories,
+    write_memory,
+)
 from app.variables import extract_variables, apply_variable_patch
 
 app = FastAPI(title="Agentic RAG API")
@@ -43,6 +48,12 @@ class IngestRequest(BaseModel):
     document_id: str
     title: str
     text: str
+
+
+class KnowledgeSearchRequest(BaseModel):
+    assistant_id: str
+    query: str
+    limit: int = 4
 
 
 class ChatRequest(BaseModel):
@@ -140,6 +151,24 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
     }
 
 
+@app.post("/knowledge/search")
+def knowledge_search(req: KnowledgeSearchRequest, x_api_key: str = Header(default="")):
+    check_auth(x_api_key)
+
+    results = search_knowledge(
+        assistant_id=req.assistant_id,
+        query=req.query,
+        limit=req.limit,
+    )
+
+    return {
+        "assistant_id": req.assistant_id,
+        "query": req.query,
+        "count": len(results),
+        "results": results,
+    }
+
+
 @app.get("/variables/{conversation_id}")
 def read_variables(conversation_id: str, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
@@ -177,8 +206,28 @@ def build_mock_answer(intent, variables, missing_variables, knowledge):
         budget = variables.get("budget_max")
         condition = variables.get("car_condition", "")
 
+        if knowledge:
+            first_match = knowledge[0]
+            title = first_match.get("title", "the knowledge base")
+            text = first_match.get("text", "")
+
+            if budget:
+                return (
+                    f"Got it — you're looking for a {condition} {brand} up to {budget}. "
+                    f"I found a relevant match in {title}: {text[:220]}"
+                )
+
+            return (
+                f"Got it — you're interested in {brand}. "
+                f"I found relevant information in {title}: {text[:220]}"
+            )
+
         if budget:
-            return f"Got it — you're looking for a {condition} {brand} up to {budget}. I can help narrow that down. What model or body type do you prefer?"
+            return (
+                f"Got it — you're looking for a {condition} {brand} up to {budget}. "
+                f"I can help narrow that down. What model or body type do you prefer?"
+            )
+
         return f"Got it — you're interested in {brand}. What budget range should I look within?"
 
     if intent == "booking_request":
@@ -190,7 +239,17 @@ def build_mock_answer(intent, variables, missing_variables, knowledge):
     return "Got it. I updated the details I understood. How can I help next?"
 
 
-def generate_answer(assistant, recent_messages, summary, variables, knowledge, memories, user_message, intent, missing_variables):
+def generate_answer(
+    assistant,
+    recent_messages,
+    summary,
+    variables,
+    knowledge,
+    memories,
+    user_message,
+    intent,
+    missing_variables,
+):
     model, tier = choose_model(user_message)
 
     if MOCK_MODE:
@@ -310,10 +369,13 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         )
 
     recommended_next_action = "continue_conversation"
+
     if extraction.get("missing_variables"):
         recommended_next_action = "ask_clarifying_question"
+
     if extraction.get("intent") == "booking_request":
         recommended_next_action = "collect_booking_details"
+
     if extraction.get("intent") == "complaint":
         recommended_next_action = "consider_human_handoff"
 
