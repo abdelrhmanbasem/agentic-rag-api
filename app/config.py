@@ -22,3 +22,13 @@ MODEL_STRONG = os.getenv("MODEL_STRONG", "gpt-4o-mini")
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "1536"))
+
+RECENT_MESSAGES_LIMIT = int(os.getenv("RECENT_MESSAGES_LIMIT", "10"))
+SUMMARY_TRIGGER_MESSAGE_COUNT = int(os.getenv("SUMMARY_TRIGGER_MESSAGE_COUNT", "6"))
+KNOWLEDGE_TOP_K = int(os.getenv("KNOWLEDGE_TOP_K", "4"))
+MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
+
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "700"))
+
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.0"))
+MEMORY_MIN_SCORE = float(os.getenv("MEMORY_MIN_SCORE", "0.0"))
