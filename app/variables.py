@@ -3,6 +3,74 @@ from app.config import MOCK_MODE
 from app.llm import chat_json, extraction_model
 
 
+CANONICAL_INTENTS = {
+    "general_question",
+    "car_search",
+    "viewing_request",
+    "booking_request",
+    "service_question",
+    "insurance_question",
+    "complaint",
+    "human_handoff",
+    "urgent_medical_issue",
+    "variable_update",
+    "provide_contact",
+}
+
+
+INTENT_ALIASES = {
+    "car_inquiry": "car_search",
+    "car_enquiry": "car_search",
+    "car_purchase": "car_search",
+    "car_buying": "car_search",
+    "buy_car": "car_search",
+    "vehicle_search": "car_search",
+    "vehicle_inquiry": "car_search",
+    "vehicle_enquiry": "car_search",
+    "vehicle_purchase": "car_search",
+    "inventory_question": "car_search",
+    "product_search": "car_search",
+    "product_inquiry": "car_search",
+
+    "schedule_viewing": "viewing_request",
+    "book_viewing": "viewing_request",
+    "viewing": "viewing_request",
+    "viewing_inquiry": "viewing_request",
+    "test_drive": "viewing_request",
+    "schedule_test_drive": "viewing_request",
+    "visit_request": "viewing_request",
+
+    "appointment": "booking_request",
+    "appointment_request": "booking_request",
+    "schedule_appointment": "booking_request",
+    "book_appointment": "booking_request",
+    "clinic_booking": "booking_request",
+    "reservation": "booking_request",
+
+    "handoff": "human_handoff",
+    "human": "human_handoff",
+    "agent_request": "human_handoff",
+    "talk_to_human": "human_handoff",
+
+    "complain": "complaint",
+    "customer_complaint": "complaint",
+
+    "emergency": "urgent_medical_issue",
+    "urgent": "urgent_medical_issue",
+    "urgent_case": "urgent_medical_issue",
+    "medical_emergency": "urgent_medical_issue",
+}
+
+
+def normalize_intent(intent: str) -> str:
+    intent = (intent or "general_question").strip().lower()
+
+    if intent in CANONICAL_INTENTS:
+        return intent
+
+    return INTENT_ALIASES.get(intent, intent)
+
+
 def apply_variable_patch(existing, updates, deletions):
     result = dict(existing or {})
 
@@ -44,7 +112,10 @@ def normalize_arabic(text):
 def extract_budget(text, existing_variables):
     normalized = normalize_arabic(text.lower())
 
-    budget_match = re.search(r"(\d+(?:\.\d+)?)\s*(million|m|k|thousand|مليون|الف|ألف)?", normalized)
+    budget_match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(million|m|k|thousand|مليون|الف|ألف)?",
+        normalized,
+    )
     if not budget_match:
         return None
 
@@ -101,431 +172,8 @@ def extract_name(user_message):
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, user_message, re.IGNORECASE)
+        match = re.search(user_message=user_message, pattern=pattern, flags=re.IGNORECASE)
         if match:
             return match.group(1).strip()
 
     return None
-
-
-def mock_extract_variables(schema, existing_variables, recent_messages, user_message):
-    text = user_message.lower()
-    ar_text = normalize_arabic(text)
-    updates = {}
-    deletions = []
-    intent = existing_variables.get("intent", "general_question") if existing_variables else "general_question"
-
-    whatsapp_words = [
-        "whatsapp",
-        "whats app",
-        "واتساب",
-        "واتس",
-        "الواتساب",
-        "كلمني واتساب",
-        "ابعتلي واتساب",
-    ]
-
-    no_call_words = [
-        "no calls",
-        "don't call",
-        "dont call",
-        "ماتتصلش",
-        "ما تتصلش",
-        "متتصلش",
-        "بلاش مكالمات",
-        "مش عايز مكالمات",
-        "مش عايزه مكالمات",
-        "ما تكلمنيش مكالمات",
-        "ماتكلمنيش مكالمات",
-    ]
-
-    if any(word in text for word in whatsapp_words) or any(word in ar_text for word in whatsapp_words):
-        if schema_has(schema, "preferred_contact_method"):
-            updates["preferred_contact_method"] = "WhatsApp"
-
-    if any(word in text for word in no_call_words) or any(word in ar_text for word in no_call_words):
-        if schema_has(schema, "preferred_contact_method"):
-            updates["preferred_contact_method"] = "WhatsApp"
-
-    brand_map = {
-        "bmw": "BMW",
-        "بي ام": "BMW",
-        "بي ام دبليو": "BMW",
-        "مرسيدس": "Mercedes",
-        "mercedes": "Mercedes",
-        "audi": "Audi",
-        "اودي": "Audi",
-        "toyota": "Toyota",
-        "تويوتا": "Toyota",
-        "hyundai": "Hyundai",
-        "هيونداي": "Hyundai",
-        "kia": "Kia",
-        "كيا": "Kia",
-        "nissan": "Nissan",
-        "نيسان": "Nissan",
-        "ford": "Ford",
-        "فورد": "Ford",
-        "tesla": "Tesla",
-        "تسلا": "Tesla",
-    }
-
-    for brand_word, brand_value in brand_map.items():
-        if brand_word in text or brand_word in ar_text:
-            if schema_has(schema, "car_brand"):
-                updates["car_brand"] = brand_value
-                intent = "car_search"
-
-    used_words = ["used", "مستعمل", "مستعمله", "استعمال", "كسر زيرو"]
-    new_words = ["brand new", "new car", "new one", "زيرو", "جديد", "جديده"]
-
-    if any(word in text for word in used_words) or any(word in ar_text for word in used_words):
-        if schema_has(schema, "car_condition"):
-            updates["car_condition"] = "used"
-            intent = "car_search"
-
-    if any(word in text for word in new_words) or any(word in ar_text for word in new_words):
-        if schema_has(schema, "car_condition"):
-            updates["car_condition"] = "new"
-            intent = "car_search"
-
-    automatic_words = ["automatic", "اوتوماتيك", "اوتو", "اتوماتيك"]
-    manual_words = ["manual", "مانيوال", "عادي"]
-
-    if any(word in text for word in automatic_words) or any(word in ar_text for word in automatic_words):
-        if schema_has(schema, "transmission"):
-            updates["transmission"] = "automatic"
-
-    if any(word in text for word in manual_words) or any(word in ar_text for word in manual_words):
-        if schema_has(schema, "transmission"):
-            updates["transmission"] = "manual"
-
-    budget = extract_budget(text, existing_variables or {})
-    if budget and schema_has(schema, "budget_max"):
-        updates["budget_max"] = budget
-        if schema_has(schema, "currency"):
-            updates["currency"] = "EGP"
-        intent = "car_search"
-
-    forget_budget_words = [
-        "forget budget",
-        "forget the budget",
-        "ignore budget",
-        "شيل الميزانيه",
-        "شيل الميزانية",
-        "انس الميزانيه",
-        "انس الميزانية",
-        "مش مهم الميزانيه",
-        "مش مهم الميزانية",
-    ]
-
-    if any(word in text for word in forget_budget_words) or any(word in ar_text for word in forget_budget_words):
-        deletions.append("budget_max")
-
-    service_map = {
-        "cleaning": "cleaning",
-        "teeth cleaning": "teeth cleaning",
-        "dental": "dental",
-        "dentist": "dentist",
-        "consultation": "consultation",
-        "checkup": "checkup",
-        "check-up": "checkup",
-        "orthodontics": "orthodontics",
-        "xray": "x-ray",
-        "x-ray": "x-ray",
-        "blood test": "blood test",
-        "dermatology": "dermatology",
-        "cardiology": "cardiology",
-        "تنظيف": "teeth cleaning",
-        "تنضيف": "teeth cleaning",
-        "اسنان": "dental",
-        "سنان": "dental",
-        "كشف": "consultation",
-        "استشاره": "consultation",
-        "استشارة": "consultation",
-        "اشعه": "x-ray",
-        "أشعه": "x-ray",
-        "اشعة": "x-ray",
-        "تحليل": "blood test",
-        "تحاليل": "blood test",
-        "جلديه": "dermatology",
-        "جلدية": "dermatology",
-        "قلب": "cardiology",
-    }
-
-    for service_word, service_value in service_map.items():
-        if service_word in text or service_word in ar_text:
-            if schema_has(schema, "service_needed"):
-                updates["service_needed"] = service_value
-                intent = "service_question"
-
-    if schema_has(schema, "doctor_preference"):
-        doctor_patterns = [
-            r"doctor\s+([a-zA-Z]+)",
-            r"dr\.?\s+([a-zA-Z]+)",
-            r"دكتور\s+([a-zA-Z\u0600-\u06FF]+)",
-            r"دكتوره\s+([a-zA-Z\u0600-\u06FF]+)",
-            r"الدكتور\s+([a-zA-Z\u0600-\u06FF]+)",
-            r"الدكتوره\s+([a-zA-Z\u0600-\u06FF]+)",
-        ]
-
-        for pattern in doctor_patterns:
-            doctor_match = re.search(pattern, user_message, re.IGNORECASE)
-            if doctor_match:
-                updates["doctor_preference"] = doctor_match.group(1).strip()
-                break
-
-    insurance_words = ["insurance", "تأمين", "تامين", "التأمين", "التامين"]
-    if any(word in text for word in insurance_words) or any(word in ar_text for word in insurance_words):
-        if schema_has(schema, "insurance_provider"):
-            updates["insurance_provider"] = "mentioned"
-        intent = "insurance_question"
-
-    if schema_has(schema, "appointment_date"):
-        if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
-            updates["appointment_date"] = "tomorrow"
-        elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
-            updates["appointment_date"] = "today"
-        elif "saturday" in text or "السبت" in ar_text:
-            updates["appointment_date"] = "Saturday"
-        elif "sunday" in text or "الاحد" in ar_text:
-            updates["appointment_date"] = "Sunday"
-        elif "monday" in text or "الاتنين" in ar_text:
-            updates["appointment_date"] = "Monday"
-        elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
-            updates["appointment_date"] = "Tuesday"
-        elif "wednesday" in text or "الاربع" in ar_text:
-            updates["appointment_date"] = "Wednesday"
-        elif "thursday" in text or "الخميس" in ar_text:
-            updates["appointment_date"] = "Thursday"
-        elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
-            updates["appointment_date"] = "Friday"
-
-    if schema_has(schema, "appointment_time"):
-        if "morning" in text or "الصبح" in ar_text or "صباح" in ar_text:
-            updates["appointment_time"] = "morning"
-        elif "afternoon" in text or "بعد الضهر" in ar_text or "بعد الظهر" in text:
-            updates["appointment_time"] = "afternoon"
-        elif "evening" in text or "بليل" in ar_text or "بالليل" in ar_text or "المسا" in ar_text:
-            updates["appointment_time"] = "evening"
-
-    if schema_has(schema, "preferred_viewing_date"):
-        if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
-            updates["preferred_viewing_date"] = "tomorrow"
-        elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
-            updates["preferred_viewing_date"] = "today"
-        elif "saturday" in text or "السبت" in ar_text:
-            updates["preferred_viewing_date"] = "Saturday"
-        elif "sunday" in text or "الاحد" in ar_text:
-            updates["preferred_viewing_date"] = "Sunday"
-        elif "monday" in text or "الاتنين" in ar_text:
-            updates["preferred_viewing_date"] = "Monday"
-        elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
-            updates["preferred_viewing_date"] = "Tuesday"
-        elif "wednesday" in text or "الاربع" in ar_text:
-            updates["preferred_viewing_date"] = "Wednesday"
-        elif "thursday" in text or "الخميس" in ar_text:
-            updates["preferred_viewing_date"] = "Thursday"
-        elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
-            updates["preferred_viewing_date"] = "Friday"
-
-    if schema_has(schema, "location_branch"):
-        branch_patterns = [
-            r"branch\s+([a-zA-Z\u0600-\u06FF ]+)",
-            r"فرع\s+([a-zA-Z\u0600-\u06FF ]+)",
-            r"في فرع\s+([a-zA-Z\u0600-\u06FF ]+)",
-        ]
-
-        for pattern in branch_patterns:
-            branch_match = re.search(pattern, user_message, re.IGNORECASE)
-            if branch_match:
-                updates["location_branch"] = branch_match.group(1).strip()
-                break
-
-    booking_words = [
-        "book",
-        "appointment",
-        "visit",
-        "احجز",
-        "حجز",
-        "ميعاد",
-        "موعد",
-        "اقابل",
-        "اروح",
-        "زيارة",
-        "زياره",
-    ]
-
-    if any(word in text for word in booking_words) or any(word in ar_text for word in booking_words):
-        if schema_has(schema, "appointment_date") or schema_has(schema, "service_needed"):
-            intent = "booking_request"
-
-    viewing_words = [
-        "see it",
-        "view it",
-        "book viewing",
-        "book a viewing",
-        "schedule viewing",
-        "test drive",
-        "visit to see",
-        "viewing",
-        "عايز اشوفها",
-        "عايز أشوفها",
-        "عايز اشوفه",
-        "اشوفها",
-        "أشوفها",
-        "اشوفه",
-        "احجز معاينة",
-        "معاينة",
-        "معاينه",
-        "اتفرج عليها",
-        "اجربها",
-        "تجربة قيادة",
-        "تجربه قياده",
-    ]
-
-    if any(word in text for word in viewing_words) or any(word in ar_text for word in viewing_words):
-        intent = "viewing_request"
-
-        if schema_has(schema, "lead_stage"):
-            updates["lead_stage"] = "viewing_requested"
-
-    phone = extract_phone(user_message)
-    if phone and schema_has(schema, "phone_number"):
-        updates["phone_number"] = phone
-
-    name = extract_name(user_message)
-    if name and schema_has(schema, "patient_name"):
-        updates["patient_name"] = name
-
-    urgent_words = [
-        "urgent",
-        "emergency",
-        "severe pain",
-        "bleeding",
-        "chest pain",
-        "طوارئ",
-        "مستعجل",
-        "ضروري",
-        "الم شديد",
-        "وجع شديد",
-        "نزيف",
-        "الم في الصدر",
-        "مش قادر استحمل",
-    ]
-
-    if any(word in text for word in urgent_words) or any(word in ar_text for word in urgent_words):
-        if schema_has(schema, "urgency"):
-            updates["urgency"] = "emergency"
-        if schema_has(schema, "needs_human"):
-            updates["needs_human"] = True
-        intent = "urgent_medical_issue"
-
-    complaint_words = [
-        "refund",
-        "complaint",
-        "angry",
-        "unacceptable",
-        "شكوى",
-        "زعلان",
-        "غاضب",
-        "مش مقبول",
-        "غير مقبول",
-        "عايز فلوسي",
-        "استرداد",
-    ]
-
-    if any(word in text for word in complaint_words) or any(word in ar_text for word in complaint_words):
-        intent = "complaint"
-
-    if updates and schema_has(schema, "lead_stage"):
-        if intent == "booking_request":
-            updates["lead_stage"] = "collecting_details"
-        elif intent == "viewing_request":
-            updates["lead_stage"] = "viewing_requested"
-        elif intent == "urgent_medical_issue":
-            updates["lead_stage"] = "needs_human"
-        elif intent == "complaint":
-            updates["lead_stage"] = "needs_human"
-        else:
-            updates["lead_stage"] = "qualified"
-
-    missing = []
-    for key, config in (schema or {}).items():
-        if key == "intent":
-            continue
-
-        required = config.get("required", False) if isinstance(config, dict) else False
-
-        if required and key not in updates and key not in (existing_variables or {}):
-            missing.append(key)
-
-    return {
-        "intent": intent,
-        "updates": updates,
-        "deletions": deletions,
-        "missing_variables": list(dict.fromkeys(missing)),
-        "confidence": 0.75,
-        "notes": "Mock extraction used because MOCK_MODE is enabled.",
-    }
-
-
-def gpt_extract_variables(schema, existing_variables, recent_messages, user_message):
-    prompt = f"""
-You are a variable extraction engine.
-
-Update the conversation variables based on the latest user message.
-
-Variable schema:
-{schema}
-
-Existing variables:
-{existing_variables}
-
-Recent messages:
-{recent_messages}
-
-Latest user message:
-{user_message}
-
-Rules:
-- Extract only variables that exist in the schema.
-- If the user changes their mind, update the old value.
-- If the user contradicts previous info, prefer the latest explicit statement.
-- If the user says to forget/remove something, add that key to deletions.
-- Do not guess values.
-- Support English, Arabic, Egyptian Arabic, and common Franco Arabic.
-- Respect intent-specific required variables if present, but do not invent missing values.
-- Return JSON only.
-
-Return:
-{{
-  "intent": "string",
-  "updates": {{}},
-  "deletions": [],
-  "missing_variables": [],
-  "confidence": 0.0,
-  "notes": "short internal summary"
-}}
-"""
-
-    result = chat_json(
-        extraction_model(),
-        [{"role": "user", "content": prompt}],
-        max_tokens=600,
-    )
-
-    return {
-        "intent": result.get("intent", "general_question"),
-        "updates": result.get("updates", {}),
-        "deletions": result.get("deletions", []),
-        "missing_variables": result.get("missing_variables", []),
-        "confidence": result.get("confidence", 0.5),
-        "notes": result.get("notes", ""),
-    }
-
-
-def extract_variables(schema, existing_variables, recent_messages, user_message):
-    if MOCK_MODE:
-        return mock_extract_variables(schema, existing_variables, recent_messages, user_message)
-
-    return gpt_extract_variables(schema, existing_variables, recent_messages, user_message)
