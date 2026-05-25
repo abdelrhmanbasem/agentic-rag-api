@@ -140,12 +140,23 @@ def calculate_missing_required_variables(
     return missing
 
 
+def is_arabic_text(text: str) -> bool:
+    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
+
+
+def looks_mostly_english(text: str) -> bool:
+    text = text or ""
+
+    arabic_chars = len(re.findall(r"[\u0600-\u06FF]", text))
+    latin_chars = len(re.findall(r"[A-Za-z]", text))
+
+    return latin_chars > arabic_chars * 2
+
+
 def detect_reply_language_instruction(user_message: str) -> str:
     message = user_message or ""
 
-    has_arabic = bool(re.search(r"[\u0600-\u06FF]", message))
-
-    if has_arabic:
+    if is_arabic_text(message):
         return """
 LANGUAGE RULE:
 - The latest user message is Arabic or Egyptian Arabic.
@@ -162,6 +173,39 @@ LANGUAGE RULE:
 - If the latest user message is English, reply in English.
 - Keep the answer friendly, clear, and short.
 """
+
+
+def enforce_reply_language(user_message: str, answer: str, model: str) -> str:
+    """
+    Safety layer:
+    If the user wrote Arabic/Egyptian Arabic but the model answered mostly in English,
+    rewrite the answer into natural Egyptian Arabic before returning it.
+    """
+    if not is_arabic_text(user_message):
+        return answer
+
+    if not looks_mostly_english(answer):
+        return answer
+
+    rewrite_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Rewrite the assistant answer into natural Egyptian Arabic. "
+                "Do not add new facts. Do not remove important facts. "
+                "Keep car brands/models like BMW, 320i, Mercedes, C180 in English. "
+                "Keep prices, years, and kilometers exactly the same. "
+                "Use natural Egyptian Arabic phrasing. "
+                "Return only the rewritten answer."
+            ),
+        },
+        {
+            "role": "user",
+            "content": answer,
+        },
+    ]
+
+    return chat_text(model, rewrite_messages, max_tokens=300)
 
 
 @app.on_event("startup")
@@ -515,6 +559,8 @@ Missing variables:
     messages.extend(recent_messages)
 
     answer = chat_text(model, messages, max_tokens=700)
+    answer = enforce_reply_language(user_message, answer, model)
+
     return answer, model, selected_model_tier
 
 
