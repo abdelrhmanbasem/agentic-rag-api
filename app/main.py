@@ -99,6 +99,59 @@ def check_auth(x_api_key: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def normalize_intent(intent: str) -> str:
+    intent = (intent or "general_question").strip().lower()
+
+    aliases = {
+        # Car / vehicle sales
+        "car_inquiry": "car_search",
+        "car_enquiry": "car_search",
+        "car_purchase": "car_search",
+        "car_buying": "car_search",
+        "buy_car": "car_search",
+        "vehicle_search": "car_search",
+        "vehicle_inquiry": "car_search",
+        "vehicle_enquiry": "car_search",
+        "vehicle_purchase": "car_search",
+        "inventory_question": "car_search",
+        "product_search": "car_search",
+        "product_inquiry": "car_search",
+
+        # Viewing / appointment to see product
+        "schedule_viewing": "viewing_request",
+        "book_viewing": "viewing_request",
+        "viewing": "viewing_request",
+        "viewing_inquiry": "viewing_request",
+        "test_drive": "viewing_request",
+        "schedule_test_drive": "viewing_request",
+        "visit_request": "viewing_request",
+
+        # Booking
+        "appointment": "booking_request",
+        "appointment_request": "booking_request",
+        "schedule_appointment": "booking_request",
+        "book_appointment": "booking_request",
+        "clinic_booking": "booking_request",
+        "reservation": "booking_request",
+
+        # Human handoff / complaints
+        "handoff": "human_handoff",
+        "human": "human_handoff",
+        "agent_request": "human_handoff",
+        "talk_to_human": "human_handoff",
+        "complain": "complaint",
+        "customer_complaint": "complaint",
+
+        # Urgent
+        "emergency": "urgent_medical_issue",
+        "urgent": "urgent_medical_issue",
+        "urgent_case": "urgent_medical_issue",
+        "medical_emergency": "urgent_medical_issue",
+    }
+
+    return aliases.get(intent, intent)
+
+
 def calculate_missing_required_variables(
     schema: Dict[str, Any],
     variables: Dict[str, Any],
@@ -107,7 +160,7 @@ def calculate_missing_required_variables(
     missing = []
     variables = variables or {}
     schema = schema or {}
-    intent = intent or "general_question"
+    intent = normalize_intent(intent)
 
     for key, config in schema.items():
         if key == "intent":
@@ -125,6 +178,9 @@ def calculate_missing_required_variables(
         globally_required = config.get("required", False)
         required_for_intents = config.get("required_for_intents", []) or []
         not_required_for_intents = config.get("not_required_for_intents", []) or []
+
+        required_for_intents = [normalize_intent(i) for i in required_for_intents]
+        not_required_for_intents = [normalize_intent(i) for i in not_required_for_intents]
 
         if intent in not_required_for_intents:
             continue
@@ -146,10 +202,8 @@ def is_arabic_text(text: str) -> bool:
 
 def looks_mostly_english(text: str) -> bool:
     text = text or ""
-
     arabic_chars = len(re.findall(r"[\u0600-\u06FF]", text))
     latin_chars = len(re.findall(r"[A-Za-z]", text))
-
     return latin_chars > arabic_chars * 2
 
 
@@ -162,7 +216,8 @@ LANGUAGE RULE:
 - The latest user message is Arabic or Egyptian Arabic.
 - You MUST reply in natural Egyptian Arabic.
 - Do NOT reply in English.
-- Keep car brands and model names like BMW, Mercedes, Hyundai, 320i, C180 in English if needed.
+- Keep brand names, model names, doctor names, service names, and technical terms in English only when natural.
+- Keep car brands and models like BMW, Mercedes, Hyundai, 320i, C180 in English if needed.
 - Use Egyptian Arabic phrasing like: عربية، مستعملة، أوتوماتيك، سعرها، عاملة كام كيلو، تحب تشوفها؟
 - Keep the answer friendly, clear, and short.
 """
@@ -176,11 +231,6 @@ LANGUAGE RULE:
 
 
 def enforce_reply_language(user_message: str, answer: str, model: str) -> str:
-    """
-    Safety layer:
-    If the user wrote Arabic/Egyptian Arabic but the model answered mostly in English,
-    rewrite the answer into natural Egyptian Arabic before returning it.
-    """
     if not is_arabic_text(user_message):
         return answer
 
@@ -193,8 +243,8 @@ def enforce_reply_language(user_message: str, answer: str, model: str) -> str:
             "content": (
                 "Rewrite the assistant answer into natural Egyptian Arabic. "
                 "Do not add new facts. Do not remove important facts. "
-                "Keep car brands/models like BMW, 320i, Mercedes, C180 in English. "
-                "Keep prices, years, and kilometers exactly the same. "
+                "Keep brand/model names like BMW, 320i, Mercedes, C180 in English. "
+                "Keep prices, years, phone numbers, dates, and kilometers exactly the same. "
                 "Use natural Egyptian Arabic phrasing. "
                 "Return only the rewritten answer."
             ),
@@ -436,6 +486,8 @@ def choose_best_knowledge_for_variables(knowledge, variables):
 
 
 def build_mock_answer(intent, variables, missing_variables, knowledge):
+    intent = normalize_intent(intent)
+
     if intent == "car_search":
         brand = variables.get("car_brand", "a suitable car")
         budget = variables.get("budget_max")
@@ -499,6 +551,7 @@ def generate_answer(
     missing_variables,
     selected_model_tier,
 ):
+    intent = normalize_intent(intent)
     model = model_for_tier(selected_model_tier)
 
     if MOCK_MODE:
@@ -523,6 +576,8 @@ Rules:
 - Use long-term memories only when relevant.
 - Ask for missing important variables naturally.
 - Always follow the LANGUAGE RULE above.
+- Continue the conversation naturally after acknowledging what was captured.
+- If the user asks about buying, searching, booking, viewing, pricing, availability, or services, do not stop at acknowledgement; ask the next useful question.
 - If knowledge contains prices, kilometers, model years, or availability, use them accurately.
 - Do not invent cars, prices, appointment slots, doctors, services, or policies.
 - Be concise and useful.
@@ -647,6 +702,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         user_message=req.message,
     )
 
+    route["intent_hint"] = normalize_intent(route.get("intent_hint", "general_question"))
+
     if route.get("needs_variable_extraction", True):
         extraction = extract_variables(
             schema=schema,
@@ -664,16 +721,19 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "notes": "Variable extraction skipped by router.",
         }
 
+    extraction["intent"] = normalize_intent(extraction.get("intent", "general_question"))
+
     updated_variables = apply_variable_patch(
         existing_variables,
         extraction.get("updates", {}),
         extraction.get("deletions", []),
     )
 
-    if extraction.get("intent"):
-        updated_variables["intent"] = extraction["intent"]
+    current_intent = normalize_intent(
+        extraction.get("intent") or updated_variables.get("intent") or "general_question"
+    )
 
-    current_intent = extraction.get("intent") or updated_variables.get("intent") or "general_question"
+    updated_variables["intent"] = current_intent
 
     missing_required_variables = calculate_missing_required_variables(
         schema=schema,
