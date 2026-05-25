@@ -103,7 +103,6 @@ def normalize_intent(intent: str) -> str:
     intent = (intent or "general_question").strip().lower()
 
     aliases = {
-        # Car / vehicle sales
         "car_inquiry": "car_search",
         "car_enquiry": "car_search",
         "car_purchase": "car_search",
@@ -117,7 +116,6 @@ def normalize_intent(intent: str) -> str:
         "product_search": "car_search",
         "product_inquiry": "car_search",
 
-        # Viewing / appointment to see product
         "schedule_viewing": "viewing_request",
         "book_viewing": "viewing_request",
         "viewing": "viewing_request",
@@ -126,7 +124,6 @@ def normalize_intent(intent: str) -> str:
         "schedule_test_drive": "viewing_request",
         "visit_request": "viewing_request",
 
-        # Booking
         "appointment": "booking_request",
         "appointment_request": "booking_request",
         "schedule_appointment": "booking_request",
@@ -134,7 +131,6 @@ def normalize_intent(intent: str) -> str:
         "clinic_booking": "booking_request",
         "reservation": "booking_request",
 
-        # Human handoff / complaints
         "handoff": "human_handoff",
         "human": "human_handoff",
         "agent_request": "human_handoff",
@@ -142,7 +138,6 @@ def normalize_intent(intent: str) -> str:
         "complain": "complaint",
         "customer_complaint": "complaint",
 
-        # Urgent
         "emergency": "urgent_medical_issue",
         "urgent": "urgent_medical_issue",
         "urgent_case": "urgent_medical_issue",
@@ -208,17 +203,6 @@ def looks_mostly_english(text: str) -> bool:
 
 
 def is_user_question(message: str) -> bool:
-    """
-    Hard safety guard used in main.py.
-
-    Questions must never be handled by the no-LLM acknowledgement path.
-    This protects follow-ups like:
-    - هي أوتوماتيك؟
-    - عاملة كام كيلو؟
-    - سعرها كام؟
-    - Is it automatic?
-    - How many km?
-    """
     text = (message or "").lower().strip()
 
     if not text:
@@ -227,8 +211,6 @@ def is_user_question(message: str) -> bool:
     question_markers = [
         "?",
         "؟",
-
-        # English
         "is ",
         "are ",
         "do ",
@@ -242,8 +224,6 @@ def is_user_question(message: str) -> bool:
         "where ",
         "why ",
         "which ",
-
-        # Arabic / Egyptian Arabic
         "هي ",
         "هو ",
         "هل ",
@@ -564,6 +544,125 @@ def choose_best_knowledge_for_variables(knowledge, variables):
     return ranked[0]
 
 
+def extract_knowledge_facts(item):
+    if not item:
+        return {}
+
+    text = item.get("text", "") or ""
+    lower = text.lower()
+    facts = {}
+
+    model_match = re.search(
+        r"\b(BMW\s+320i|Mercedes\s+C180|Hyundai\s+Tucson|Toyota\s+\w+|Kia\s+\w+|Nissan\s+\w+|Audi\s+\w+)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if model_match:
+        facts["matched_car_model"] = model_match.group(1)
+
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    if year_match:
+        facts["matched_car_year"] = year_match.group(1)
+
+    km_match = re.search(r"(\d{2,6})\s*km", text, re.IGNORECASE)
+    if km_match:
+        try:
+            facts["matched_car_km"] = int(km_match.group(1))
+        except Exception:
+            pass
+
+    price_match = re.search(r"(\d{5,})\s*EGP", text, re.IGNORECASE)
+    if price_match:
+        try:
+            facts["matched_car_price"] = int(price_match.group(1))
+        except Exception:
+            pass
+
+    if "automatic" in lower or "اوتوماتيك" in lower or "أوتوماتيك" in lower:
+        facts["transmission"] = "automatic"
+
+    if "manual" in lower or "مانيوال" in lower:
+        facts["transmission"] = "manual"
+
+    if "bmw" in lower or "بي ام" in lower:
+        facts["car_brand"] = "BMW"
+    elif "mercedes" in lower or "مرسيدس" in lower:
+        facts["car_brand"] = "Mercedes"
+    elif "hyundai" in lower or "هيونداي" in lower:
+        facts["car_brand"] = "Hyundai"
+    elif "toyota" in lower or "تويوتا" in lower:
+        facts["car_brand"] = "Toyota"
+    elif "kia" in lower or "كيا" in lower:
+        facts["car_brand"] = "Kia"
+    elif "nissan" in lower or "نيسان" in lower:
+        facts["car_brand"] = "Nissan"
+    elif "audi" in lower or "اودي" in lower:
+        facts["car_brand"] = "Audi"
+
+    return facts
+
+
+def enrich_variables_from_best_knowledge(variables, knowledge):
+    variables = dict(variables or {})
+
+    if not knowledge:
+        return variables
+
+    best_item = choose_best_knowledge_for_variables(knowledge, variables)
+    if not best_item:
+        return variables
+
+    facts = extract_knowledge_facts(best_item)
+
+    for key, value in facts.items():
+        if value is not None and value != "":
+            variables[key] = value
+
+    return variables
+
+
+def is_context_sensitive_variable_update(message, updates, knowledge):
+    text = (message or "").lower()
+    updates = updates or {}
+
+    if not knowledge:
+        return False
+
+    sensitive_update_keys = {
+        "budget_max",
+        "currency",
+        "car_brand",
+        "car_condition",
+        "transmission",
+        "preferred_viewing_date",
+    }
+
+    if not any(key in updates for key in sensitive_update_keys):
+        return False
+
+    context_markers = [
+        "budget",
+        "ميزانيتي",
+        "ميزانية",
+        "الميزانية",
+        "لحد",
+        "مليون",
+        "اشوفها",
+        "أشوفها",
+        "معاينة",
+        "معاينه",
+        "احجزها",
+        "نفسها",
+        "العربية",
+        "العربيه",
+        "دي",
+        "ده",
+        "دا",
+    ]
+
+    return any(marker in text for marker in context_markers)
+
+
 def build_mock_answer(intent, variables, missing_variables, knowledge):
     intent = normalize_intent(intent)
 
@@ -658,6 +757,7 @@ Rules:
 - Continue the conversation naturally after acknowledging what was captured.
 - If the user asks about buying, searching, booking, viewing, pricing, availability, or services, do not stop at acknowledgement; ask the next useful question.
 - If the user asks a follow-up question about a retrieved item, answer it directly from the current knowledge/cache before asking another question.
+- If the user provides a budget and the current matched item has a known price, tell whether it fits the budget before asking the next useful question.
 - If knowledge contains prices, kilometers, model years, or availability, use them accurately.
 - Do not invent cars, prices, appointment slots, doctors, services, or policies.
 - Be concise and useful.
@@ -722,6 +822,10 @@ def should_use_cached_rag(message, route):
         "book it",
         "see it",
         "price",
+        "budget",
+        "under",
+        "up to",
+        "million",
         "same one",
         "the car",
         "the bmw",
@@ -739,6 +843,11 @@ def should_use_cached_rag(message, route):
         "عامله كام",
         "بكام",
         "سعرها",
+        "ميزانيتي",
+        "ميزانية",
+        "الميزانية",
+        "لحد",
+        "مليون",
         "نفسها",
         "احجزها",
         "اشوفها",
@@ -860,10 +969,6 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         intent=current_intent,
     )
 
-    # Hard safety guard:
-    # Real questions must never be handled by the no-LLM acknowledgement path.
-    # This protects follow-ups like:
-    # "هي أوتوماتيك؟", "عاملة كام كيلو؟", "سعرها كام؟"
     if is_user_question(req.message):
         skip_generation = False
         route["answer_mode"] = "generate"
@@ -916,6 +1021,30 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
                 knowledge_payload=raw_knowledge,
                 compressed_payload=knowledge,
             )
+
+    if knowledge:
+        updated_variables = enrich_variables_from_best_knowledge(updated_variables, knowledge)
+
+        missing_required_variables = calculate_missing_required_variables(
+            schema=schema,
+            variables=updated_variables,
+            intent=current_intent,
+        )
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+    if (
+        route.get("answer_mode") == "no_llm"
+        and is_context_sensitive_variable_update(req.message, extraction.get("updates", {}), knowledge)
+    ):
+        route["answer_mode"] = "generate"
+        route["needs_rag"] = True
+        route["needs_memory"] = True
 
     memories = []
     if route.get("needs_memory", True):
