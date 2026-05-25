@@ -46,6 +46,23 @@ ARABIC_ACKS = {
 }
 
 
+CAR_SEARCH_INTENTS = {
+    "car_search",
+    "car_inquiry",
+    "car_enquiry",
+    "car_purchase",
+    "car_buying",
+    "buy_car",
+    "vehicle_search",
+    "vehicle_inquiry",
+    "vehicle_enquiry",
+    "vehicle_purchase",
+    "inventory_question",
+    "product_search",
+    "product_inquiry",
+}
+
+
 VARIABLE_LABELS_EN = {
     "location": "your location",
     "phone_number": "your phone number",
@@ -227,7 +244,7 @@ def _previous_assistant_question(recent_messages: list[dict]) -> str:
 
 def _next_relevant_question(variables: dict, missing_variables: list[str], arabic: bool) -> str:
     variables = variables or {}
-    intent = variables.get("intent", "")
+    intent = (variables.get("intent") or "").lower()
 
     if missing_variables:
         labels = _labels_for_missing(missing_variables, arabic)
@@ -237,7 +254,12 @@ def _next_relevant_question(variables: dict, missing_variables: list[str], arabi
 
         return "I still need " + _english_join(labels) + " to continue."
 
-    if intent == "car_search":
+    if intent in CAR_SEARCH_INTENTS:
+        if not variables.get("budget_max"):
+            if arabic:
+                return "ميزانيتك في حدود كام؟"
+            return "What budget range should I look within?"
+
         if not variables.get("transmission"):
             if arabic:
                 return "تحبها أوتوماتيك ولا مانيوال؟"
@@ -247,11 +269,6 @@ def _next_relevant_question(variables: dict, missing_variables: list[str], arabi
             if arabic:
                 return "تحب نوع عربية معين؟"
             return "Do you have a preferred car brand?"
-
-        if not variables.get("budget_max"):
-            if arabic:
-                return "ميزانيتك في حدود كام؟"
-            return "What budget range should I look within?"
 
         if arabic:
             return "تحب موديل معين أو سنة معينة؟"
