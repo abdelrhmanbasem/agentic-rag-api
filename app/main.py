@@ -140,6 +140,30 @@ def calculate_missing_required_variables(
     return missing
 
 
+def detect_reply_language_instruction(user_message: str) -> str:
+    message = user_message or ""
+
+    has_arabic = bool(re.search(r"[\u0600-\u06FF]", message))
+
+    if has_arabic:
+        return """
+LANGUAGE RULE:
+- The latest user message is Arabic or Egyptian Arabic.
+- You MUST reply in natural Egyptian Arabic.
+- Do NOT reply in English.
+- Keep car brands and model names like BMW, Mercedes, Hyundai, 320i, C180 in English if needed.
+- Use Egyptian Arabic phrasing like: عربية، مستعملة، أوتوماتيك، سعرها، عاملة كام كيلو، تحب تشوفها؟
+- Keep the answer friendly, clear, and short.
+"""
+
+    return """
+LANGUAGE RULE:
+- Reply in the same language as the latest user message.
+- If the latest user message is English, reply in English.
+- Keep the answer friendly, clear, and short.
+"""
+
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -436,6 +460,8 @@ def generate_answer(
     if MOCK_MODE:
         return build_mock_answer(intent, variables, missing_variables, knowledge), model, selected_model_tier
 
+    language_instruction = detect_reply_language_instruction(user_message)
+
     system_prompt = f"""
 {assistant["system_prompt"]}
 
@@ -445,16 +471,24 @@ Tone:
 Memory policy:
 {assistant["memory_policy"]}
 
+{language_instruction}
+
 Rules:
 - Use current variables when relevant.
 - Use retrieved knowledge when relevant.
 - Use long-term memories only when relevant.
 - Ask for missing important variables naturally.
+- Always follow the LANGUAGE RULE above.
+- If knowledge contains prices, kilometers, model years, or availability, use them accurately.
+- Do not invent cars, prices, appointment slots, doctors, services, or policies.
 - Be concise and useful.
-- Do not reveal internal routing, memory, or RAG.
+- Do not reveal internal routing, memory, variables, or RAG.
 """
 
     context = f"""
+Latest user message:
+{user_message}
+
 Conversation summary:
 {summary}
 
