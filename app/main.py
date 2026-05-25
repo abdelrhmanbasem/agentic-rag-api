@@ -207,6 +207,85 @@ def looks_mostly_english(text: str) -> bool:
     return latin_chars > arabic_chars * 2
 
 
+def is_user_question(message: str) -> bool:
+    """
+    Hard safety guard used in main.py.
+
+    Questions must never be handled by the no-LLM acknowledgement path.
+    This protects follow-ups like:
+    - هي أوتوماتيك؟
+    - عاملة كام كيلو؟
+    - سعرها كام؟
+    - Is it automatic?
+    - How many km?
+    """
+    text = (message or "").lower().strip()
+
+    if not text:
+        return False
+
+    question_markers = [
+        "?",
+        "؟",
+
+        # English
+        "is ",
+        "are ",
+        "do ",
+        "does ",
+        "can ",
+        "could ",
+        "would ",
+        "how ",
+        "what ",
+        "when ",
+        "where ",
+        "why ",
+        "which ",
+
+        # Arabic / Egyptian Arabic
+        "هي ",
+        "هو ",
+        "هل ",
+        "ده ",
+        "دي ",
+        "دا ",
+        "دة ",
+        "فيه ",
+        "في ",
+        "ممكن ",
+        "ينفع ",
+        "كام",
+        "قد ايه",
+        "قد إيه",
+        "فين",
+        "امتى",
+        "إمتى",
+        "ايه",
+        "إيه",
+        "ليه",
+        "ازاي",
+        "إزاي",
+        "بكام",
+        "متاح",
+        "متاحة",
+        "موجود",
+        "موجودة",
+        "لسه موجود",
+        "لسه موجودة",
+        "عاملة كام",
+        "عامله كام",
+        "سعرها",
+        "سعره",
+        "لونها",
+        "اوتوماتيك",
+        "أوتوماتيك",
+        "مانيوال",
+    ]
+
+    return any(marker in text for marker in question_markers)
+
+
 def detect_reply_language_instruction(user_message: str) -> str:
     message = user_message or ""
 
@@ -578,6 +657,7 @@ Rules:
 - Always follow the LANGUAGE RULE above.
 - Continue the conversation naturally after acknowledging what was captured.
 - If the user asks about buying, searching, booking, viewing, pricing, availability, or services, do not stop at acknowledgement; ask the next useful question.
+- If the user asks a follow-up question about a retrieved item, answer it directly from the current knowledge/cache before asking another question.
 - If knowledge contains prices, kilometers, model years, or availability, use them accurately.
 - Do not invent cars, prices, appointment slots, doctors, services, or policies.
 - Be concise and useful.
@@ -652,8 +732,11 @@ def should_use_cached_rag(message, route):
         "العربيه",
         "متاح",
         "اوتوماتيك",
+        "أوتوماتيك",
         "مانيوال",
         "كام كيلو",
+        "عاملة كام",
+        "عامله كام",
         "بكام",
         "سعرها",
         "نفسها",
@@ -776,6 +859,16 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         variable_updates=extraction.get("updates", {}),
         intent=current_intent,
     )
+
+    # Hard safety guard:
+    # Real questions must never be handled by the no-LLM acknowledgement path.
+    # This protects follow-ups like:
+    # "هي أوتوماتيك؟", "عاملة كام كيلو؟", "سعرها كام؟"
+    if is_user_question(req.message):
+        skip_generation = False
+        route["answer_mode"] = "generate"
+        route["needs_rag"] = True
+        route["needs_memory"] = True
 
     if skip_generation:
         route["answer_mode"] = "no_llm"
