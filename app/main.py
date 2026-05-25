@@ -266,6 +266,85 @@ def is_user_question(message: str) -> bool:
     return any(marker in text for marker in question_markers)
 
 
+def should_force_rag_for_actionable_intent(intent: str, variables: Dict[str, Any], message: str) -> bool:
+    """
+    Production rule:
+    If the user has given enough searchable/actionable info, do not stop at no-LLM acknowledgement.
+    Use RAG/knowledge immediately.
+
+    This is generic enough for future assistants:
+    - car_search + brand/budget/condition/transmission -> search inventory
+    - service_question + service_needed -> search service/pricing docs
+    - booking_request + service/date/time -> search relevant booking/policy docs if available
+    - insurance_question + insurance_provider/service -> search insurance/policy docs
+    """
+    intent = normalize_intent(intent)
+    variables = variables or {}
+    text = (message or "").lower()
+
+    if intent == "car_search":
+        return bool(
+            variables.get("car_brand")
+            or variables.get("budget_max")
+            or variables.get("car_condition")
+            or variables.get("transmission")
+            or any(
+                marker in text
+                for marker in [
+                    "car",
+                    "vehicle",
+                    "buy",
+                    "bmw",
+                    "mercedes",
+                    "hyundai",
+                    "toyota",
+                    "kia",
+                    "nissan",
+                    "audi",
+                    "عربية",
+                    "عربيه",
+                    "اشتري",
+                    "اشترى",
+                    "مستعملة",
+                    "مستعمله",
+                    "زيرو",
+                    "بي ام",
+                    "مرسيدس",
+                    "هيونداي",
+                    "تويوتا",
+                    "كيا",
+                    "نيسان",
+                ]
+            )
+        )
+
+    if intent == "service_question":
+        return bool(
+            variables.get("service_needed")
+            or variables.get("doctor_preference")
+            or variables.get("insurance_provider")
+        )
+
+    if intent == "booking_request":
+        return bool(
+            variables.get("service_needed")
+            or variables.get("appointment_date")
+            or variables.get("appointment_time")
+            or variables.get("doctor_preference")
+        )
+
+    if intent == "insurance_question":
+        return bool(
+            variables.get("insurance_provider")
+            or variables.get("service_needed")
+        )
+
+    if intent == "viewing_request":
+        return True
+
+    return False
+
+
 def detect_reply_language_instruction(user_message: str) -> str:
     message = user_message or ""
 
@@ -936,13 +1015,6 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if not missing_required_variables:
         missing_required_variables = extraction.get("missing_variables", [])
 
-    save_variables(
-        req.conversation_id,
-        req.assistant_id,
-        req.user_id,
-        updated_variables,
-    )
-
     recommended_next_action = "continue_conversation"
 
     if missing_required_variables:
@@ -963,6 +1035,17 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if current_intent == "urgent_medical_issue":
         recommended_next_action = "urgent_human_handoff"
 
+    force_rag_for_actionable_intent = should_force_rag_for_actionable_intent(
+        current_intent,
+        updated_variables,
+        req.message,
+    )
+
+    if force_rag_for_actionable_intent:
+        route["answer_mode"] = "generate"
+        route["needs_rag"] = True
+        route["needs_memory"] = True
+
     skip_generation = should_skip_generation(
         message=req.message,
         variable_updates=extraction.get("updates", {}),
@@ -970,6 +1053,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     )
 
     if is_user_question(req.message):
+        skip_generation = False
+        route["answer_mode"] = "generate"
+        route["needs_rag"] = True
+        route["needs_memory"] = True
+
+    if force_rag_for_actionable_intent:
         skip_generation = False
         route["answer_mode"] = "generate"
         route["needs_rag"] = True
@@ -1031,12 +1120,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             intent=current_intent,
         )
 
-        save_variables(
-            req.conversation_id,
-            req.assistant_id,
-            req.user_id,
-            updated_variables,
-        )
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated_variables,
+    )
 
     if (
         route.get("answer_mode") == "no_llm"
