@@ -147,6 +147,91 @@ def normalize_intent(intent: str) -> str:
     return aliases.get(intent, intent)
 
 
+def normalize_intent_for_schema(intent: str, schema: Dict[str, Any], assistant_id: str = "") -> str:
+    """
+    Schema-aware intent normalization.
+
+    This prevents future assistants from using the wrong workflow:
+    - car sales assistant: booking a car/viewing/test drive should become viewing_request
+    - clinic/service assistant: booking appointment should remain booking_request
+    """
+    intent = normalize_intent(intent)
+    schema = schema or {}
+    assistant_id = (assistant_id or "").lower()
+
+    has_car_schema = any(
+        key in schema
+        for key in [
+            "car_brand",
+            "car_condition",
+            "transmission",
+            "budget_max",
+            "matched_car_model",
+            "matched_car_year",
+            "matched_car_km",
+            "matched_car_price",
+            "preferred_viewing_date",
+        ]
+    )
+
+    has_clinic_or_service_schema = any(
+        key in schema
+        for key in [
+            "service_needed",
+            "appointment_date",
+            "appointment_time",
+            "doctor_preference",
+            "patient_name",
+            "insurance_provider",
+        ]
+    )
+
+    assistant_looks_car_related = any(
+        marker in assistant_id
+        for marker in [
+            "car",
+            "cars",
+            "auto",
+            "vehicle",
+            "dealer",
+            "sales",
+        ]
+    )
+
+    assistant_looks_clinic_related = any(
+        marker in assistant_id
+        for marker in [
+            "clinic",
+            "doctor",
+            "medical",
+            "dental",
+            "dentist",
+            "health",
+        ]
+    )
+
+    if intent == "booking_request":
+        if (has_car_schema or assistant_looks_car_related) and not (
+            has_clinic_or_service_schema or assistant_looks_clinic_related
+        ):
+            return "viewing_request"
+
+    if intent in [
+        "appointment_request",
+        "schedule_appointment",
+        "book_appointment",
+        "reservation",
+    ]:
+        if (has_car_schema or assistant_looks_car_related) and not (
+            has_clinic_or_service_schema or assistant_looks_clinic_related
+        ):
+            return "viewing_request"
+
+        return "booking_request"
+
+    return intent
+
+
 def calculate_missing_required_variables(
     schema: Dict[str, Any],
     variables: Dict[str, Any],
@@ -155,7 +240,7 @@ def calculate_missing_required_variables(
     missing = []
     variables = variables or {}
     schema = schema or {}
-    intent = normalize_intent(intent)
+    intent = normalize_intent_for_schema(intent, schema=schema)
 
     for key, config in schema.items():
         if key == "intent":
@@ -174,8 +259,14 @@ def calculate_missing_required_variables(
         required_for_intents = config.get("required_for_intents", []) or []
         not_required_for_intents = config.get("not_required_for_intents", []) or []
 
-        required_for_intents = [normalize_intent(i) for i in required_for_intents]
-        not_required_for_intents = [normalize_intent(i) for i in not_required_for_intents]
+        required_for_intents = [
+            normalize_intent_for_schema(i, schema=schema)
+            for i in required_for_intents
+        ]
+        not_required_for_intents = [
+            normalize_intent_for_schema(i, schema=schema)
+            for i in not_required_for_intents
+        ]
 
         if intent in not_required_for_intents:
             continue
@@ -267,17 +358,6 @@ def is_user_question(message: str) -> bool:
 
 
 def should_force_rag_for_actionable_intent(intent: str, variables: Dict[str, Any], message: str) -> bool:
-    """
-    Production rule:
-    If the user has given enough searchable/actionable info, do not stop at no-LLM acknowledgement.
-    Use RAG/knowledge immediately.
-
-    This is generic enough for future assistants:
-    - car_search + brand/budget/condition/transmission -> search inventory
-    - service_question + service_needed -> search service/pricing docs
-    - booking_request + service/date/time -> search relevant booking/policy docs if available
-    - insurance_question + insurance_provider/service -> search insurance/policy docs
-    """
     intent = normalize_intent(intent)
     variables = variables or {}
     text = (message or "").lower()
@@ -973,7 +1053,11 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         user_message=req.message,
     )
 
-    route["intent_hint"] = normalize_intent(route.get("intent_hint", "general_question"))
+    route["intent_hint"] = normalize_intent_for_schema(
+        route.get("intent_hint", "general_question"),
+        schema=schema,
+        assistant_id=req.assistant_id,
+    )
 
     if route.get("needs_variable_extraction", True):
         extraction = extract_variables(
@@ -992,7 +1076,11 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "notes": "Variable extraction skipped by router.",
         }
 
-    extraction["intent"] = normalize_intent(extraction.get("intent", "general_question"))
+    extraction["intent"] = normalize_intent_for_schema(
+        extraction.get("intent", "general_question"),
+        schema=schema,
+        assistant_id=req.assistant_id,
+    )
 
     updated_variables = apply_variable_patch(
         existing_variables,
@@ -1000,8 +1088,10 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         extraction.get("deletions", []),
     )
 
-    current_intent = normalize_intent(
-        extraction.get("intent") or updated_variables.get("intent") or "general_question"
+    current_intent = normalize_intent_for_schema(
+        extraction.get("intent") or updated_variables.get("intent") or "general_question",
+        schema=schema,
+        assistant_id=req.assistant_id,
     )
 
     updated_variables["intent"] = current_intent
