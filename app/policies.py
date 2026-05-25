@@ -62,6 +62,7 @@ VARIABLE_LABELS_EN = {
     "doctor_preference": "your preferred doctor",
     "location_branch": "the preferred branch",
     "insurance_provider": "your insurance provider",
+    "preferred_viewing_date": "your preferred viewing date",
 }
 
 
@@ -81,6 +82,7 @@ VARIABLE_LABELS_AR = {
     "doctor_preference": "الدكتور المفضل",
     "location_branch": "الفرع المفضل",
     "insurance_provider": "التأمين",
+    "preferred_viewing_date": "ميعاد المعاينة المفضل",
 }
 
 
@@ -149,6 +151,12 @@ def is_simple_variable_update(message: str) -> bool:
         "مستعمل",
         "مستعمله",
         "زيرو",
+        "معاينة",
+        "معاينه",
+        "اشوفها",
+        "أشوفها",
+        "عايز اشوفها",
+        "عايز أشوفها",
     ]
 
     return any(marker in text for marker in update_markers)
@@ -250,6 +258,11 @@ def _next_relevant_question(variables: dict, missing_variables: list[str], arabi
 
         return "Do you prefer a specific model or year?"
 
+    if intent == "viewing_request":
+        if arabic:
+            return "تمام، نقدر نكمل طلب المعاينة."
+        return "Great, we can continue arranging the viewing."
+
     if intent == "booking_request":
         needed = []
 
@@ -308,6 +321,11 @@ def _contextual_ack_answer(
         if arabic:
             return "تمام، خلينا نكمل بيانات الحجز."
         return "Got it — let’s continue with the booking details."
+
+    if recommended_next_action == "collect_viewing_details":
+        if arabic:
+            return "تمام، خلينا نكمل بيانات المعاينة."
+        return "Got it — let’s continue with the viewing details."
 
     if recommended_next_action == "urgent_human_handoff":
         if arabic:
@@ -398,6 +416,9 @@ def build_no_llm_answer(
                 appointment_text = f"الميعاد {date} {time}".strip()
                 parts.append(appointment_text)
 
+            if "preferred_viewing_date" in variable_updates:
+                parts.append(f"ميعاد المعاينة {variable_updates.get('preferred_viewing_date')}")
+
             if "service_needed" in variable_updates:
                 parts.append(f"الخدمة المطلوبة: {variable_updates.get('service_needed')}")
 
@@ -455,6 +476,9 @@ def build_no_llm_answer(
             date = variables.get("appointment_date", "")
             time = variables.get("appointment_time", "")
             parts.append(f"appointment preference: {date} {time}".strip())
+
+        if "preferred_viewing_date" in variable_updates:
+            parts.append(f"viewing date: {variable_updates.get('preferred_viewing_date')}")
 
         if "service_needed" in variable_updates:
             parts.append(f"service: {variable_updates.get('service_needed')}")
