@@ -99,22 +99,43 @@ def check_auth(x_api_key: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def calculate_missing_required_variables(schema: Dict[str, Any], variables: Dict[str, Any]) -> list[str]:
+def calculate_missing_required_variables(
+    schema: Dict[str, Any],
+    variables: Dict[str, Any],
+    intent: str = "general_question",
+) -> list[str]:
     missing = []
+    variables = variables or {}
+    schema = schema or {}
+    intent = intent or "general_question"
 
-    for key, config in (schema or {}).items():
+    for key, config in schema.items():
         if key == "intent":
             continue
 
-        required = config.get("required", False) if isinstance(config, dict) else False
-
-        if not required:
+        if not isinstance(config, dict):
             continue
 
-        value = (variables or {}).get(key)
+        value = variables.get(key)
+        is_empty = value is None or value == ""
 
-        if value is None or value == "":
+        if not is_empty:
+            continue
+
+        globally_required = config.get("required", False)
+        required_for_intents = config.get("required_for_intents", []) or []
+        not_required_for_intents = config.get("not_required_for_intents", []) or []
+
+        if intent in not_required_for_intents:
+            continue
+
+        if globally_required:
             missing.append(key)
+            continue
+
+        if intent in required_for_intents:
+            missing.append(key)
+            continue
 
     return missing
 
@@ -377,6 +398,9 @@ def build_mock_answer(intent, variables, missing_variables, knowledge):
 
         return f"Got it — you're interested in {brand}. What budget range should I look within?"
 
+    if intent == "viewing_request":
+        return "Sure — I can help arrange a viewing. I just need the remaining viewing details."
+
     if intent == "booking_request":
         return "Sure — I can help with booking. What day and time works best for you?"
 
@@ -500,6 +524,10 @@ def should_use_cached_rag(message, route):
         "نفسها",
         "احجزها",
         "اشوفها",
+        "أشوفها",
+        "اشوفه",
+        "معاينة",
+        "معاينه",
     ]
 
     return any(marker in text for marker in followup_markers)
@@ -565,9 +593,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if extraction.get("intent"):
         updated_variables["intent"] = extraction["intent"]
 
+    current_intent = extraction.get("intent") or updated_variables.get("intent") or "general_question"
+
     missing_required_variables = calculate_missing_required_variables(
         schema=schema,
         variables=updated_variables,
+        intent=current_intent,
     )
 
     if not missing_required_variables:
@@ -585,19 +616,25 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if missing_required_variables:
         recommended_next_action = "ask_clarifying_question"
 
-    if extraction.get("intent") == "booking_request":
+    if current_intent == "booking_request":
         recommended_next_action = "collect_booking_details"
 
-    if extraction.get("intent") == "complaint":
+    if current_intent == "viewing_request":
+        recommended_next_action = "collect_viewing_details"
+
+    if current_intent == "human_handoff":
+        recommended_next_action = "human_handoff"
+
+    if current_intent == "complaint":
         recommended_next_action = "consider_human_handoff"
 
-    if extraction.get("intent") == "urgent_medical_issue":
+    if current_intent == "urgent_medical_issue":
         recommended_next_action = "urgent_human_handoff"
 
     skip_generation = should_skip_generation(
         message=req.message,
         variable_updates=extraction.get("updates", {}),
-        intent=extraction.get("intent", "general_question"),
+        intent=current_intent,
     )
 
     if skip_generation:
@@ -676,7 +713,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             knowledge=knowledge,
             memories=memories,
             user_message=req.message,
-            intent=extraction.get("intent", "general_question"),
+            intent=current_intent,
             missing_variables=missing_required_variables,
             selected_model_tier=route.get("selected_model_tier", "normal"),
         )
@@ -735,7 +772,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "answer": answer,
         "assistant_id": req.assistant_id,
         "conversation_id": req.conversation_id,
-        "intent": extraction.get("intent", "general_question"),
+        "intent": current_intent,
         "variables": updated_variables,
         "variable_updates": extraction.get("updates", {}),
         "variable_deletions": extraction.get("deletions", []),
