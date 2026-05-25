@@ -118,6 +118,83 @@ def is_phone_only(message: str) -> bool:
     return cleaned.isdigit() and 8 <= len(cleaned) <= 15
 
 
+def is_question_message(message: str) -> bool:
+    """
+    Important production rule:
+    Questions should not be handled by the cheap/no-LLM variable-update path.
+
+    Example:
+    "هي أوتوماتيك؟" contains "أوتوماتيك", but it is a question about the current car,
+    not a user's preference update.
+    """
+    text = (message or "").lower().strip()
+
+    if not text:
+        return False
+
+    question_markers = [
+        "?",
+        "؟",
+
+        # English question starters
+        "is ",
+        "are ",
+        "do ",
+        "does ",
+        "can ",
+        "could ",
+        "would ",
+        "how ",
+        "what ",
+        "when ",
+        "where ",
+        "why ",
+        "which ",
+
+        # Arabic / Egyptian Arabic question starters and markers
+        "هي ",
+        "هو ",
+        "هل ",
+        "ده ",
+        "دي ",
+        "دا ",
+        "دة ",
+        "فيه ",
+        "في ",
+        "ممكن ",
+        "ينفع ",
+        "كام",
+        "قد ايه",
+        "قد إيه",
+        "فين",
+        "امتى",
+        "إمتى",
+        "ايه",
+        "إيه",
+        "ليه",
+        "ازاي",
+        "إزاي",
+        "بكام",
+        "متاح",
+        "متاحة",
+        "موجود",
+        "موجودة",
+        "لسه موجود",
+        "لسه موجودة",
+        "عاملة كام",
+        "عامله كام",
+        "سعرها",
+        "سعره",
+        "لونها",
+        "لونها ايه",
+        "اوتوماتيك",
+        "أوتوماتيك",
+        "مانيوال",
+    ]
+
+    return any(marker in text for marker in question_markers)
+
+
 def is_simple_variable_update(message: str) -> bool:
     text = (message or "").lower()
 
@@ -180,6 +257,21 @@ def is_simple_variable_update(message: str) -> bool:
 
 
 def should_skip_generation(message: str, variable_updates: dict, intent: str) -> bool:
+    """
+    Decide whether to skip GPT answer generation.
+
+    Key rule:
+    If the user is asking a question, NEVER skip generation.
+    This protects follow-ups like:
+    - هي أوتوماتيك؟
+    - عاملة كام كيلو؟
+    - سعرها كام؟
+    - Is it automatic?
+    - How many km?
+    """
+    if is_question_message(message):
+        return False
+
     if is_short_ack(message):
         return True
 
