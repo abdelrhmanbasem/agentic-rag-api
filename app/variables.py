@@ -115,7 +115,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     deletions = []
     intent = existing_variables.get("intent", "general_question") if existing_variables else "general_question"
 
-    # Contact preference
     whatsapp_words = [
         "whatsapp",
         "whats app",
@@ -148,7 +147,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         if schema_has(schema, "preferred_contact_method"):
             updates["preferred_contact_method"] = "WhatsApp"
 
-    # Cars
     brand_map = {
         "bmw": "BMW",
         "بي ام": "BMW",
@@ -223,7 +221,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     if any(word in text for word in forget_budget_words) or any(word in ar_text for word in forget_budget_words):
         deletions.append("budget_max")
 
-    # Clinic/services
     service_map = {
         "cleaning": "cleaning",
         "teeth cleaning": "teeth cleaning",
@@ -261,7 +258,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
                 updates["service_needed"] = service_value
                 intent = "service_question"
 
-    # Doctor preference
     if schema_has(schema, "doctor_preference"):
         doctor_patterns = [
             r"doctor\s+([a-zA-Z]+)",
@@ -278,14 +274,12 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
                 updates["doctor_preference"] = doctor_match.group(1).strip()
                 break
 
-    # Insurance
     insurance_words = ["insurance", "تأمين", "تامين", "التأمين", "التامين"]
     if any(word in text for word in insurance_words) or any(word in ar_text for word in insurance_words):
         if schema_has(schema, "insurance_provider"):
             updates["insurance_provider"] = "mentioned"
         intent = "insurance_question"
 
-    # Dates
     if schema_has(schema, "appointment_date"):
         if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
             updates["appointment_date"] = "tomorrow"
@@ -306,7 +300,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
             updates["appointment_date"] = "Friday"
 
-    # Times
     if schema_has(schema, "appointment_time"):
         if "morning" in text or "الصبح" in ar_text or "صباح" in ar_text:
             updates["appointment_time"] = "morning"
@@ -315,7 +308,26 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         elif "evening" in text or "بليل" in ar_text or "بالليل" in ar_text or "المسا" in ar_text:
             updates["appointment_time"] = "evening"
 
-    # Branch/location preference
+    if schema_has(schema, "preferred_viewing_date"):
+        if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
+            updates["preferred_viewing_date"] = "tomorrow"
+        elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
+            updates["preferred_viewing_date"] = "today"
+        elif "saturday" in text or "السبت" in ar_text:
+            updates["preferred_viewing_date"] = "Saturday"
+        elif "sunday" in text or "الاحد" in ar_text:
+            updates["preferred_viewing_date"] = "Sunday"
+        elif "monday" in text or "الاتنين" in ar_text:
+            updates["preferred_viewing_date"] = "Monday"
+        elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
+            updates["preferred_viewing_date"] = "Tuesday"
+        elif "wednesday" in text or "الاربع" in ar_text:
+            updates["preferred_viewing_date"] = "Wednesday"
+        elif "thursday" in text or "الخميس" in ar_text:
+            updates["preferred_viewing_date"] = "Thursday"
+        elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
+            updates["preferred_viewing_date"] = "Friday"
+
     if schema_has(schema, "location_branch"):
         branch_patterns = [
             r"branch\s+([a-zA-Z\u0600-\u06FF ]+)",
@@ -329,7 +341,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
                 updates["location_branch"] = branch_match.group(1).strip()
                 break
 
-    # Booking intent
     booking_words = [
         "book",
         "appointment",
@@ -348,7 +359,36 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         if schema_has(schema, "appointment_date") or schema_has(schema, "service_needed"):
             intent = "booking_request"
 
-    # Phone/name
+    viewing_words = [
+        "see it",
+        "view it",
+        "book viewing",
+        "book a viewing",
+        "schedule viewing",
+        "test drive",
+        "visit to see",
+        "viewing",
+        "عايز اشوفها",
+        "عايز أشوفها",
+        "عايز اشوفه",
+        "اشوفها",
+        "أشوفها",
+        "اشوفه",
+        "احجز معاينة",
+        "معاينة",
+        "معاينه",
+        "اتفرج عليها",
+        "اجربها",
+        "تجربة قيادة",
+        "تجربه قياده",
+    ]
+
+    if any(word in text for word in viewing_words) or any(word in ar_text for word in viewing_words):
+        intent = "viewing_request"
+
+        if schema_has(schema, "lead_stage"):
+            updates["lead_stage"] = "viewing_requested"
+
     phone = extract_phone(user_message)
     if phone and schema_has(schema, "phone_number"):
         updates["phone_number"] = phone
@@ -357,7 +397,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     if name and schema_has(schema, "patient_name"):
         updates["patient_name"] = name
 
-    # Urgency / human handoff
     urgent_words = [
         "urgent",
         "emergency",
@@ -398,10 +437,11 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     if any(word in text for word in complaint_words) or any(word in ar_text for word in complaint_words):
         intent = "complaint"
 
-    # Lead stage
     if updates and schema_has(schema, "lead_stage"):
         if intent == "booking_request":
             updates["lead_stage"] = "collecting_details"
+        elif intent == "viewing_request":
+            updates["lead_stage"] = "viewing_requested"
         elif intent == "urgent_medical_issue":
             updates["lead_stage"] = "needs_human"
         elif intent == "complaint":
@@ -409,7 +449,6 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         else:
             updates["lead_stage"] = "qualified"
 
-    # Missing required variables
     missing = []
     for key, config in (schema or {}).items():
         if key == "intent":
@@ -454,7 +493,8 @@ Rules:
 - If the user contradicts previous info, prefer the latest explicit statement.
 - If the user says to forget/remove something, add that key to deletions.
 - Do not guess values.
-- Support English, Arabic, and Egyptian Arabic.
+- Support English, Arabic, Egyptian Arabic, and common Franco Arabic.
+- Respect intent-specific required variables if present, but do not invent missing values.
 - Return JSON only.
 
 Return:
