@@ -1,3 +1,7 @@
+# app/variables.py
+# Combined Level 1 + "breath-taking smart" upgrade.
+# Replace your existing app/variables.py with this file.
+
 import re
 from app.config import MOCK_MODE
 from app.llm import chat_json, extraction_model
@@ -15,6 +19,7 @@ CANONICAL_INTENTS = {
     "urgent_medical_issue",
     "variable_update",
     "provide_contact",
+    "objection",
 }
 
 
@@ -59,15 +64,17 @@ INTENT_ALIASES = {
     "urgent": "urgent_medical_issue",
     "urgent_case": "urgent_medical_issue",
     "medical_emergency": "urgent_medical_issue",
+
+    "price_objection": "objection",
+    "budget_objection": "objection",
+    "too_expensive": "objection",
 }
 
 
 def normalize_intent(intent: str) -> str:
     intent = (intent or "general_question").strip().lower()
-
     if intent in CANONICAL_INTENTS:
         return intent
-
     return INTENT_ALIASES.get(intent, intent)
 
 
@@ -87,10 +94,6 @@ def apply_variable_patch(existing, updates, deletions):
 
 def schema_has(schema, key):
     return key in (schema or {})
-
-
-def has_arabic(text):
-    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
 
 
 def normalize_arabic(text):
@@ -148,19 +151,16 @@ def extract_budget(text, existing_variables=None):
     unit = budget_match.group(2)
 
     if unit in ["million", "m", "مليون"]:
-        number = number * 1000000
+        number *= 1000000
     elif unit in ["k", "thousand", "الف", "ألف"]:
-        number = number * 1000
+        number *= 1000
 
     return int(number)
 
 
 def extract_phone(user_message):
     phone_match = re.search(r"(\+?\d[\d\s\-]{7,}\d)", user_message or "")
-    if not phone_match:
-        return None
-
-    return phone_match.group(1).strip()
+    return phone_match.group(1).strip() if phone_match else None
 
 
 def extract_name(user_message):
@@ -175,6 +175,92 @@ def extract_name(user_message):
         match = re.search(pattern, user_message or "", re.IGNORECASE)
         if match:
             return match.group(1).strip()
+
+    return None
+
+
+def extract_location(user_message):
+    text = user_message or ""
+    ar_text = normalize_arabic(text.lower())
+
+    patterns = [
+        r"انا في\s+([a-zA-Z\u0600-\u06FF0-9 ]+)",
+        r"أنا في\s+([a-zA-Z\u0600-\u06FF0-9 ]+)",
+        r"في\s+([a-zA-Z\u0600-\u06FF0-9 ]+)",
+        r"location is\s+([a-zA-Z\u0600-\u06FF0-9 ]+)",
+        r"i am in\s+([a-zA-Z\u0600-\u06FF0-9 ]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = match.group(1).strip()
+            value = re.sub(
+                r"(بكره|بكرة|tomorrow|today|الساعة|الساعه|at).*$",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            ).strip()
+            if value:
+                return value
+
+    known_locations = [
+        "التجمع",
+        "القاهرة الجديدة",
+        "مدينتي",
+        "الرحاب",
+        "مدينة نصر",
+        "مصر الجديدة",
+        "المعادي",
+        "6 اكتوبر",
+        "اكتوبر",
+        "زايد",
+        "الشيخ زايد",
+        "الدقي",
+        "المهندسين",
+        "الزمالك",
+        "alexandria",
+        "cairo",
+        "new cairo",
+        "maadi",
+        "zayed",
+    ]
+
+    for loc in known_locations:
+        if loc in ar_text or loc in text.lower():
+            return loc
+
+    return None
+
+
+def extract_viewing_time(user_message):
+    text = user_message or ""
+    lower = normalize_arabic(text.lower())
+
+    hour_match = re.search(
+        r"(?:الساعة|الساعه|at)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|الصبح|صباح|العصر|الضهر|الظهر|المغرب|بالليل|بليل|المسا|المساء)?",
+        lower,
+    )
+    if hour_match:
+        hour = hour_match.group(1)
+        minute = hour_match.group(2)
+        period = hour_match.group(3)
+
+        value = f"{hour}:{minute}" if minute else hour
+
+        if period:
+            value = f"{value} {period}"
+
+        return value.strip()
+
+    if "الصبح" in lower or "صباح" in lower:
+        return "morning"
+
+    if "بعد الضهر" in lower or "بعد الظهر" in lower or "العصر" in lower:
+        return "afternoon"
+
+    if "بليل" in lower or "بالليل" in lower or "المسا" in lower or "المساء" in lower:
+        return "evening"
 
     return None
 
@@ -394,53 +480,45 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
             updates["insurance_provider"] = "mentioned"
         intent = "insurance_question"
 
-    if schema_has(schema, "appointment_date"):
-        if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
-            updates["appointment_date"] = "tomorrow"
-        elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
-            updates["appointment_date"] = "today"
-        elif "saturday" in text or "السبت" in ar_text:
-            updates["appointment_date"] = "Saturday"
-        elif "sunday" in text or "الاحد" in ar_text:
-            updates["appointment_date"] = "Sunday"
-        elif "monday" in text or "الاتنين" in ar_text:
-            updates["appointment_date"] = "Monday"
-        elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
-            updates["appointment_date"] = "Tuesday"
-        elif "wednesday" in text or "الاربع" in ar_text:
-            updates["appointment_date"] = "Wednesday"
-        elif "thursday" in text or "الخميس" in ar_text:
-            updates["appointment_date"] = "Thursday"
-        elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
-            updates["appointment_date"] = "Friday"
+    date_value = None
 
-    if schema_has(schema, "appointment_time"):
-        if "morning" in text or "الصبح" in ar_text or "صباح" in ar_text:
-            updates["appointment_time"] = "morning"
-        elif "afternoon" in text or "بعد الضهر" in ar_text or "بعد الظهر" in text:
-            updates["appointment_time"] = "afternoon"
-        elif "evening" in text or "بليل" in ar_text or "بالليل" in ar_text or "المسا" in ar_text:
-            updates["appointment_time"] = "evening"
+    if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
+        date_value = "tomorrow"
+    elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
+        date_value = "today"
+    elif "saturday" in text or "السبت" in ar_text:
+        date_value = "Saturday"
+    elif "sunday" in text or "الاحد" in ar_text:
+        date_value = "Sunday"
+    elif "monday" in text or "الاتنين" in ar_text:
+        date_value = "Monday"
+    elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
+        date_value = "Tuesday"
+    elif "wednesday" in text or "الاربع" in ar_text:
+        date_value = "Wednesday"
+    elif "thursday" in text or "الخميس" in ar_text:
+        date_value = "Thursday"
+    elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
+        date_value = "Friday"
 
-    if schema_has(schema, "preferred_viewing_date"):
-        if "tomorrow" in text or "بكره" in ar_text or "بكرة" in text:
-            updates["preferred_viewing_date"] = "tomorrow"
-        elif "today" in text or "النهارده" in ar_text or "انهارده" in ar_text:
-            updates["preferred_viewing_date"] = "today"
-        elif "saturday" in text or "السبت" in ar_text:
-            updates["preferred_viewing_date"] = "Saturday"
-        elif "sunday" in text or "الاحد" in ar_text:
-            updates["preferred_viewing_date"] = "Sunday"
-        elif "monday" in text or "الاتنين" in ar_text:
-            updates["preferred_viewing_date"] = "Monday"
-        elif "tuesday" in text or "التلات" in ar_text or "الثلاث" in ar_text:
-            updates["preferred_viewing_date"] = "Tuesday"
-        elif "wednesday" in text or "الاربع" in ar_text:
-            updates["preferred_viewing_date"] = "Wednesday"
-        elif "thursday" in text or "الخميس" in ar_text:
-            updates["preferred_viewing_date"] = "Thursday"
-        elif "friday" in text or "الجمعه" in ar_text or "الجمعة" in text:
-            updates["preferred_viewing_date"] = "Friday"
+    if date_value and schema_has(schema, "appointment_date"):
+        updates["appointment_date"] = date_value
+
+    if date_value and schema_has(schema, "preferred_viewing_date"):
+        updates["preferred_viewing_date"] = date_value
+
+    time_value = extract_viewing_time(user_message)
+
+    if time_value and schema_has(schema, "appointment_time"):
+        updates["appointment_time"] = time_value
+
+    if time_value and schema_has(schema, "preferred_viewing_time"):
+        updates["preferred_viewing_time"] = time_value
+
+    location = extract_location(user_message)
+
+    if location and schema_has(schema, "location"):
+        updates["location"] = location
 
     if schema_has(schema, "location_branch"):
         branch_patterns = [
@@ -470,7 +548,9 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     ]
 
     if any(word in text for word in booking_words) or any(word in ar_text for word in booking_words):
-        if schema_has(schema, "appointment_date") or schema_has(schema, "service_needed"):
+        if schema_has(schema, "preferred_viewing_date") or schema_has(schema, "matched_car_model") or schema_has(schema, "car_brand"):
+            intent = "viewing_request"
+        elif schema_has(schema, "appointment_date") or schema_has(schema, "service_needed"):
             intent = "booking_request"
 
     viewing_words = [
@@ -495,6 +575,7 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
         "اجربها",
         "تجربة قيادة",
         "تجربه قياده",
+        "احجزها",
     ]
 
     if any(word in text for word in viewing_words) or any(word in ar_text for word in viewing_words):
@@ -504,12 +585,15 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
             updates["lead_stage"] = "viewing_requested"
 
     phone = extract_phone(user_message)
+
     if phone and schema_has(schema, "phone_number"):
         updates["phone_number"] = phone
+
         if intent == "general_question":
             intent = "provide_contact"
 
     name = extract_name(user_message)
+
     if name and schema_has(schema, "patient_name"):
         updates["patient_name"] = name
 
@@ -532,8 +616,10 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     if any(word in text for word in urgent_words) or any(word in ar_text for word in urgent_words):
         if schema_has(schema, "urgency"):
             updates["urgency"] = "emergency"
+
         if schema_has(schema, "needs_human"):
             updates["needs_human"] = True
+
         intent = "urgent_medical_issue"
 
     complaint_words = [
@@ -553,6 +639,24 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
     if any(word in text for word in complaint_words) or any(word in ar_text for word in complaint_words):
         intent = "complaint"
 
+    objection_words = [
+        "expensive",
+        "too expensive",
+        "discount",
+        "installment",
+        "installments",
+        "غالي",
+        "غالية",
+        "السعر عالي",
+        "كتير",
+        "خصم",
+        "تقسيط",
+        "مش مناسب",
+    ]
+
+    if any(word in text for word in objection_words) or any(word in ar_text for word in objection_words):
+        intent = "objection"
+
     intent = normalize_intent(intent)
 
     if updates and schema_has(schema, "lead_stage"):
@@ -562,12 +666,13 @@ def mock_extract_variables(schema, existing_variables, recent_messages, user_mes
             updates["lead_stage"] = "viewing_requested"
         elif intent == "urgent_medical_issue":
             updates["lead_stage"] = "needs_human"
-        elif intent == "complaint":
-            updates["lead_stage"] = "needs_human"
+        elif intent in ["complaint", "objection"]:
+            updates["lead_stage"] = "needs_attention"
         else:
             updates["lead_stage"] = "qualified"
 
     missing = []
+
     for key, config in (schema or {}).items():
         if key == "intent":
             continue
@@ -617,24 +722,28 @@ Canonical intent names:
 - urgent_medical_issue
 - variable_update
 - provide_contact
+- objection
 
 Intent rules:
 - If the user wants to buy, search for, ask about, or inquire about a car/vehicle/product availability, use intent = car_search.
 - Do NOT use car_inquiry, car_purchase, vehicle_search, or product_inquiry. Map them to car_search.
 - If the user wants to see a car/product, schedule a viewing, test drive, or book a viewing, use intent = viewing_request.
-- If the user wants to book an appointment/reservation, use intent = booking_request.
+- If the user wants to book a clinic/service appointment/reservation, use intent = booking_request.
 - If the user gives only a phone/contact detail, use intent = provide_contact.
 - If the user changes/corrects previous info, use intent = variable_update unless another stronger intent applies.
 - If urgent medical/emergency language appears, use intent = urgent_medical_issue.
 - If complaint/refund/angry escalation language appears, use intent = complaint.
+- If the user says price is high, asks for discount, installments, or says it is expensive, use intent = objection.
 
-Rules:
+Extraction rules:
 - Extract only variables that exist in the schema.
 - If the user changes their mind, update the old value.
 - If the user contradicts previous info, prefer the latest explicit statement.
 - If the user says to forget/remove something, add that key to deletions.
 - Do not guess values.
 - Support English, Arabic, Egyptian Arabic, and common Franco Arabic.
+- Extract location from phrases like "أنا في التجمع", "في المعادي", "I am in New Cairo".
+- Extract preferred_viewing_time from phrases like "الساعة 3 العصر", "3 pm", "بكرة ٣".
 - Respect intent-specific required variables if present, but do not invent missing values.
 - Return JSON only.
 
@@ -652,7 +761,7 @@ Return:
     result = chat_json(
         extraction_model(),
         [{"role": "user", "content": prompt}],
-        max_tokens=600,
+        max_tokens=700,
     )
 
     intent = normalize_intent(result.get("intent", "general_question"))
