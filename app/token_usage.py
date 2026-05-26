@@ -10,8 +10,12 @@ from typing import Any, Dict
 def estimate_text_tokens(text: str) -> int:
     """
     Rough token estimator.
+
     English average: ~4 chars/token.
     Arabic can vary, so this intentionally uses a slightly conservative estimate.
+
+    This is not exact OpenAI billing usage.
+    It is useful for comparing turns and detecting token-heavy paths.
     """
     text = text or ""
 
@@ -58,13 +62,20 @@ def build_token_usage_report(
     Returns a per-turn token estimate.
 
     For model_used='none', GPT tokens are zero.
-    This is what we want for fast_path/state/no_llm turns.
+    This is what we want for state/no_llm/fast_path turns.
     """
     model_used = model_used or "none"
     model_tier = model_tier or "unknown"
     answer_mode = answer_mode or "unknown"
 
-    if model_used == "none" or model_tier in ["state", "fluid_state", "fast_path", "no_llm"]:
+    zero_token_tiers = {
+        "state",
+        "fluid_state",
+        "fast_path",
+        "no_llm",
+    }
+
+    if model_used == "none" or model_tier in zero_token_tiers:
         input_tokens = 0
         output_tokens = 0
         total_tokens = 0
@@ -75,7 +86,7 @@ def build_token_usage_report(
         total_tokens = input_tokens + output_tokens
 
         # Conservative placeholder for mini-class models.
-        # Real cost depends on the exact model and pricing.
+        # Real cost depends on the exact model and current pricing.
         estimated_cost_usd = round(total_tokens * 0.00000025, 8)
 
     return {
