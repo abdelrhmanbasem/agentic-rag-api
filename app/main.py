@@ -1,5 +1,15 @@
 # app/main.py
-# Smart stateful Agentic RAG API + per-message token usage reporting.
+# Smart stateful Agentic RAG API
+# Includes:
+# - selected_item state
+# - deterministic state answers
+# - Arabic/Egyptian Arabic language guard
+# - WhatsApp phone auto-fill
+# - workflow stages
+# - lead scoring
+# - objection/repair/final confirmation handling
+# - token_usage reporting
+# - universal pre-router fast_path for elite token efficiency
 
 import re
 from typing import Dict, Any, Optional
@@ -47,6 +57,8 @@ from app.variables import extract_variables, apply_variable_patch
 from app.memory import update_conversation_summary, decide_and_write_long_term_memories
 from app.policies import should_skip_generation, build_no_llm_answer
 from app.token_usage import build_token_usage_report
+from app.fast_path import should_try_fast_path, build_workflow_fast_answer
+
 
 app = FastAPI(title="Agentic RAG API")
 
@@ -102,6 +114,7 @@ def check_auth(x_api_key: str):
 
 def normalize_intent(intent: str) -> str:
     intent = (intent or "general_question").strip().lower()
+
     aliases = {
         "car_inquiry": "car_search",
         "car_enquiry": "car_search",
@@ -142,6 +155,7 @@ def normalize_intent(intent: str) -> str:
         "budget_objection": "objection",
         "too_expensive": "objection",
     }
+
     return aliases.get(intent, intent)
 
 
@@ -205,7 +219,12 @@ def calculate_missing_required_variables(
     missing = []
     variables = variables or {}
     schema = schema or {}
-    intent = normalize_intent_for_schema(intent, schema=schema, assistant_id=assistant_id)
+
+    intent = normalize_intent_for_schema(
+        intent,
+        schema=schema,
+        assistant_id=assistant_id,
+    )
 
     for key, config in schema.items():
         if key == "intent" or not isinstance(config, dict):
@@ -243,8 +262,10 @@ def is_arabic_text(text: str) -> bool:
 
 def looks_mostly_english(text: str) -> bool:
     text = text or ""
+
     arabic_chars = len(re.findall(r"[\u0600-\u06FF]", text))
     latin_chars = len(re.findall(r"[A-Za-z]", text))
+
     return latin_chars > arabic_chars * 2
 
 
@@ -435,6 +456,7 @@ def choose_best_knowledge_for_variables(knowledge, variables):
                 score += 30
 
         score += float(item.get("score", 0.0) or 0.0) * 5
+
         return score
 
     return sorted(knowledge, key=score_item, reverse=True)[0]
@@ -599,6 +621,7 @@ def add_asked_question(variables: Dict[str, Any], question_key: str) -> Dict[str
         asked.append(question_key)
 
     variables["asked_questions"] = asked[-20:]
+
     return variables
 
 
@@ -626,6 +649,7 @@ def compute_lead_score(variables: Dict[str, Any], intent: str) -> Dict[str, Any]
             reasons.append(reason)
 
     score = min(score, 100)
+
     variables["lead_score"] = score
     variables["lead_temperature"] = "hot" if score >= 80 else "warm" if score >= 50 else "cold"
     variables["lead_score_reasons"] = reasons
@@ -1075,6 +1099,7 @@ def should_use_cached_rag(message, route):
         return False
 
     text = (message or "").lower().strip()
+
     followup_markers = [
         "it",
         "that",
@@ -1152,20 +1177,33 @@ def health():
 def create_assistant(req: AssistantRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
     upsert_assistant(req.assistant_id, req.name, req.system_prompt, req.tone, req.memory_policy)
-    return {"status": "saved", "assistant_id": req.assistant_id}
+
+    return {
+        "status": "saved",
+        "assistant_id": req.assistant_id,
+    }
 
 
 @app.post("/schemas")
 def create_schema(req: SchemaRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
     save_schema(req.assistant_id, req.schema)
-    return {"status": "saved", "assistant_id": req.assistant_id, "schema_keys": list(req.schema.keys())}
+
+    return {
+        "status": "saved",
+        "assistant_id": req.assistant_id,
+        "schema_keys": list(req.schema.keys()),
+    }
 
 
 @app.get("/schemas/{assistant_id}")
 def read_schema(assistant_id: str, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    return {"assistant_id": assistant_id, "schema": get_schema(assistant_id)}
+
+    return {
+        "assistant_id": assistant_id,
+        "schema": get_schema(assistant_id),
+    }
 
 
 @app.post("/ingest")
@@ -1199,7 +1237,11 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
 @app.get("/knowledge/{assistant_id}")
 def read_knowledge_documents(assistant_id: str, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    return {"assistant_id": assistant_id, "documents": list_knowledge_documents(assistant_id)}
+
+    return {
+        "assistant_id": assistant_id,
+        "documents": list_knowledge_documents(assistant_id),
+    }
 
 
 @app.post("/knowledge/search")
@@ -1225,7 +1267,11 @@ def knowledge_search(req: KnowledgeSearchRequest, x_api_key: str = Header(defaul
 @app.get("/variables/{conversation_id}")
 def read_variables(conversation_id: str, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    return {"conversation_id": conversation_id, "variables": get_variables(conversation_id)}
+
+    return {
+        "conversation_id": conversation_id,
+        "variables": get_variables(conversation_id),
+    }
 
 
 @app.patch("/variables")
@@ -1285,6 +1331,132 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     summary = get_summary(req.conversation_id)
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
+
+    # ------------------------------------------------------------
+    # Universal pre-router fast path
+    # ------------------------------------------------------------
+    # This answers obvious state/workflow/factual turns before
+    # router/extraction/RAG/GPT to save tokens.
+    fast_path_result = None
+
+    if should_try_fast_path(req.message, existing_variables, schema):
+        fast_path_result = build_workflow_fast_answer(
+            message=req.message,
+            schema=schema,
+            assistant_id=req.assistant_id,
+            variables=existing_variables,
+            recent_messages=recent_messages,
+        )
+
+    if fast_path_result:
+        fast_updates = fast_path_result.get("updates") or {}
+        updated_variables = dict(existing_variables or {})
+        updated_variables.update(fast_updates)
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        answer = fast_path_result["answer"]
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = summary
+        long_term_memories_written = []
+
+        if not fast_path_result.get("skip_summary", True):
+            updated_summary = update_conversation_summary(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                variables=updated_variables,
+            )
+
+        if not fast_path_result.get("skip_memory", True):
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
+
+        fast_usage_input_obj = {
+            "message": req.message,
+            "variables": updated_variables,
+            "fast_path": fast_path_result,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used="none",
+            model_tier=fast_path_result.get("model_tier", "fast_path"),
+            answer_mode="fast_path",
+            input_obj=fast_usage_input_obj,
+            output_text=answer,
+            knowledge_source="none",
+            rag_cache_hit=False,
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model="none",
+            purpose="chat_fast_path",
+            input_obj=fast_usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": fast_path_result.get("model_tier", "fast_path"),
+                "answer_mode": "fast_path",
+                "needs_rag": False,
+                "needs_memory": not fast_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+            },
+        )
+
+        return {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", existing_variables.get("intent", "general_question")),
+            "variables": updated_variables,
+            "variable_updates": fast_updates,
+            "variable_deletions": [],
+            "missing_variables": [],
+            "recommended_next_action": fast_path_result.get("action", "fast_path"),
+            "next_best_action": {
+                "action": fast_path_result.get("action", "fast_path"),
+                "reason": "Handled by universal pre-router fast path.",
+                "confidence": 0.95,
+            },
+            "route": {
+                "answer_mode": "fast_path",
+                "needs_rag": False,
+                "needs_memory": not fast_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+            },
+            "knowledge_used": [],
+            "knowledge_source": "none",
+            "memories_used": [],
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": "none",
+            "model_tier": fast_path_result.get("model_tier", "fast_path"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
 
     route = route_message(
         assistant=assistant,
@@ -1461,6 +1633,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         route["needs_memory"] = True
 
     memories = []
+
     if route.get("needs_memory", True):
         memories = search_memories(
             req.assistant_id,
