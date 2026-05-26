@@ -1,6 +1,5 @@
 # app/main.py
-# Combined Level 1 + "breath-taking smart" upgrade.
-# Replace your existing app/main.py with this file.
+# Smart stateful Agentic RAG API + per-message token usage reporting.
 
 import re
 from typing import Dict, Any, Optional
@@ -47,6 +46,7 @@ from app.rag import (
 from app.variables import extract_variables, apply_variable_patch
 from app.memory import update_conversation_summary, decide_and_write_long_term_memories
 from app.policies import should_skip_generation, build_no_llm_answer
+from app.token_usage import build_token_usage_report
 
 app = FastAPI(title="Agentic RAG API")
 
@@ -164,6 +164,7 @@ def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
             "preferred_viewing_time",
         ]
     )
+
     has_service_schema = any(
         key in schema
         for key in [
@@ -178,16 +179,20 @@ def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
 
     if has_car_schema or any(x in assistant_id for x in ["car", "cars", "auto", "vehicle", "dealer"]):
         return "car_sales"
+
     if has_service_schema or any(x in assistant_id for x in ["clinic", "doctor", "medical", "dental", "dentist", "health"]):
         return "service_booking"
+
     return "general"
 
 
 def normalize_intent_for_schema(intent: str, schema: Dict[str, Any], assistant_id: str = "") -> str:
     intent = normalize_intent(intent)
     workflow = infer_workflow_type(schema, assistant_id)
+
     if workflow == "car_sales" and intent == "booking_request":
         return "viewing_request"
+
     return intent
 
 
@@ -225,6 +230,7 @@ def calculate_missing_required_variables(
 
         if intent in not_required_for_intents:
             continue
+
         if globally_required or intent in required_for_intents:
             missing.append(key)
 
@@ -244,6 +250,7 @@ def looks_mostly_english(text: str) -> bool:
 
 def is_user_question(message: str) -> bool:
     text = (message or "").lower().strip()
+
     if not text:
         return False
 
@@ -301,6 +308,7 @@ def is_user_question(message: str) -> bool:
         "أوتوماتيك",
         "مانيوال",
     ]
+
     return any(marker in text for marker in question_markers)
 
 
@@ -316,6 +324,7 @@ LANGUAGE RULE:
 - Use Egyptian Arabic phrasing like: عربية، مستعملة، أوتوماتيك، سعرها، عاملة كام كيلو، تحب تشوفها؟
 - Keep the answer friendly, clear, and short.
 """
+
     return """
 LANGUAGE RULE:
 - Reply in the same language as the latest user message.
@@ -327,6 +336,7 @@ LANGUAGE RULE:
 def enforce_reply_language(user_message: str, answer: str, model: str) -> str:
     if not is_arabic_text(user_message):
         return answer
+
     if not looks_mostly_english(answer):
         return answer
 
@@ -343,6 +353,7 @@ def enforce_reply_language(user_message: str, answer: str, model: str) -> str:
         },
         {"role": "user", "content": answer},
     ]
+
     return chat_text(model, rewrite_messages, max_tokens=300)
 
 
@@ -370,16 +381,19 @@ def autofill_channel_context(variables: Dict[str, Any], req: ChatRequest) -> Dic
 def extract_prices_from_text(text):
     text = (text or "").lower()
     prices = []
+
     for match in re.findall(r"(\d{5,})\s*egp", text):
         try:
             prices.append(int(match))
         except Exception:
             pass
+
     for match in re.findall(r"(\d{5,})\s*جنيه", text):
         try:
             prices.append(int(match))
         except Exception:
             pass
+
     return prices
 
 
@@ -463,6 +477,7 @@ def extract_knowledge_facts(item):
 
     if "automatic" in lower or "اوتوماتيك" in lower or "أوتوماتيك" in lower:
         facts["transmission"] = "automatic"
+
     if "manual" in lower or "مانيوال" in lower:
         facts["transmission"] = "manual"
 
@@ -483,6 +498,7 @@ def extract_knowledge_facts(item):
 
     if any(word in lower for word in ["used", "مستعملة", "مستعمله", "مستعمل"]):
         facts["car_condition"] = "used"
+
     if any(word in lower for word in ["brand new", "new", "زيرو", "جديدة", "جديده"]):
         facts["car_condition"] = "new"
 
@@ -492,10 +508,12 @@ def extract_knowledge_facts(item):
 def enrich_variables_from_best_knowledge(variables, knowledge):
     variables = dict(variables or {})
     best_item = choose_best_knowledge_for_variables(knowledge, variables)
+
     if not best_item:
         return variables
 
     facts = extract_knowledge_facts(best_item)
+
     for key, value in facts.items():
         if value is not None and value != "":
             variables[key] = value
@@ -524,8 +542,10 @@ def build_selected_item_from_variables(variables: Dict[str, Any]) -> Dict[str, A
 def sync_selected_item_state(variables: Dict[str, Any]) -> Dict[str, Any]:
     variables = dict(variables or {})
     item = build_selected_item_from_variables(variables)
+
     if item:
         variables["selected_item"] = item
+
     return variables
 
 
@@ -551,6 +571,7 @@ def set_workflow_stage(schema: Dict[str, Any], assistant_id: str, variables: Dic
             variables["workflow_stage"] = "qualified_interest"
         else:
             variables["workflow_stage"] = "new_lead"
+
     elif workflow == "service_booking":
         if intent == "booking_request" and variables.get("appointment_date") and variables.get("appointment_time") and variables.get("phone_number"):
             variables["workflow_stage"] = "booking_details_collected"
@@ -560,6 +581,7 @@ def set_workflow_stage(schema: Dict[str, Any], assistant_id: str, variables: Dic
             variables["workflow_stage"] = "service_identified"
         else:
             variables["workflow_stage"] = "new_lead"
+
     else:
         variables["workflow_stage"] = intent or "general"
 
@@ -569,10 +591,13 @@ def set_workflow_stage(schema: Dict[str, Any], assistant_id: str, variables: Dic
 def add_asked_question(variables: Dict[str, Any], question_key: str) -> Dict[str, Any]:
     variables = dict(variables or {})
     asked = variables.get("asked_questions")
+
     if not isinstance(asked, list):
         asked = []
+
     if question_key not in asked:
         asked.append(question_key)
+
     variables["asked_questions"] = asked[-20:]
     return variables
 
@@ -604,6 +629,7 @@ def compute_lead_score(variables: Dict[str, Any], intent: str) -> Dict[str, Any]
     variables["lead_score"] = score
     variables["lead_temperature"] = "hot" if score >= 80 else "warm" if score >= 50 else "cold"
     variables["lead_score_reasons"] = reasons
+
     return variables
 
 
@@ -621,21 +647,54 @@ def should_force_rag_for_actionable_intent(intent: str, variables: Dict[str, Any
             or any(
                 marker in text
                 for marker in [
-                    "car", "vehicle", "buy", "bmw", "mercedes", "hyundai", "toyota",
-                    "kia", "nissan", "audi", "عربية", "عربيه", "اشتري", "اشترى",
-                    "مستعملة", "مستعمله", "زيرو", "بي ام", "مرسيدس", "هيونداي",
-                    "تويوتا", "كيا", "نيسان",
+                    "car",
+                    "vehicle",
+                    "buy",
+                    "bmw",
+                    "mercedes",
+                    "hyundai",
+                    "toyota",
+                    "kia",
+                    "nissan",
+                    "audi",
+                    "عربية",
+                    "عربيه",
+                    "اشتري",
+                    "اشترى",
+                    "مستعملة",
+                    "مستعمله",
+                    "زيرو",
+                    "بي ام",
+                    "مرسيدس",
+                    "هيونداي",
+                    "تويوتا",
+                    "كيا",
+                    "نيسان",
                 ]
             )
         )
+
     if intent == "service_question":
-        return bool(variables.get("service_needed") or variables.get("doctor_preference") or variables.get("insurance_provider"))
+        return bool(
+            variables.get("service_needed")
+            or variables.get("doctor_preference")
+            or variables.get("insurance_provider")
+        )
+
     if intent == "booking_request":
-        return bool(variables.get("service_needed") or variables.get("appointment_date") or variables.get("appointment_time") or variables.get("doctor_preference"))
+        return bool(
+            variables.get("service_needed")
+            or variables.get("appointment_date")
+            or variables.get("appointment_time")
+            or variables.get("doctor_preference")
+        )
+
     if intent == "insurance_question":
         return bool(variables.get("insurance_provider") or variables.get("service_needed"))
+
     if intent == "viewing_request":
         return True
+
     return False
 
 
@@ -644,6 +703,7 @@ def format_money_ar(amount, currency="EGP") -> str:
         formatted = f"{int(amount):,}"
     except Exception:
         formatted = str(amount)
+
     return f"{formatted} جنيه" if currency == "EGP" else f"{formatted} {currency}"
 
 
@@ -652,10 +712,15 @@ def format_money_en(amount, currency="EGP") -> str:
         formatted = f"{int(amount):,}"
     except Exception:
         formatted = str(amount)
+
     return f"{formatted} {currency}"
 
 
-def deterministic_answer_from_state(user_message: str, variables: Dict[str, Any], recommended_next_action: str = "continue_conversation") -> Optional[str]:
+def deterministic_answer_from_state(
+    user_message: str,
+    variables: Dict[str, Any],
+    recommended_next_action: str = "continue_conversation",
+) -> Optional[str]:
     variables = variables or {}
     text = (user_message or "").lower().strip()
     arabic = is_arabic_text(user_message)
@@ -682,6 +747,7 @@ def deterministic_answer_from_state(user_message: str, variables: Dict[str, Any]
             if transmission == "manual":
                 return f"{model} مانيوال."
             return f"{model} فتيسها {transmission}."
+
         if transmission == "automatic":
             return f"Yes, the {model} is automatic."
         if transmission == "manual":
@@ -693,10 +759,15 @@ def deterministic_answer_from_state(user_message: str, variables: Dict[str, Any]
             km_text = f"{int(km):,}"
         except Exception:
             km_text = str(km)
-        return f"{model} عاملة {km_text} كيلو." if arabic else f"The {model} has {km_text} km."
+
+        if arabic:
+            return f"{model} عاملة {km_text} كيلو."
+        return f"The {model} has {km_text} km."
 
     if any(marker in text for marker in ["price", "cost", "how much", "بكام", "سعر", "سعرها", "سعره"]) and price:
-        return f"سعر {model} هو {format_money_ar(price, currency)}." if arabic else f"The {model} price is {format_money_en(price, currency)}."
+        if arabic:
+            return f"سعر {model} هو {format_money_ar(price, currency)}."
+        return f"The {model} price is {format_money_en(price, currency)}."
 
     if any(marker in text for marker in ["budget", "under", "up to", "million", "ميزانيتي", "ميزانية", "الميزانية", "لحد", "مليون", "مناسب"]) and budget and price:
         try:
@@ -705,17 +776,14 @@ def deterministic_answer_from_state(user_message: str, variables: Dict[str, Any]
             fits_budget = None
 
         if fits_budget is True:
-            return (
-                f"أيوه، {model} مناسبة لميزانيتك. سعرها {format_money_ar(price, currency)}. تحب نرتب معاد تشوفها؟"
-                if arabic
-                else f"Yes, the {model} fits your budget. Its price is {format_money_en(price, currency)}. Would you like to schedule a viewing?"
-            )
+            if arabic:
+                return f"أيوه، {model} مناسبة لميزانيتك. سعرها {format_money_ar(price, currency)}. تحب نرتب معاد تشوفها؟"
+            return f"Yes, the {model} fits your budget. Its price is {format_money_en(price, currency)}. Would you like to schedule a viewing?"
+
         if fits_budget is False:
-            return (
-                f"{model} أعلى من ميزانيتك شوية. سعرها {format_money_ar(price, currency)}. تحب أقولك على بديل أقرب لميزانيتك؟"
-                if arabic
-                else f"The {model} is slightly above your budget. Its price is {format_money_en(price, currency)}. Would you like an alternative closer to your budget?"
-            )
+            if arabic:
+                return f"{model} أعلى من ميزانيتك شوية. سعرها {format_money_ar(price, currency)}. تحب أقولك على بديل أقرب لميزانيتك؟"
+            return f"The {model} is slightly above your budget. Its price is {format_money_en(price, currency)}. Would you like an alternative closer to your budget?"
 
     return None
 
@@ -739,6 +807,7 @@ def build_objection_answer(user_message: str, variables: Dict[str, Any]) -> Opti
 
     if price:
         return f"I understand. The current price for {model} is {format_money_en(price, currency)}. I can suggest a closer alternative or have someone from the team follow up about negotiation or installments."
+
     return "I understand. I can suggest a closer alternative or have someone from the team follow up about the price."
 
 
@@ -749,20 +818,31 @@ def build_conversation_repair_answer(user_message: str, variables: Dict[str, Any
     if not any(marker in text for marker in ["مش قصدي", "مش ده قصدي", "انت مش فاهم", "مش فاهمني", "wrong", "not what i mean", "you misunderstood"]):
         return None
 
-    return "تمام، حقك عليا. تقصد تعدل النوع/الميزانية، ولا تقصد عربية مختلفة تمامًا؟" if arabic else "Got it, sorry about that. Do you want to change the brand/budget, or are you looking for something completely different?"
+    return (
+        "تمام، حقك عليا. تقصد تعدل النوع/الميزانية، ولا تقصد عربية مختلفة تمامًا؟"
+        if arabic
+        else "Got it, sorry about that. Do you want to change the brand/budget, or are you looking for something completely different?"
+    )
 
 
-def build_final_confirmation(schema: Dict[str, Any], assistant_id: str, variables: Dict[str, Any], user_message: str) -> Optional[str]:
+def build_final_confirmation(
+    schema: Dict[str, Any],
+    assistant_id: str,
+    variables: Dict[str, Any],
+    user_message: str,
+) -> Optional[str]:
     workflow = infer_workflow_type(schema, assistant_id)
     variables = variables or {}
     arabic = is_arabic_text(user_message)
 
     if workflow == "car_sales":
         intent = normalize_intent_for_schema(variables.get("intent"), schema, assistant_id)
+
         if intent != "viewing_request":
             return None
 
         selected_item = variables.get("selected_item") if isinstance(variables.get("selected_item"), dict) else {}
+
         model = selected_item.get("model") or variables.get("matched_car_model") or variables.get("car_brand") or "العربية"
         date = variables.get("preferred_viewing_date")
         time = variables.get("preferred_viewing_time") or variables.get("appointment_time")
@@ -779,10 +859,12 @@ def build_final_confirmation(schema: Dict[str, Any], assistant_id: str, variable
 
         if time:
             return f"Great, the viewing request for {model} is set for {date} at {time} in {location}. We’ll contact you on the same number to confirm the details."
+
         return f"Great, the viewing request for {model} is set for {date} in {location}. We’ll contact you on the same number to confirm the details."
 
     if workflow == "service_booking":
         intent = normalize_intent_for_schema(variables.get("intent"), schema, assistant_id)
+
         if intent != "booking_request":
             return None
 
@@ -811,12 +893,16 @@ def update_asked_questions_from_answer(variables: Dict[str, Any], answer: str) -
 
     if any(x in answer_text for x in ["ميزانيتك", "budget"]):
         variables = add_asked_question(variables, "budget")
+
     if any(x in answer_text for x in ["تحب تشوف", "معاينة", "viewing"]):
         variables = add_asked_question(variables, "viewing_interest")
+
     if any(x in answer_text for x in ["المكان", "location", "فين"]):
         variables = add_asked_question(variables, "location")
+
     if any(x in answer_text for x in ["رقم", "phone", "number"]):
         variables = add_asked_question(variables, "phone")
+
     if any(x in answer_text for x in ["معاد", "ميعاد", "date", "time"]):
         variables = add_asked_question(variables, "date_time")
 
@@ -839,6 +925,7 @@ def is_context_sensitive_variable_update(message, updates, knowledge):
         "preferred_viewing_date",
         "preferred_viewing_time",
     }
+
     context_markers = [
         "budget",
         "ميزانيتي",
@@ -874,20 +961,26 @@ def build_mock_answer(intent, variables, missing_variables, knowledge):
         if best_match:
             title = best_match.get("title", "the knowledge base")
             text = best_match.get("text", "")
+
             if budget:
                 return f"Got it — you're looking for a {condition} {brand} up to {budget}. I found a relevant match in {title}: {text[:220]}"
+
             return f"Got it — you're interested in {brand}. I found relevant information in {title}: {text[:220]}"
 
         if budget:
             return f"Got it — you're looking for a {condition} {brand} up to {budget}. I can help narrow that down. What model or body type do you prefer?"
+
         return f"Got it — you're interested in {brand}. What budget range should I look within?"
 
     if intent == "viewing_request":
         return "Sure — I can help arrange a viewing. I just need the remaining viewing details."
+
     if intent == "booking_request":
         return "Sure — I can help with booking. What day and time works best for you?"
+
     if intent == "complaint":
         return "I’m sorry about that. I’ll help you resolve it. Can you share a few more details so I can escalate it properly?"
+
     if intent == "urgent_medical_issue":
         return "This may need urgent attention. Please contact emergency services or the business directly right away."
 
@@ -983,16 +1076,60 @@ def should_use_cached_rag(message, route):
 
     text = (message or "").lower().strip()
     followup_markers = [
-        "it", "that", "this", "its", "is it", "does it", "what about",
-        "how many", "automatic", "manual", "km", "color", "available",
-        "book it", "see it", "price", "budget", "under", "up to",
-        "million", "same one", "the car", "the bmw", "ده", "دي", "دا",
-        "العربية", "العربيه", "متاح", "اوتوماتيك", "أوتوماتيك",
-        "مانيوال", "كام كيلو", "عاملة كام", "عامله كام", "بكام",
-        "سعرها", "ميزانيتي", "ميزانية", "الميزانية", "لحد", "مليون",
-        "نفسها", "احجزها", "اشوفها", "أشوفها", "اشوفه", "معاينة",
-        "معاينه", "غالية", "تقسيط", "خصم",
+        "it",
+        "that",
+        "this",
+        "its",
+        "is it",
+        "does it",
+        "what about",
+        "how many",
+        "automatic",
+        "manual",
+        "km",
+        "color",
+        "available",
+        "book it",
+        "see it",
+        "price",
+        "budget",
+        "under",
+        "up to",
+        "million",
+        "same one",
+        "the car",
+        "the bmw",
+        "ده",
+        "دي",
+        "دا",
+        "العربية",
+        "العربيه",
+        "متاح",
+        "اوتوماتيك",
+        "أوتوماتيك",
+        "مانيوال",
+        "كام كيلو",
+        "عاملة كام",
+        "عامله كام",
+        "بكام",
+        "سعرها",
+        "ميزانيتي",
+        "ميزانية",
+        "الميزانية",
+        "لحد",
+        "مليون",
+        "نفسها",
+        "احجزها",
+        "اشوفها",
+        "أشوفها",
+        "اشوفه",
+        "معاينة",
+        "معاينه",
+        "غالية",
+        "تقسيط",
+        "خصم",
     ]
+
     return any(marker in text for marker in followup_markers)
 
 
@@ -1004,7 +1141,11 @@ def startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mock_mode": MOCK_MODE, "rag_cache_enabled": RAG_CACHE_ENABLED}
+    return {
+        "status": "ok",
+        "mock_mode": MOCK_MODE,
+        "rag_cache_enabled": RAG_CACHE_ENABLED,
+    }
 
 
 @app.post("/assistants")
@@ -1030,9 +1171,29 @@ def read_schema(assistant_id: str, x_api_key: str = Header(default="")):
 @app.post("/ingest")
 def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    chunks = ingest_document(req.assistant_id, req.document_id, req.title, req.text, req.metadata)
-    upsert_knowledge_document(req.assistant_id, req.document_id, req.title, req.metadata, chunks)
-    return {"status": "ingested", "assistant_id": req.assistant_id, "document_id": req.document_id, "chunks": chunks}
+
+    chunks = ingest_document(
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        text=req.text,
+        metadata=req.metadata,
+    )
+
+    upsert_knowledge_document(
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        metadata=req.metadata,
+        chunk_count=chunks,
+    )
+
+    return {
+        "status": "ingested",
+        "assistant_id": req.assistant_id,
+        "document_id": req.document_id,
+        "chunks": chunks,
+    }
 
 
 @app.get("/knowledge/{assistant_id}")
@@ -1044,9 +1205,21 @@ def read_knowledge_documents(assistant_id: str, x_api_key: str = Header(default=
 @app.post("/knowledge/search")
 def knowledge_search(req: KnowledgeSearchRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    results = search_knowledge(req.assistant_id, req.query, req.limit)
+
+    results = search_knowledge(
+        assistant_id=req.assistant_id,
+        query=req.query,
+        limit=req.limit,
+    )
+
     compressed = compress_knowledge(results, req.query)
-    return {"assistant_id": req.assistant_id, "query": req.query, "count": len(compressed), "results": compressed}
+
+    return {
+        "assistant_id": req.assistant_id,
+        "query": req.query,
+        "count": len(compressed),
+        "results": compressed,
+    }
 
 
 @app.get("/variables/{conversation_id}")
@@ -1058,16 +1231,33 @@ def read_variables(conversation_id: str, x_api_key: str = Header(default="")):
 @app.patch("/variables")
 def patch_variables(req: PatchVariablesRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
+
     existing = get_variables(req.conversation_id)
     updated = apply_variable_patch(existing, req.updates, req.deletions)
-    save_variables(req.conversation_id, req.assistant_id, req.user_id, updated)
-    return {"status": "updated", "conversation_id": req.conversation_id, "variables": updated}
+
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated,
+    )
+
+    return {
+        "status": "updated",
+        "conversation_id": req.conversation_id,
+        "variables": updated,
+    }
 
 
 @app.get("/memories/{assistant_id}/{user_id}")
 def read_user_memories(assistant_id: str, user_id: str, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
-    return {"assistant_id": assistant_id, "user_id": user_id, "memories": list_long_term_memories(assistant_id, user_id)}
+
+    return {
+        "assistant_id": assistant_id,
+        "user_id": user_id,
+        "memories": list_long_term_memories(assistant_id, user_id),
+    }
 
 
 @app.post("/chat")
@@ -1075,8 +1265,21 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
 
     assistant = get_or_create_assistant(req.assistant_id)
-    ensure_conversation(req.conversation_id, req.assistant_id, req.user_id, req.channel)
-    save_message(req.conversation_id, req.assistant_id, req.user_id, "user", req.message)
+
+    ensure_conversation(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        req.channel,
+    )
+
+    save_message(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        "user",
+        req.message,
+    )
 
     recent_messages = get_recent_messages(req.conversation_id, limit=RECENT_MESSAGES_LIMIT)
     summary = get_summary(req.conversation_id)
@@ -1098,7 +1301,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     )
 
     if route.get("needs_variable_extraction", True):
-        extraction = extract_variables(schema, existing_variables, recent_messages, req.message)
+        extraction = extract_variables(
+            schema=schema,
+            existing_variables=existing_variables,
+            recent_messages=recent_messages,
+            user_message=req.message,
+        )
     else:
         extraction = {
             "intent": existing_variables.get("intent", route.get("intent_hint", "general_question")),
@@ -1120,6 +1328,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         extraction.get("updates", {}),
         extraction.get("deletions", []),
     )
+
     updated_variables = autofill_channel_context(updated_variables, req)
 
     current_intent = normalize_intent_for_schema(
@@ -1127,6 +1336,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         schema=schema,
         assistant_id=req.assistant_id,
     )
+
     updated_variables["intent"] = current_intent
 
     missing_required_variables = calculate_missing_required_variables(
@@ -1135,25 +1345,34 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         intent=current_intent,
         assistant_id=req.assistant_id,
     )
+
     if not missing_required_variables:
         missing_required_variables = extraction.get("missing_variables", [])
 
     recommended_next_action = "continue_conversation"
+
     if missing_required_variables:
         recommended_next_action = "ask_clarifying_question"
+
     if current_intent == "booking_request":
         recommended_next_action = "collect_booking_details"
+
     if current_intent == "viewing_request":
         recommended_next_action = "collect_viewing_details"
+
     if current_intent == "human_handoff":
         recommended_next_action = "human_handoff"
+
     if current_intent == "complaint":
         recommended_next_action = "consider_human_handoff"
+
     if current_intent == "urgent_medical_issue":
         recommended_next_action = "urgent_human_handoff"
 
     force_rag_for_actionable_intent = should_force_rag_for_actionable_intent(
-        current_intent, updated_variables, req.message
+        current_intent,
+        updated_variables,
+        req.message,
     )
 
     if force_rag_for_actionable_intent:
@@ -1190,8 +1409,14 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         knowledge_source = "cache"
         route["needs_rag"] = True
         route["rag_cache_hit"] = True
+
     elif route.get("needs_rag", True):
-        raw_knowledge = search_knowledge(req.assistant_id, req.message, limit=KNOWLEDGE_TOP_K)
+        raw_knowledge = search_knowledge(
+            req.assistant_id,
+            req.message,
+            limit=KNOWLEDGE_TOP_K,
+        )
+
         knowledge = compress_knowledge(raw_knowledge, req.message)
         knowledge_source = "qdrant"
         route["rag_cache_hit"] = False
@@ -1220,7 +1445,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         assistant_id=req.assistant_id,
     )
 
-    save_variables(req.conversation_id, req.assistant_id, req.user_id, updated_variables)
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated_variables,
+    )
 
     if (
         route.get("answer_mode") == "no_llm"
@@ -1232,7 +1462,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
     memories = []
     if route.get("needs_memory", True):
-        memories = search_memories(req.assistant_id, req.user_id, req.message, limit=MEMORY_TOP_K)
+        memories = search_memories(
+            req.assistant_id,
+            req.user_id,
+            req.message,
+            limit=MEMORY_TOP_K,
+        )
 
     final_confirmation = build_final_confirmation(schema, req.assistant_id, updated_variables, req.message)
     repair_answer = build_conversation_repair_answer(req.message, updated_variables)
@@ -1245,20 +1480,24 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         tier = "state"
         updated_variables["lead_stage"] = "confirmed"
         updated_variables["workflow_stage"] = "confirmed"
+
     elif repair_answer:
         answer = repair_answer
         model = "none"
         tier = "state"
+
     elif objection_answer:
         answer = objection_answer
         model = "none"
         tier = "state"
         updated_variables["needs_human"] = True
         updated_variables["handoff_reason"] = "price_or_objection"
+
     elif state_answer:
         answer = state_answer
         model = "none"
         tier = "state"
+
     elif route.get("answer_mode") == "no_llm":
         answer = build_no_llm_answer(
             message=req.message,
@@ -1270,6 +1509,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         )
         model = "none"
         tier = "no_llm"
+
     else:
         answer, model, tier = generate_answer(
             assistant=assistant,
@@ -1285,9 +1525,21 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         )
 
     updated_variables = update_asked_questions_from_answer(updated_variables, answer)
-    save_variables(req.conversation_id, req.assistant_id, req.user_id, updated_variables)
 
-    save_message(req.conversation_id, req.assistant_id, req.user_id, "assistant", answer)
+    save_variables(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        updated_variables,
+    )
+
+    save_message(
+        req.conversation_id,
+        req.assistant_id,
+        req.user_id,
+        "assistant",
+        answer,
+    )
 
     updated_summary = update_conversation_summary(
         conversation_id=req.conversation_id,
@@ -1305,20 +1557,32 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         variables=updated_variables,
     )
 
+    usage_input_obj = {
+        "message": req.message,
+        "summary": summary,
+        "variables": updated_variables,
+        "knowledge": knowledge,
+        "memories": memories,
+        "route": route,
+    }
+
+    token_usage = build_token_usage_report(
+        model_used=model,
+        model_tier=tier,
+        answer_mode=route.get("answer_mode", "generate"),
+        input_obj=usage_input_obj,
+        output_text=answer,
+        knowledge_source=knowledge_source,
+        rag_cache_hit=route.get("rag_cache_hit", False),
+    )
+
     log_estimated_usage(
         assistant_id=req.assistant_id,
         conversation_id=req.conversation_id,
         user_id=req.user_id,
         model=model,
         purpose="chat",
-        input_obj={
-            "message": req.message,
-            "summary": summary,
-            "variables": updated_variables,
-            "knowledge": knowledge,
-            "memories": memories,
-            "route": route,
-        },
+        input_obj=usage_input_obj,
         output_text=answer,
         metadata={
             "mock_mode": MOCK_MODE,
@@ -1328,6 +1592,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "needs_rag": route.get("needs_rag"),
             "needs_memory": route.get("needs_memory"),
             "rag_cache_hit": route.get("rag_cache_hit", False),
+            "token_usage": token_usage,
         },
     )
 
@@ -1349,6 +1614,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "long_term_memories_written": long_term_memories_written,
         "model_used": model,
         "model_tier": tier,
+        "token_usage": token_usage,
         "mock_mode": MOCK_MODE,
         "memory_saved": bool(long_term_memories_written),
     }
