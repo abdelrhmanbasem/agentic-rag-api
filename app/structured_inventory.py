@@ -1,6 +1,11 @@
 # app/structured_inventory.py
 # Structured inventory index for ultra-low-token / low-embedding lookups.
 # Stores parsed inventory in a local JSON file and searches it before vector RAG.
+#
+# This version is intentionally forgiving:
+# - Works even if assistant schema is empty.
+# - Can score from extracted variables and/or raw user query.
+# - Returns relevant inventory before Qdrant whenever possible.
 
 import json
 import os
@@ -76,6 +81,10 @@ def detect_brand(text: str) -> Optional[str]:
         "نيسان": "Nissan",
         "audi": "Audi",
         "اودي": "Audi",
+        "ford": "Ford",
+        "فورد": "Ford",
+        "tesla": "Tesla",
+        "تسلا": "Tesla",
     }
 
     for raw, brand in brand_map.items():
@@ -88,7 +97,7 @@ def detect_brand(text: str) -> Optional[str]:
 def detect_condition(text: str) -> Optional[str]:
     normalized = normalize_text(text)
 
-    if any(x in normalized for x in ["used", "مستعمل", "مستعمله", "مستعملة", "استعمال"]):
+    if any(x in normalized for x in ["used", "preowned", "pre-owned", "مستعمل", "مستعمله", "مستعملة", "استعمال"]):
         return "used"
 
     if any(x in normalized for x in ["new", "brand new", "زيرو", "جديد", "جديده", "جديدة"]):
@@ -109,6 +118,12 @@ def detect_transmission(text: str) -> Optional[str]:
     return None
 
 
+def detect_brand_from_model(model: str) -> Optional[str]:
+    model = model or ""
+    first = model.split()[0] if model.split() else ""
+    return detect_brand(first) or first or None
+
+
 def parse_inventory_items(
     assistant_id: str,
     document_id: str,
@@ -123,7 +138,7 @@ def parse_inventory_items(
     items: List[Dict[str, Any]] = []
 
     model_pattern = re.compile(
-        r"\b(BMW\s+\w+|Mercedes\s+\w+|Hyundai\s+\w+|Toyota\s+\w+|Kia\s+\w+|Nissan\s+\w+|Audi\s+\w+)\b",
+        r"\b(BMW\s+\w+|Mercedes\s+\w+|Hyundai\s+\w+|Toyota\s+\w+|Kia\s+\w+|Nissan\s+\w+|Audi\s+\w+|Ford\s+\w+|Tesla\s+\w+)\b",
         re.IGNORECASE,
     )
 
@@ -134,7 +149,22 @@ def parse_inventory_items(
 
         lower = line.lower()
 
-        if "available" not in lower and "متاح" not in lower and "سعر" not in lower and "egp" not in lower:
+        inventory_signal = any(
+            marker in lower
+            for marker in [
+                "available",
+                "egp",
+                "price",
+                "km",
+                "متاح",
+                "متاحة",
+                "سعر",
+                "جنيه",
+                "كيلو",
+            ]
+        )
+
+        if not inventory_signal:
             continue
 
         model_match = model_pattern.search(line)
@@ -142,7 +172,7 @@ def parse_inventory_items(
             continue
 
         model = model_match.group(1).strip()
-        brand = detect_brand(line) or model.split()[0]
+        brand = detect_brand(line) or detect_brand_from_model(model)
 
         year = None
         year_match = re.search(r"\b(20\d{2})\b", line)
@@ -150,7 +180,7 @@ def parse_inventory_items(
             year = year_match.group(1)
 
         km = None
-        km_match = re.search(r"(\d{2,6})\s*km", line, re.IGNORECASE)
+        km_match = re.search(r"(\d{2,6})\s*(?:km|كيلو)", line, re.IGNORECASE)
         if km_match:
             try:
                 km = int(km_match.group(1))
@@ -178,6 +208,8 @@ def parse_inventory_items(
             "document_id": document_id,
             "title": title,
             "text": line,
+            "raw_text": line,
+            "search_text": normalize_text(line),
             "metadata": metadata,
             "type": "car",
             "brand": brand,
@@ -206,12 +238,14 @@ def upsert_structured_inventory_from_text(
     title_l = (title or "").lower()
     doc_l = (document_id or "").lower()
     meta_type = str(metadata.get("type", "")).lower()
+    text_l = (text or "").lower()
 
     should_index = (
         meta_type == "inventory"
         or "inventory" in title_l
         or "inventory" in doc_l
-        or "available for" in (text or "").lower()
+        or "available for" in text_l
+        or "egp" in text_l
     )
 
     if not should_index:
@@ -241,28 +275,84 @@ def upsert_structured_inventory_from_text(
     return len(parsed)
 
 
-def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any]) -> float:
+def extract_query_hints(raw_query: str) -> Dict[str, Any]:
+    raw_query = raw_query or ""
+    hints: Dict[str, Any] = {}
+
+    brand = detect_brand(raw_query)
+    condition = detect_condition(raw_query)
+    transmission = detect_transmission(raw_query)
+
+    if brand:
+        hints["car_brand"] = brand
+
+    if condition:
+        hints["car_condition"] = condition
+
+    if transmission:
+        hints["transmission"] = transmission
+
+    # Budget examples: مليون, 1 million, 950000, 950 ألف
+    text = normalize_text(raw_query)
+
+    if "مليون" in text:
+        match = re.search(r"(\d+(?:\.\d+)?)?\s*مليون", text)
+        if match:
+            value = float(match.group(1) or 1)
+            hints["budget_max"] = int(value * 1000000)
+
+    elif any(x in text for x in ["budget", "ميزاني", "لحد", "حد اقصي", "حد اقصى", "الف", "ألف"]):
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(k|thousand|الف|ألف)?", text)
+        if match:
+            value = float(match.group(1))
+            unit = match.group(2)
+            if unit in ["k", "thousand", "الف", "ألف"]:
+                value *= 1000
+            hints["budget_max"] = int(value)
+
+    return hints
+
+
+def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any], raw_query: str = "") -> float:
     score = 0.0
     query_variables = query_variables or {}
+    raw_query_norm = normalize_text(raw_query)
 
-    q_brand = (query_variables.get("car_brand") or "").lower()
-    q_condition = (query_variables.get("car_condition") or "").lower()
-    q_transmission = (query_variables.get("transmission") or "").lower()
-    q_budget = query_variables.get("budget_max")
+    merged_query = dict(extract_query_hints(raw_query))
+    merged_query.update({k: v for k, v in query_variables.items() if v not in [None, ""]})
 
-    item_brand = (item.get("brand") or "").lower()
-    item_condition = (item.get("condition") or "").lower()
-    item_transmission = (item.get("transmission") or "").lower()
+    q_brand = str(merged_query.get("car_brand") or "").lower()
+    q_condition = str(merged_query.get("car_condition") or "").lower()
+    q_transmission = str(merged_query.get("transmission") or "").lower()
+    q_budget = merged_query.get("budget_max")
+
+    item_brand = str(item.get("brand") or "").lower()
+    item_condition = str(item.get("condition") or "").lower()
+    item_transmission = str(item.get("transmission") or "").lower()
     item_price = item.get("price")
+    item_model = str(item.get("model") or "").lower()
+    item_text = normalize_text(item.get("text") or "")
 
+    # Brand/model matching.
     if q_brand:
-        score += 100 if q_brand == item_brand else -100
+        if q_brand == item_brand:
+            score += 120
+        elif q_brand in item_model or q_brand in item_text:
+            score += 80
+        else:
+            score -= 80
+
+    # Raw text overlap helps when schema/extraction is weak.
+    if raw_query_norm:
+        for token in raw_query_norm.split():
+            if len(token) >= 3 and token in item_text:
+                score += 5
 
     if q_condition and item_condition:
-        score += 20 if q_condition == item_condition else -10
+        score += 25 if q_condition == item_condition else -10
 
     if q_transmission:
-        score += 30 if q_transmission == item_transmission else -20
+        score += 35 if q_transmission == item_transmission else -15
 
     if q_budget and item_price:
         try:
@@ -270,14 +360,18 @@ def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any]) 
         except Exception:
             pass
 
+    # Base completeness score so inventory can still be returned when query is broad.
     if item_price:
-        score += 5
+        score += 8
 
     if item.get("km"):
-        score += 3
+        score += 5
 
     if item.get("year"):
-        score += 2
+        score += 4
+
+    if item.get("model"):
+        score += 4
 
     return score
 
@@ -286,6 +380,7 @@ def search_structured_inventory(
     assistant_id: str,
     query_variables: Dict[str, Any],
     limit: int = 4,
+    raw_query: str = "",
 ) -> List[Dict[str, Any]]:
     items = [
         item
@@ -299,10 +394,13 @@ def search_structured_inventory(
     scored = []
 
     for item in items:
-        score = score_inventory_item(item, query_variables)
+        score = score_inventory_item(item, query_variables or {}, raw_query=raw_query)
+        enriched = dict(item)
+        enriched["score"] = score
+
+        # Keep any positive score.
+        # If raw query is very broad, completeness base score will still surface inventory.
         if score > 0:
-            enriched = dict(item)
-            enriched["score"] = score
             scored.append(enriched)
 
     scored.sort(key=lambda x: x.get("score", 0), reverse=True)
