@@ -1,10 +1,19 @@
 # app/fast_path.py
 # Universal pre-router fast path for all assistants.
-# Goal: answer obvious state/workflow messages before router/extraction/RAG/GPT.
-# This saves tokens while keeping conversations fluid.
+# Goal:
+# - answer obvious state/workflow messages before router/extraction/RAG/GPT
+# - save tokens while keeping conversations fluid
+# - use conversation_brain.py to make zero-token answers feel intelligent and human-like
 
 import re
 from typing import Dict, Any, Optional, List
+
+from app.conversation_brain import (
+    compose_car_fact_answer,
+    compose_price_objection_answer,
+    compose_soft_close,
+    compose_handoff_ack,
+)
 
 
 def is_arabic_text(text: str) -> bool:
@@ -273,6 +282,9 @@ def user_has_objection(message: str) -> bool:
         "خصم",
         "تقسيط",
         "قسط",
+        "نهائي",
+        "اخره",
+        "آخره",
         "مش مناسب",
         "اقل",
         "أقل",
@@ -282,6 +294,7 @@ def user_has_objection(message: str) -> bool:
         "installment",
         "installments",
         "lower price",
+        "final price",
     ]
 
     return any(marker in text for marker in markers)
@@ -432,7 +445,7 @@ def get_last_assistant_text(recent_messages: List[Dict[str, Any]]) -> str:
 def infer_yes_no_context(last_assistant_message: str) -> str:
     text = normalize_text(last_assistant_message)
 
-    if any(marker in text for marker in ["تحب تشوف", "معاينة", "viewing", "schedule a viewing"]):
+    if any(marker in text for marker in ["تحب تشوف", "معاينة", "معاينه", "viewing", "schedule a viewing"]):
         return "viewing_interest"
 
     if any(marker in text for marker in ["بديل", "alternative", "اختيار تاني"]):
@@ -447,68 +460,47 @@ def infer_yes_no_context(last_assistant_message: str) -> str:
     return "general_ack"
 
 
-def build_state_fact_answer(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    arabic = is_arabic_text(message)
+def build_state_fact_answer(
+    message: str,
+    variables: Dict[str, Any],
+    recent_messages: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
     item = get_selected_item(variables)
 
     if not item and not variables.get("matched_car_model"):
         return None
 
-    model = get_model_name(variables, arabic)
-    transmission = item.get("transmission") or variables.get("transmission")
-    km = item.get("km") or variables.get("matched_car_km")
-    price = item.get("price") or variables.get("matched_car_price")
-    currency = item.get("currency") or variables.get("currency") or "EGP"
-    budget = variables.get("budget_max")
+    if asks_transmission(message):
+        return compose_car_fact_answer(
+            message=message,
+            variables=variables,
+            fact_type="transmission",
+            recent_messages=recent_messages,
+        )
 
-    if asks_transmission(message) and transmission:
-        if arabic:
-            if transmission == "automatic":
-                return f"أيوه، {model} أوتوماتيك."
-            if transmission == "manual":
-                return f"{model} مانيوال."
-            return f"{model} فتيسها {transmission}."
+    if asks_km_or_mileage(message):
+        return compose_car_fact_answer(
+            message=message,
+            variables=variables,
+            fact_type="km",
+            recent_messages=recent_messages,
+        )
 
-        if transmission == "automatic":
-            return f"Yes, {model} is automatic."
-        if transmission == "manual":
-            return f"{model} is manual."
-        return f"{model} transmission is {transmission}."
+    if asks_price(message):
+        return compose_car_fact_answer(
+            message=message,
+            variables=variables,
+            fact_type="price",
+            recent_messages=recent_messages,
+        )
 
-    if asks_km_or_mileage(message) and km:
-        try:
-            km_text = f"{int(km):,}"
-        except Exception:
-            km_text = str(km)
-
-        if arabic:
-            return f"{model} عاملة {km_text} كيلو."
-
-        return f"{model} has {km_text} km."
-
-    if asks_price(message) and price:
-        if arabic:
-            return f"سعر {model} هو {format_money_ar(price, currency)}."
-
-        return f"{model} price is {format_money_en(price, currency)}."
-
-    if asks_budget_fit(message) and budget and price:
-        try:
-            fits = int(price) <= int(budget)
-        except Exception:
-            fits = None
-
-        if fits is True:
-            if arabic:
-                return f"أيوه، {model} مناسبة لميزانيتك. سعرها {format_money_ar(price, currency)}."
-
-            return f"Yes, {model} fits your budget. Its price is {format_money_en(price, currency)}."
-
-        if fits is False:
-            if arabic:
-                return f"{model} أعلى من ميزانيتك شوية. سعرها {format_money_ar(price, currency)}."
-
-            return f"{model} is slightly above your budget. Its price is {format_money_en(price, currency)}."
+    if asks_budget_fit(message):
+        return compose_car_fact_answer(
+            message=message,
+            variables=variables,
+            fact_type="budget",
+            recent_messages=recent_messages,
+        )
 
     return None
 
@@ -520,19 +512,6 @@ def build_workflow_fast_answer(
     variables: Dict[str, Any],
     recent_messages: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """
-    Returns:
-    {
-        "answer": "...",
-        "model_tier": "fast_path",
-        "action": "...",
-        "updates": {...},
-        "skip_summary": True,
-        "skip_memory": True
-    }
-
-    Or None if the normal pipeline should continue.
-    """
     variables = variables or {}
     workflow = infer_workflow_type(schema, assistant_id)
     arabic = is_arabic_text(message)
@@ -552,7 +531,7 @@ def build_workflow_fast_answer(
 
     if user_wants_human(message):
         return {
-            "answer": "تمام، هخلي حد من الفريق يتابع معاك." if arabic else "Sure, I’ll have someone from the team follow up with you.",
+            "answer": compose_handoff_ack(message, variables),
             "model_tier": "fast_path",
             "action": "handoff_to_human",
             "updates": {
@@ -576,7 +555,7 @@ def build_workflow_fast_answer(
             "skip_memory": True,
         }
 
-    fact_answer = build_state_fact_answer(message, variables)
+    fact_answer = build_state_fact_answer(message, variables, recent_messages)
     if fact_answer:
         return {
             "answer": fact_answer,
@@ -587,41 +566,11 @@ def build_workflow_fast_answer(
         }
 
     if user_has_objection(message):
-        model = get_model_name(variables, arabic)
-        price = item.get("price") or variables.get("matched_car_price")
-        currency = item.get("currency") or variables.get("currency") or "EGP"
-        budget = variables.get("budget_max")
-
-        if arabic:
-            if price and budget:
-                try:
-                    if int(price) <= int(budget):
-                        answer = (
-                            f"فاهمك. سعر {model} هو {format_money_ar(price, currency)}، "
-                            f"وده داخل ميزانيتك اللي قلتها. لو حابب، أقدر أخلي حد من الفريق يتابع معاك بخصوص التفاوض أو التقسيط."
-                        )
-                    else:
-                        answer = (
-                            f"فاهمك. سعر {model} الحالي {format_money_ar(price, currency)}. "
-                            f"أقدر أقولك على بديل أقرب لميزانيتك، أو أخلي حد من الفريق يتابع معاك بخصوص التفاوض أو التقسيط."
-                        )
-                except Exception:
-                    answer = "فاهمك. أقدر أقولك على بديل أقرب لميزانيتك، أو أخلي حد من الفريق يتابع معاك بخصوص السعر."
-            elif price:
-                answer = (
-                    f"فاهمك. سعر {model} الحالي {format_money_ar(price, currency)}. "
-                    f"أقدر أقولك على بديل أقرب لميزانيتك، أو أخلي حد من الفريق يتابع معاك بخصوص التفاوض أو التقسيط."
-                )
-            else:
-                answer = "فاهمك. أقدر أقولك على بديل أقرب لميزانيتك، أو أخلي حد من الفريق يتابع معاك بخصوص السعر."
-        else:
-            if price:
-                answer = (
-                    f"I understand. {model} is currently {format_money_en(price, currency)}. "
-                    f"I can suggest a closer alternative or have someone follow up about negotiation or installments."
-                )
-            else:
-                answer = "I understand. I can suggest a closer alternative or have someone follow up about the price."
+        answer = compose_price_objection_answer(
+            message=message,
+            variables=variables,
+            recent_messages=recent_messages,
+        )
 
         return {
             "answer": answer,
@@ -657,7 +606,7 @@ def build_workflow_fast_answer(
 
             if yes_no_context == "human_followup_interest":
                 return {
-                    "answer": "تمام، هخلي حد من الفريق يتابع معاك." if arabic else "Sure, I’ll have someone from the team follow up with you.",
+                    "answer": compose_handoff_ack(message, variables),
                     "model_tier": "fast_path",
                     "action": "handoff_to_human",
                     "updates": {
@@ -698,16 +647,24 @@ def build_workflow_fast_answer(
 
             if item or variables.get("matched_car_model"):
                 return {
-                    "answer": "تحب أحددلك معاد للمعاينة؟" if arabic else "Would you like me to schedule a viewing?",
+                    "answer": (
+                        f"حلو، نقدر نرتبلك معاينة لـ {model}. تحب المعاد يكون إمتى؟"
+                        if arabic
+                        else f"Great, we can arrange a viewing for {model}. What day works best?"
+                    ),
                     "model_tier": "fast_path",
-                    "action": "ask_viewing_interest",
+                    "action": "ask_viewing_date",
+                    "updates": {
+                        "intent": "viewing_request",
+                        "workflow_stage": "viewing_requested",
+                    },
                     "skip_summary": True,
                     "skip_memory": True,
                 }
 
         if user_is_no(message):
             return {
-                "answer": "تمام، ولا يهمك. لو حبيت تشوف اختيار تاني أنا معاك." if arabic else "No problem. If you want to see another option, I’m here.",
+                "answer": compose_soft_close(message, variables),
                 "model_tier": "fast_path",
                 "action": "soft_close",
                 "skip_summary": True,
@@ -823,10 +780,6 @@ def build_workflow_fast_answer(
 
 
 def should_try_fast_path(message: str, variables: Dict[str, Any], schema: Dict[str, Any]) -> bool:
-    """
-    Conservative gate. Only try fast path when we have state or the message is obviously simple.
-    This avoids blocking rich first-turn RAG/intelligence.
-    """
     text = normalize_text(message)
     variables = variables or {}
 
