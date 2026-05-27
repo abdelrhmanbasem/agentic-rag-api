@@ -11,6 +11,10 @@
 # - token_usage reporting
 # - universal pre-router fast_path for follow-up efficiency
 # - universal entry_path for obvious first-turn efficiency
+# - structured inventory before vector RAG
+# - deterministic mini-router
+# - summary/memory cooldowns
+# - compact production response mode
 
 import re
 from typing import Dict, Any, Optional
@@ -59,7 +63,18 @@ from app.memory import update_conversation_summary, decide_and_write_long_term_m
 from app.policies import should_skip_generation, build_no_llm_answer
 from app.token_usage import build_token_usage_report
 from app.fast_path import should_try_fast_path, build_workflow_fast_answer
-from app.entry_path import should_try_entry_path, build_entry_path_response
+from app.entry_path import should_try_entry_path, build_entry_path_response, extract_car_variables
+from app.structured_inventory import (
+    upsert_structured_inventory_from_text,
+    search_structured_inventory,
+    inventory_items_to_knowledge,
+)
+from app.super_efficiency import (
+    deterministic_route_guess,
+    should_update_summary,
+    should_write_memory,
+    compact_chat_response,
+)
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -196,7 +211,9 @@ def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
     if has_car_schema or any(x in assistant_id for x in ["car", "cars", "auto", "vehicle", "dealer"]):
         return "car_sales"
 
-    if has_service_schema or any(x in assistant_id for x in ["clinic", "doctor", "medical", "dental", "dentist", "health"]):
+    if has_service_schema or any(
+        x in assistant_id for x in ["clinic", "doctor", "medical", "dental", "dentist", "health"]
+    ):
         return "service_booking"
 
     return "general"
@@ -823,7 +840,25 @@ def build_objection_answer(user_message: str, variables: Dict[str, Any]) -> Opti
     price = selected_item.get("price") or variables.get("matched_car_price")
     currency = selected_item.get("currency") or variables.get("currency") or "EGP"
 
-    if not any(marker in text for marker in ["غالية", "غالي", "كتير", "السعر عالي", "اقل", "أقل", "خصم", "تقسيط", "مش مناسب", "too expensive", "expensive", "discount", "installment", "installments"]):
+    if not any(
+        marker in text
+        for marker in [
+            "غالية",
+            "غالي",
+            "كتير",
+            "السعر عالي",
+            "اقل",
+            "أقل",
+            "خصم",
+            "تقسيط",
+            "مش مناسب",
+            "too expensive",
+            "expensive",
+            "discount",
+            "installment",
+            "installments",
+        ]
+    ):
         return None
 
     if arabic:
@@ -841,7 +876,10 @@ def build_conversation_repair_answer(user_message: str, variables: Dict[str, Any
     text = (user_message or "").lower().strip()
     arabic = is_arabic_text(user_message)
 
-    if not any(marker in text for marker in ["مش قصدي", "مش ده قصدي", "انت مش فاهم", "مش فاهمني", "wrong", "not what i mean", "you misunderstood"]):
+    if not any(
+        marker in text
+        for marker in ["مش قصدي", "مش ده قصدي", "انت مش فاهم", "مش فاهمني", "wrong", "not what i mean", "you misunderstood"]
+    ):
         return None
 
     return (
@@ -1221,11 +1259,19 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
     )
 
     upsert_knowledge_document(
-        req.assistant_id,
-        req.document_id,
-        req.title,
-        req.metadata,
-        chunks,
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        metadata=req.metadata,
+        chunk_count=chunks,
+    )
+
+    structured_items = upsert_structured_inventory_from_text(
+        assistant_id=req.assistant_id,
+        document_id=req.document_id,
+        title=req.title,
+        text=req.text,
+        metadata=req.metadata,
     )
 
     return {
@@ -1233,6 +1279,7 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
         "assistant_id": req.assistant_id,
         "document_id": req.document_id,
         "chunks": chunks,
+        "structured_items": structured_items,
     }
 
 
@@ -1339,15 +1386,34 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Handles obvious first-turn business intent before GPT router,
     # variable extraction, answer generation, summary, and memory.
+    # First tries structured inventory to avoid vector embeddings.
     entry_path_result = None
 
     if should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
-        raw_entry_knowledge = search_knowledge(
-            req.assistant_id,
-            req.message,
-            limit=KNOWLEDGE_TOP_K,
-        )
-        entry_knowledge = compress_knowledge(raw_entry_knowledge, req.message)
+        entry_knowledge = []
+        entry_knowledge_source = "none"
+
+        if infer_workflow_type(schema, req.assistant_id) == "car_sales":
+            entry_query_variables = extract_car_variables(schema, req.message)
+
+            structured_items = search_structured_inventory(
+                assistant_id=req.assistant_id,
+                query_variables=entry_query_variables,
+                limit=KNOWLEDGE_TOP_K,
+            )
+
+            if structured_items:
+                entry_knowledge = inventory_items_to_knowledge(structured_items)
+                entry_knowledge_source = "structured_inventory"
+
+        if not entry_knowledge:
+            raw_entry_knowledge = search_knowledge(
+                req.assistant_id,
+                req.message,
+                limit=KNOWLEDGE_TOP_K,
+            )
+            entry_knowledge = compress_knowledge(raw_entry_knowledge, req.message)
+            entry_knowledge_source = "qdrant" if entry_knowledge else "none"
 
         entry_path_result = build_entry_path_response(
             message=req.message,
@@ -1356,6 +1422,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             variables=existing_variables,
             knowledge=entry_knowledge,
         )
+
+        if entry_path_result:
+            entry_path_result["knowledge_source"] = entry_knowledge_source
 
     if entry_path_result:
         updated_variables = entry_path_result.get("updates") or dict(existing_variables or {})
@@ -1431,7 +1500,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             },
         )
 
-        return {
+        response_payload = {
             "answer": answer,
             "assistant_id": req.assistant_id,
             "conversation_id": req.conversation_id,
@@ -1463,6 +1532,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "mock_mode": MOCK_MODE,
             "memory_saved": bool(long_term_memories_written),
         }
+
+        return compact_chat_response(response_payload)
 
     # ------------------------------------------------------------
     # Universal pre-router fast path
@@ -1557,7 +1628,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             },
         )
 
-        return {
+        response_payload = {
             "answer": answer,
             "assistant_id": req.assistant_id,
             "conversation_id": req.conversation_id,
@@ -1590,13 +1661,23 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "memory_saved": bool(long_term_memories_written),
         }
 
-    route = route_message(
-        assistant=assistant,
-        summary=summary,
+        return compact_chat_response(response_payload)
+
+    route = deterministic_route_guess(
+        message=req.message,
+        schema=schema,
         variables=existing_variables,
-        recent_messages=recent_messages,
-        user_message=req.message,
+        assistant_id=req.assistant_id,
     )
+
+    if route is None:
+        route = route_message(
+            assistant=assistant,
+            summary=summary,
+            variables=existing_variables,
+            recent_messages=recent_messages,
+            user_message=req.message,
+        )
 
     route["intent_hint"] = normalize_intent_for_schema(
         route.get("intent_hint", "general_question"),
@@ -1846,21 +1927,40 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         answer,
     )
 
-    updated_summary = update_conversation_summary(
-        conversation_id=req.conversation_id,
-        assistant_id=req.assistant_id,
-        user_id=req.user_id,
+    if should_update_summary(
+        message=req.message,
+        answer=answer,
         variables=updated_variables,
-    )
+        model_tier=tier,
+        route=route,
+        recent_messages=recent_messages,
+    ):
+        updated_summary = update_conversation_summary(
+            conversation_id=req.conversation_id,
+            assistant_id=req.assistant_id,
+            user_id=req.user_id,
+            variables=updated_variables,
+        )
+    else:
+        updated_summary = summary
 
-    long_term_memories_written = decide_and_write_long_term_memories(
-        assistant_id=req.assistant_id,
-        user_id=req.user_id,
-        conversation_id=req.conversation_id,
-        summary=updated_summary,
-        recent_messages=get_recent_messages(req.conversation_id, limit=8),
+    if should_write_memory(
+        message=req.message,
         variables=updated_variables,
-    )
+        model_tier=tier,
+        route=route,
+        recent_messages=recent_messages,
+    ):
+        long_term_memories_written = decide_and_write_long_term_memories(
+            assistant_id=req.assistant_id,
+            user_id=req.user_id,
+            conversation_id=req.conversation_id,
+            summary=updated_summary,
+            recent_messages=get_recent_messages(req.conversation_id, limit=8),
+            variables=updated_variables,
+        )
+    else:
+        long_term_memories_written = []
 
     usage_input_obj = {
         "message": req.message,
@@ -1901,7 +2001,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         },
     )
 
-    return {
+    response_payload = {
         "answer": answer,
         "assistant_id": req.assistant_id,
         "conversation_id": req.conversation_id,
@@ -1923,3 +2023,5 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "mock_mode": MOCK_MODE,
         "memory_saved": bool(long_term_memories_written),
     }
+
+    return compact_chat_response(response_payload)
