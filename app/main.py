@@ -18,6 +18,7 @@
 # - smart escalation gate
 # - advisory GPT fallback only when useful
 # - deterministic date/time/location extraction
+# - early zero-token datetime scheduling path
 # - workflow playbooks + assistant profiles
 
 import re
@@ -85,7 +86,10 @@ from app.smart_escalation import (
     build_advisor_system_prompt,
     build_advisor_context,
 )
-from app.datetime_location_extractor import extract_datetime_location_patch
+from app.datetime_location_extractor import (
+    extract_datetime_location_patch,
+    build_datetime_location_fast_response,
+)
 from app.playbooks import get_playbook, get_assistant_profile
 
 
@@ -1457,6 +1461,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
                 assistant_id=req.assistant_id,
                 query_variables=entry_query_variables,
                 limit=KNOWLEDGE_TOP_K,
+                raw_query=req.message,
             )
 
             if structured_items:
@@ -1587,6 +1592,149 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "long_term_memories_written": long_term_memories_written,
             "model_used": "none",
             "model_tier": entry_path_result.get("model_tier", "entry_path"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
+
+        return compact_chat_response(response_payload)
+
+    # ------------------------------------------------------------
+    # Early deterministic date/time/location scheduling path
+    # ------------------------------------------------------------
+    # Handles messages like "بكرة 3 في التجمع" before router/extraction/GPT.
+    datetime_fast_result = build_datetime_location_fast_response(
+        message=req.message,
+        variables=existing_variables,
+        workflow=workflow_type,
+    )
+
+    if datetime_fast_result:
+        datetime_updates = datetime_fast_result.get("updates") or {}
+        updated_variables = dict(existing_variables or {})
+        updated_variables.update(datetime_updates)
+        updated_variables = autofill_channel_context(updated_variables, req)
+        updated_variables = sync_selected_item_state(updated_variables)
+
+        updated_variables = set_workflow_stage(
+            schema,
+            req.assistant_id,
+            updated_variables,
+            updated_variables.get("intent", "viewing_request"),
+        )
+
+        updated_variables = compute_lead_score(
+            updated_variables,
+            updated_variables.get("intent", "viewing_request"),
+        )
+
+        answer = datetime_fast_result["answer"]
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = summary
+        long_term_memories_written = []
+
+        if not datetime_fast_result.get("skip_summary", True):
+            updated_summary = update_conversation_summary(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                variables=updated_variables,
+            )
+
+        if not datetime_fast_result.get("skip_memory", True):
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
+
+        usage_input_obj = {
+            "message": req.message,
+            "variables": updated_variables,
+            "datetime_fast_path": datetime_fast_result,
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used="none",
+            model_tier=datetime_fast_result.get("model_tier", "fast_path"),
+            answer_mode="datetime_fast_path",
+            input_obj=usage_input_obj,
+            output_text=answer,
+            knowledge_source="none",
+            rag_cache_hit=False,
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model="none",
+            purpose="chat_datetime_fast_path",
+            input_obj=usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": datetime_fast_result.get("model_tier", "fast_path"),
+                "answer_mode": "datetime_fast_path",
+                "needs_rag": False,
+                "needs_memory": not datetime_fast_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+            },
+        )
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", "viewing_request"),
+            "variables": updated_variables,
+            "variable_updates": datetime_updates,
+            "variable_deletions": [],
+            "missing_variables": calculate_missing_required_variables(
+                schema=schema,
+                variables=updated_variables,
+                intent=updated_variables.get("intent", "viewing_request"),
+                assistant_id=req.assistant_id,
+            ),
+            "recommended_next_action": datetime_fast_result.get("action", "datetime_fast_path"),
+            "next_best_action": {
+                "action": datetime_fast_result.get("action", "datetime_fast_path"),
+                "reason": "Handled by deterministic date/time/location fast path.",
+                "confidence": 0.95,
+            },
+            "route": {
+                "answer_mode": "datetime_fast_path",
+                "needs_rag": False,
+                "needs_memory": not datetime_fast_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+            },
+            "knowledge_used": [],
+            "knowledge_source": "none",
+            "memories_used": [],
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": "none",
+            "model_tier": datetime_fast_result.get("model_tier", "fast_path"),
             "token_usage": token_usage,
             "mock_mode": MOCK_MODE,
             "memory_saved": bool(long_term_memories_written),
