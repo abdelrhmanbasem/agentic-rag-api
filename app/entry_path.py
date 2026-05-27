@@ -4,6 +4,8 @@
 # - Handle obvious business-intent messages before GPT router/extraction/generation.
 # - Keep the agent smart and fluid while minimizing tokens.
 # - Works for this assistant and future assistants through schema/workflow detection.
+# - IMPORTANT: entry_path should NOT write long-term memory by default.
+#   Memory writes are expensive and should happen only on confirmed/important events.
 
 import re
 from typing import Dict, Any, Optional, List
@@ -686,6 +688,12 @@ def build_entry_path_response(
     """
     Builds deterministic first-turn answer after caller provides knowledge.
     Caller is responsible for search_knowledge/compress_knowledge.
+
+    IMPORTANT:
+    Entry path returns skip_summary=True and skip_memory=True by default.
+    This keeps first-turn obvious business intents extremely cheap for all assistants.
+    Important memory should be written later only when the lead confirms booking,
+    asks for human handoff, or provides a strong stable preference in the normal path.
     """
     variables = dict(variables or {})
     workflow = infer_workflow_type(schema, assistant_id)
@@ -725,8 +733,8 @@ def build_entry_path_response(
             "action": "entry_car_search",
             "knowledge_used": knowledge,
             "knowledge_source": "qdrant" if knowledge else "none",
-            "skip_summary": False,
-            "skip_memory": False,
+            "skip_summary": True,
+            "skip_memory": True,
         }
 
     if workflow == "service_booking":
@@ -748,8 +756,8 @@ def build_entry_path_response(
             "action": "entry_service_booking",
             "knowledge_used": knowledge,
             "knowledge_source": "qdrant" if knowledge else "none",
-            "skip_summary": False,
-            "skip_memory": False,
+            "skip_summary": True,
+            "skip_memory": True,
         }
 
     return None
