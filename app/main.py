@@ -9,7 +9,8 @@
 # - lead scoring
 # - objection/repair/final confirmation handling
 # - token_usage reporting
-# - universal pre-router fast_path for elite token efficiency
+# - universal pre-router fast_path for follow-up efficiency
+# - universal entry_path for obvious first-turn efficiency
 
 import re
 from typing import Dict, Any, Optional
@@ -58,6 +59,7 @@ from app.memory import update_conversation_summary, decide_and_write_long_term_m
 from app.policies import should_skip_generation, build_no_llm_answer
 from app.token_usage import build_token_usage_report
 from app.fast_path import should_try_fast_path, build_workflow_fast_answer
+from app.entry_path import should_try_entry_path, build_entry_path_response
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -1219,11 +1221,11 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
     )
 
     upsert_knowledge_document(
-        assistant_id=req.assistant_id,
-        document_id=req.document_id,
-        title=req.title,
-        metadata=req.metadata,
-        chunk_count=chunks,
+        req.assistant_id,
+        req.document_id,
+        req.title,
+        req.metadata,
+        chunks,
     )
 
     return {
@@ -1331,6 +1333,136 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     summary = get_summary(req.conversation_id)
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
+
+    # ------------------------------------------------------------
+    # Universal entry path
+    # ------------------------------------------------------------
+    # Handles obvious first-turn business intent before GPT router,
+    # variable extraction, answer generation, summary, and memory.
+    entry_path_result = None
+
+    if should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
+        raw_entry_knowledge = search_knowledge(
+            req.assistant_id,
+            req.message,
+            limit=KNOWLEDGE_TOP_K,
+        )
+        entry_knowledge = compress_knowledge(raw_entry_knowledge, req.message)
+
+        entry_path_result = build_entry_path_response(
+            message=req.message,
+            schema=schema,
+            assistant_id=req.assistant_id,
+            variables=existing_variables,
+            knowledge=entry_knowledge,
+        )
+
+    if entry_path_result:
+        updated_variables = entry_path_result.get("updates") or dict(existing_variables or {})
+        answer = entry_path_result["answer"]
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = summary
+        long_term_memories_written = []
+
+        if not entry_path_result.get("skip_summary", True):
+            updated_summary = update_conversation_summary(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                variables=updated_variables,
+            )
+
+        if not entry_path_result.get("skip_memory", True):
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
+
+        entry_usage_input_obj = {
+            "message": req.message,
+            "variables": updated_variables,
+            "entry_path": entry_path_result,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used="none",
+            model_tier=entry_path_result.get("model_tier", "entry_path"),
+            answer_mode="entry_path",
+            input_obj=entry_usage_input_obj,
+            output_text=answer,
+            knowledge_source=entry_path_result.get("knowledge_source", "none"),
+            rag_cache_hit=False,
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model="none",
+            purpose="chat_entry_path",
+            input_obj=entry_usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": entry_path_result.get("model_tier", "entry_path"),
+                "answer_mode": "entry_path",
+                "needs_rag": True,
+                "needs_memory": not entry_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+            },
+        )
+
+        return {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", "general_question"),
+            "variables": updated_variables,
+            "variable_updates": updated_variables,
+            "variable_deletions": [],
+            "missing_variables": [],
+            "recommended_next_action": entry_path_result.get("action", "entry_path"),
+            "next_best_action": {
+                "action": entry_path_result.get("action", "entry_path"),
+                "reason": "Handled by universal entry path before GPT routing.",
+                "confidence": 0.9,
+            },
+            "route": {
+                "answer_mode": "entry_path",
+                "needs_rag": True,
+                "needs_memory": not entry_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+            },
+            "knowledge_used": entry_path_result.get("knowledge_used", []),
+            "knowledge_source": entry_path_result.get("knowledge_source", "none"),
+            "memories_used": [],
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": "none",
+            "model_tier": entry_path_result.get("model_tier", "entry_path"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
 
     # ------------------------------------------------------------
     # Universal pre-router fast path
