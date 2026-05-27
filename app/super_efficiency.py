@@ -4,6 +4,11 @@
 # - summary cooldown
 # - memory-write cooldown
 # - production/debug response mode
+#
+# Universal rule:
+# Do NOT write long-term memory for cheap paths by default:
+# entry_path, fast_path, state, no_llm.
+# Only write memory on confirmed bookings, handoff, or strong stable preference turns.
 
 import os
 from typing import Dict, Any, Optional, List
@@ -36,10 +41,6 @@ def deterministic_route_guess(
     variables: Dict[str, Any],
     assistant_id: str = "",
 ) -> Optional[Dict[str, Any]]:
-    """
-    Cheap route before GPT router.
-    Return None when unsure, so GPT router can still handle complex cases.
-    """
     text = normalize_text(message)
     schema = schema or {}
     variables = variables or {}
@@ -69,7 +70,7 @@ def deterministic_route_guess(
             "intent_hint": "human_handoff",
             "answer_mode": "no_llm",
             "needs_rag": False,
-            "needs_memory": True,
+            "needs_memory": False,
             "needs_variable_extraction": True,
             "selected_model_tier": "cheap",
             "reason": "Deterministic route: human handoff.",
@@ -104,7 +105,7 @@ def deterministic_route_guess(
                 "intent_hint": "viewing_request",
                 "answer_mode": "generate",
                 "needs_rag": False,
-                "needs_memory": True,
+                "needs_memory": False,
                 "needs_variable_extraction": True,
                 "selected_model_tier": "cheap",
                 "reason": "Deterministic route: car viewing request.",
@@ -145,7 +146,7 @@ def deterministic_route_guess(
             "intent_hint": "booking_request",
             "answer_mode": "generate",
             "needs_rag": True,
-            "needs_memory": True,
+            "needs_memory": False,
             "needs_variable_extraction": True,
             "selected_model_tier": "cheap",
             "reason": "Deterministic route: service booking.",
@@ -165,15 +166,13 @@ def should_update_summary(
     route: Dict[str, Any],
     recent_messages: List[Dict[str, Any]],
 ) -> bool:
-    """
-    Summary updates are useful but expensive.
-    Skip them for cheap/state turns unless there is important progress.
-    """
     variables = variables or {}
     route = route or {}
     text = normalize_text(message)
 
-    if model_tier in ["fast_path", "state", "no_llm"]:
+    cheap_tiers = {"entry_path", "fast_path", "state", "no_llm"}
+
+    if model_tier in cheap_tiers:
         important = any(
             variables.get(k)
             for k in [
@@ -187,11 +186,14 @@ def should_update_summary(
             ]
         )
 
-        if not important:
-            return False
+        confirmed = variables.get("workflow_stage") in [
+            "confirmed",
+            "viewing_details_collected",
+            "booking_details_collected",
+        ]
 
-    if model_tier == "entry_path":
-        return True
+        if not important and not confirmed:
+            return False
 
     if variables.get("workflow_stage") in ["confirmed", "viewing_details_collected", "booking_details_collected"]:
         return True
@@ -215,13 +217,19 @@ def should_write_memory(
     route: Dict[str, Any],
     recent_messages: List[Dict[str, Any]],
 ) -> bool:
-    """
-    Long-term memory should only run when stable preference changed.
-    """
     variables = variables or {}
+    route = route or {}
     text = normalize_text(message)
 
-    if model_tier in ["fast_path", "state", "no_llm"]:
+    cheap_tiers = {"entry_path", "fast_path", "state", "no_llm"}
+
+    if model_tier in cheap_tiers:
+        if variables.get("workflow_stage") in ["confirmed", "booking_details_collected", "viewing_details_collected"]:
+            return True
+
+        if variables.get("needs_human") and variables.get("handoff_reason"):
+            return True
+
         return False
 
     stable_preference_keys = [
@@ -235,27 +243,32 @@ def should_write_memory(
         "insurance_provider",
     ]
 
+    strong_preference_markers = [
+        "افضل",
+        "بحب",
+        "عايز",
+        "عاوز",
+        "حابب",
+        "ميزانيتي",
+        "whatsapp",
+        "واتساب",
+        "ماتتصلش",
+        "اتصل",
+        "prefer",
+        "budget",
+        "looking for",
+        "i want",
+        "i prefer",
+    ]
+
     if any(variables.get(k) for k in stable_preference_keys):
-        if any(
-            marker in text
-            for marker in [
-                "افضل",
-                "بحب",
-                "عايز",
-                "عاوز",
-                "حابب",
-                "ميزانيتي",
-                "whatsapp",
-                "واتساب",
-                "ماتتصلش",
-                "prefer",
-                "budget",
-                "looking for",
-            ]
-        ):
+        if any(marker in text for marker in strong_preference_markers):
             return True
 
     if variables.get("workflow_stage") in ["confirmed", "booking_details_collected", "viewing_details_collected"]:
+        return True
+
+    if variables.get("needs_human") and variables.get("handoff_reason"):
         return True
 
     return False
@@ -266,10 +279,6 @@ def debug_response_enabled() -> bool:
 
 
 def compact_chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    In production, avoid huge API responses to n8n/WhatsApp.
-    Full debug remains available when DEBUG_RESPONSE=true.
-    """
     if debug_response_enabled():
         return payload
 
