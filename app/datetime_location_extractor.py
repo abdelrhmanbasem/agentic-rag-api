@@ -9,6 +9,7 @@
 # This version:
 # - Overrides bad non-ISO dates from GPT extraction.
 # - Exposes a fast response builder for zero-token scheduling turns.
+# - Fixes location extraction so "بكرة 3 في التجمع" returns "التجمع", not "معاينة".
 
 import re
 from datetime import datetime, timedelta
@@ -149,7 +150,8 @@ def extract_date(message: str, now: Optional[datetime] = None) -> Optional[str]:
 
 
 def extract_location(message: str) -> Optional[str]:
-    text = normalize_text(message)
+    original = message or ""
+    text = normalize_text(original)
 
     known_locations = [
         "التجمع الخامس",
@@ -178,21 +180,60 @@ def extract_location(message: str) -> Optional[str]:
         "اسكندريه",
     ]
 
+    # Strong exact known-location match first.
     for loc in known_locations:
         if normalize_text(loc) in text:
             return loc
 
-    match = re.search(r"(?:في|فى)\s+([\u0600-\u06FF\s]{3,30})", message or "")
-    if match:
-        candidate = match.group(1).strip()
-        candidate = re.split(r"[،,.!?؟]", candidate)[0].strip()
+    # Safer "في X" extraction:
+    # Only look after the last "في", because messages like
+    # "بكرة 3 في التجمع" should return "التجمع".
+    parts = re.split(r"\b(?:في|فى)\b", original)
+    if len(parts) >= 2:
+        candidate = parts[-1].strip()
+        candidate = re.split(r"[،,.!?؟\n]", candidate)[0].strip()
 
-        # Avoid taking a whole sentence as location.
-        stop_words = ["بكرة", "بكره", "الساعة", "الساعه", "تمام", "ممكن", "عايز"]
+        stop_words = [
+            "بكرة",
+            "بكره",
+            "الساعة",
+            "الساعه",
+            "تمام",
+            "ممكن",
+            "عايز",
+            "عاوز",
+            "معاينة",
+            "معاينه",
+            "احجز",
+            "اشوف",
+        ]
+
         for stop in stop_words:
             candidate = candidate.replace(stop, "").strip()
 
-        if 3 <= len(candidate) <= 30:
+        blocked = {
+            "معاينة",
+            "معاينه",
+            "المعاينة",
+            "المعاينه",
+            "الحجز",
+            "المعاد",
+            "ميعاد",
+            "موعد",
+            "الميعاد",
+            "الموعد",
+            "العربية",
+            "العربيه",
+            "السيارة",
+        }
+
+        normalized_candidate = normalize_text(candidate)
+
+        if (
+            candidate
+            and normalized_candidate not in blocked
+            and 3 <= len(candidate) <= 30
+        ):
             return candidate
 
     return None
@@ -314,8 +355,10 @@ def extract_datetime_location_patch(
     else:
         if should_override_date(variables.get("preferred_date"), date_value):
             updates["preferred_date"] = date_value
+
         if time_value and not variables.get("preferred_time"):
             updates["preferred_time"] = time_value
+
         if location_value and not variables.get("location"):
             updates["location"] = location_value
 
@@ -325,11 +368,11 @@ def extract_datetime_location_patch(
 def format_user_friendly_date(message: str, iso_date: Optional[str]) -> str:
     text = normalize_text(message)
 
-    if "بكره" in text or "بكرة" in message:
-        return "بكرة"
-
     if "بعد بكره" in text or "بعد بكرة" in message:
         return "بعد بكرة"
+
+    if "بكره" in text or "بكرة" in message:
+        return "بكرة"
 
     if "النهارده" in text or "اليوم" in text:
         return "النهارده"
@@ -400,11 +443,14 @@ def build_datetime_location_fast_response(
     arabic = is_arabic_text(message)
 
     if workflow == "car_sales":
+        selected_item = merged.get("selected_item") if isinstance(merged.get("selected_item"), dict) else {}
+
         model = (
-            (merged.get("selected_item") or {}).get("model")
-            if isinstance(merged.get("selected_item"), dict)
-            else None
-        ) or merged.get("matched_car_model") or merged.get("car_brand") or "العربية"
+            selected_item.get("model")
+            or merged.get("matched_car_model")
+            or merged.get("car_brand")
+            or ("العربية" if arabic else "the car")
+        )
 
         date_value = merged.get("preferred_viewing_date")
         time_value = merged.get("preferred_viewing_time") or merged.get("appointment_time")
