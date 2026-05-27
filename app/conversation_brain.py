@@ -6,14 +6,11 @@
 # - Keep token cost near-zero by using state + templates, not GPT.
 # - Work across future assistants through workflow-aware response composition.
 #
-# Main features:
-# - buyer psychology detection
-# - stage-aware CTAs
-# - anti-repetition
-# - budget framing
-# - objection handling
-# - natural Egyptian Arabic sales wording
-# - generic fallbacks for future assistant types
+# Design principle:
+# Clear > clever.
+# Human > over-composed.
+# Short but intelligent.
+# Answer first, then guide the next step.
 
 import re
 import hashlib
@@ -154,29 +151,9 @@ def infer_buyer_state(message: str, variables: Dict[str, Any]) -> str:
     return "curious"
 
 
-def infer_lead_temperature(variables: Dict[str, Any], buyer_state: str = "") -> str:
-    variables = variables or {}
-
-    score = variables.get("lead_score")
-    try:
-        score_int = int(score)
-    except Exception:
-        score_int = 0
-
-    if buyer_state == "ready":
-        return "hot"
-
-    if score_int >= 80:
-        return "hot"
-
-    if score_int >= 50 or buyer_state in ["qualified", "price_sensitive", "comparing"]:
-        return "warm"
-
-    return "cold"
-
-
 def budget_fit_phrase(variables: Dict[str, Any], arabic: bool = True) -> str:
     item = get_selected_item(variables)
+
     price = item.get("price") or variables.get("matched_car_price")
     budget = variables.get("budget_max")
     currency = item.get("currency") or variables.get("currency") or "EGP"
@@ -194,87 +171,117 @@ def budget_fit_phrase(variables: Dict[str, Any], arabic: bool = True) -> str:
 
     if arabic:
         if diff > 0:
-            return f"وده داخل ميزانيتك ولسه تحتها بحوالي {format_money(diff, currency, arabic=True)}"
+            return f"وده تحت ميزانيتك بحوالي {format_money(diff, currency, arabic=True)}"
         if diff == 0:
             return "وده على حدود ميزانيتك بالظبط"
-        return f"بس هو أعلى من ميزانيتك بحوالي {format_money(abs(diff), currency, arabic=True)}"
+        return f"بس أعلى من ميزانيتك بحوالي {format_money(abs(diff), currency, arabic=True)}"
 
     if diff > 0:
-        return f"and it is about {format_money(diff, currency, arabic=False)} under your budget"
+        return f"it is about {format_money(diff, currency, arabic=False)} under your budget"
     if diff == 0:
-        return "and it is exactly at your budget"
-    return f"but it is about {format_money(abs(diff), currency, arabic=False)} above your budget"
+        return "it is exactly at your budget"
+    return f"it is about {format_money(abs(diff), currency, arabic=False)} above your budget"
 
 
-def car_strength_phrase(variables: Dict[str, Any], arabic: bool = True) -> str:
+def item_summary_sentence(variables: Dict[str, Any], message: str) -> str:
+    arabic = is_arabic_text(message)
     item = get_selected_item(variables)
 
-    model = item.get("model") or variables.get("matched_car_model")
+    model = car_model_label(variables, arabic)
     year = item.get("year") or variables.get("matched_car_year")
     km = item.get("km") or variables.get("matched_car_km")
+    price = item.get("price") or variables.get("matched_car_price")
+    currency = item.get("currency") or variables.get("currency") or "EGP"
+    transmission = item.get("transmission") or variables.get("transmission")
+
+    if arabic:
+        parts = [f"عندنا {model}"]
+
+        if year:
+            parts.append(f"موديل {year}")
+
+        if transmission == "automatic":
+            parts.append("أوتوماتيك")
+        elif transmission == "manual":
+            parts.append("مانيوال")
+
+        if km:
+            parts.append(f"عاملة {format_km(km, arabic=True)}")
+
+        if price:
+            parts.append(f"وسعرها {format_money(price, currency, arabic=True)}")
+
+        return "، ".join(parts) + "."
+
+    parts = [f"We have {model}"]
+
+    if year:
+        parts.append(f"from {year}")
+
+    if transmission:
+        parts.append(f"with {transmission} transmission")
+
+    if km:
+        parts.append(f"and {format_km(km, arabic=False)}")
+
+    if price:
+        parts.append(f"priced at {format_money(price, currency, arabic=False)}")
+
+    return " ".join(parts) + "."
+
+
+def simple_value_frame(variables: Dict[str, Any], message: str) -> str:
+    arabic = is_arabic_text(message)
+    item = get_selected_item(variables)
+
+    model = car_model_label(variables, arabic)
+    price = item.get("price") or variables.get("matched_car_price")
+    budget = variables.get("budget_max")
     transmission = item.get("transmission") or variables.get("transmission")
     condition = item.get("condition") or variables.get("car_condition")
 
     if arabic:
-        strengths = []
+        if price and budget:
+            fit = budget_fit_phrase(variables, arabic=True)
+            return f"اختيار قوي لو عايز BMW مستعملة وفي نفس الوقت {fit}."
+
+        if transmission == "automatic" and condition == "used":
+            return "اختيار مناسب لو عايز عربية مستعملة شيك ومريحة في الاستخدام اليومي."
 
         if transmission == "automatic":
-            strengths.append("أوتوماتيك ومريحة في الاستخدام اليومي")
+            return "اختيار مناسب لو عايز عربية مريحة في الاستخدام اليومي والزحمة."
 
-        if year:
-            strengths.append(f"موديل {year}")
+        return f"اختيار مناسب لو بتدور على {model} بالمواصفات دي."
 
-        if km:
-            try:
-                km_int = int(km)
-                if km_int <= 80000:
-                    strengths.append("عدادها مناسب جدًا")
-                else:
-                    strengths.append("عدادها واضح ومذكور")
-            except Exception:
-                pass
+    if price and budget:
+        fit = budget_fit_phrase(variables, arabic=False)
+        return f"It is a strong option if you want something in this range, and {fit}."
 
-        if condition == "used":
-            strengths.append("مستعملة ومواصفاتها واضحة")
-
-        if not strengths:
-            return ""
-
-        return "، ".join(strengths)
-
-    strengths = []
+    if transmission == "automatic" and condition == "used":
+        return "It is a strong option if you want a used car that is still comfortable for daily driving."
 
     if transmission == "automatic":
-        strengths.append("automatic and convenient for daily driving")
+        return "It is a practical option for daily driving."
 
-    if year:
-        strengths.append(f"from {year}")
-
-    if km:
-        strengths.append("with clear mileage")
-
-    if condition == "used":
-        strengths.append("used with clear details")
-
-    return ", ".join(strengths)
+    return f"It is a relevant option if you are looking for {model}."
 
 
-def choose_stage_cta(
+def choose_clean_cta(
     *,
     variables: Dict[str, Any],
-    buyer_state: str,
+    message: str,
     recent_messages: Optional[List[Dict[str, Any]]] = None,
-    arabic: bool = True,
-    seed: str = "",
+    intent: str = "",
 ) -> str:
-    variables = variables or {}
+    arabic = is_arabic_text(message)
+    buyer_state = infer_buyer_state(message, variables)
     asked = variables.get("asked_questions")
     if not isinstance(asked, list):
         asked = []
 
     already_asked_viewing = "viewing_interest" in asked or recently_said(
         recent_messages,
-        ["تحب تشوفها", "معاينة", "معاينه", "schedule a viewing", "viewing"],
+        ["تحب تشوفها", "معاينة", "معاينه", "viewing"],
     )
 
     already_asked_budget = "budget" in asked or recently_said(
@@ -285,23 +292,25 @@ def choose_stage_cta(
     has_item = bool(variables.get("selected_item") or variables.get("matched_car_model"))
     has_budget = bool(variables.get("budget_max"))
 
-    if arabic:
-        if buyer_state == "ready":
-            return stable_pick(
-                [
-                    "تمام، خلينا نثبت المعاد. أنسب وقت ليك إمتى؟",
-                    "حلو، نقدر نرتب المعاينة. تحبها إمتى؟",
-                    "تمام، أقدر أبدأ أظبطلك المعاينة. يناسبك أي يوم؟",
-                ],
-                seed,
-            )
+    seed = message + str(variables.get("conversation_id", "")) + str(variables.get("workflow_stage", ""))
 
+    if arabic:
         if buyer_state == "price_sensitive":
             return stable_pick(
                 [
                     "تحب أخلي حد من الفريق يتابع معاك بخصوص التفاوض أو التقسيط؟",
-                    "لو حابب، أقدر أطلبلك متابعة من الفريق بخصوص السعر.",
-                    "تحب نكمل على المعاينة ونشوف إمكانية التفاوض بعدها؟",
+                    "تحب أطلبلك متابعة من الفريق بخصوص السعر؟",
+                    "لو حابب، نكمل على المعاينة ونشوف إمكانية التفاوض بعدها.",
+                ],
+                seed,
+            )
+
+        if buyer_state == "ready":
+            return stable_pick(
+                [
+                    "تحب أظبطلك المعاينة على أي يوم؟",
+                    "تمام، أنسب معاد ليك إمتى؟",
+                    "حلو، نثبت المعاينة على إمتى؟",
                 ],
                 seed,
             )
@@ -310,8 +319,8 @@ def choose_stage_cta(
             return stable_pick(
                 [
                     "تحب أقارنلك بينها وبين اختيار تاني؟",
-                    "أقدر أقولك هي تكسب في إيه وتخسر في إيه مقارنة ببديل تاني.",
                     "تحب أشوفلك بديل قريب منها في نفس الرينج؟",
+                    "أقدر أقولك هي مميزة في إيه مقارنة ببديل تاني.",
                 ],
                 seed,
             )
@@ -319,9 +328,9 @@ def choose_stage_cta(
         if buyer_state == "hesitant":
             return stable_pick(
                 [
+                    "تحب أقولك أهم نقطتين فيها يساعدوك تقرر؟",
                     "تحب تعرف عنها حاجة معينة قبل ما تقرر؟",
-                    "ولا يهمك، أقولك أهم نقطتين فيها يساعدوك تقرر؟",
-                    "ممكن نمشيها واحدة واحدة، تحب تعرف السعر ولا الحالة الأول؟",
+                    "ولا يهمك، نقدر نمشيها واحدة واحدة.",
                 ],
                 seed,
             )
@@ -339,9 +348,9 @@ def choose_stage_cta(
         if has_item and not already_asked_viewing:
             return stable_pick(
                 [
-                    "تحب أقولك أهم تفاصيلها ولا نرتبلك معاينة؟",
+                    "تحب أقولك تفاصيلها أكتر ولا نرتبلك معاينة؟",
                     "تحب تعرف حالتها أكتر ولا تشوفها على الطبيعة؟",
-                    "تحب أكمّلك تفاصيلها ولا أظبطلك معاد معاينة؟",
+                    "تحب أكملك تفاصيلها ولا أظبطلك معاد معاينة؟",
                 ],
                 seed,
             )
@@ -358,42 +367,24 @@ def choose_stage_cta(
 
         return stable_pick(
             [
-                "أقولك تفاصيل أكتر؟",
                 "تحب نكمل على الاختيار ده؟",
+                "تحب أقولك تفاصيل أكتر؟",
                 "تحب أشوفلك بديل كمان؟",
             ],
             seed,
         )
 
-    if buyer_state == "ready":
-        return stable_pick(
-            [
-                "Great, what time works best for the viewing?",
-                "Sure, what day would you prefer?",
-                "I can help set that up. When would you like to view it?",
-            ],
-            seed,
-        )
-
     if buyer_state == "price_sensitive":
-        return stable_pick(
-            [
-                "Would you like someone from the team to follow up about negotiation or installments?",
-                "I can ask the team to follow up with you about the price.",
-                "Would you like to continue with a viewing and discuss negotiation after that?",
-            ],
-            seed,
-        )
+        return "Would you like someone from the team to follow up about negotiation or installments?"
+
+    if buyer_state == "ready":
+        return "Great, what day works best for the viewing?"
 
     if has_item and not already_asked_viewing:
-        return stable_pick(
-            [
-                "Would you like to see the details or schedule a viewing?",
-                "Would you like me to arrange a viewing?",
-                "Do you want to compare it with another option or view this one?",
-            ],
-            seed,
-        )
+        return "Would you like the details or should we arrange a viewing?"
+
+    if not has_budget and not already_asked_budget:
+        return "What budget range would you like to stay within?"
 
     return "Would you like to continue with this option?"
 
@@ -405,86 +396,20 @@ def compose_car_entry_answer(
     recent_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     arabic = is_arabic_text(message)
-    item = get_selected_item(variables)
 
-    model = car_model_label(variables, arabic)
-    year = item.get("year") or variables.get("matched_car_year")
-    km = item.get("km") or variables.get("matched_car_km")
-    price = item.get("price") or variables.get("matched_car_price")
-    currency = item.get("currency") or variables.get("currency") or "EGP"
-    transmission = item.get("transmission") or variables.get("transmission")
-
-    buyer_state = infer_buyer_state(message, variables)
-    cta = choose_stage_cta(
+    summary = item_summary_sentence(variables, message)
+    frame = simple_value_frame(variables, message)
+    cta = choose_clean_cta(
         variables=variables,
-        buyer_state=buyer_state,
+        message=message,
         recent_messages=recent_messages,
-        arabic=arabic,
-        seed=message + model,
+        intent="entry",
     )
 
     if arabic:
-        details = [f"عندنا {model}"]
+        return f"{summary} {frame} {cta}"
 
-        if year:
-            details.append(f"موديل {year}")
-
-        if transmission == "automatic":
-            details.append("أوتوماتيك")
-        elif transmission == "manual":
-            details.append("مانيوال")
-
-        if km:
-            details.append(f"عاملة {format_km(km, arabic=True)}")
-
-        if price:
-            details.append(f"وسعرها {format_money(price, currency, arabic=True)}")
-
-        first = "، ".join(details) + "."
-
-        fit = budget_fit_phrase(variables, arabic=True)
-        strength = car_strength_phrase(variables, arabic=True)
-
-        middle_parts = []
-        if strength:
-            middle_parts.append(f"اختيار قوي لو عايز حاجة {strength}")
-        if fit:
-            middle_parts.append(fit)
-
-        if middle_parts:
-            return f"{first} {'، و'.join(middle_parts)}. {cta}"
-
-        return f"{first} {cta}"
-
-    details = [f"We have {model}"]
-
-    if year:
-        details.append(f"from {year}")
-
-    if transmission:
-        details.append(f"with {transmission} transmission")
-
-    if km:
-        details.append(f"and {format_km(km, arabic=False)}")
-
-    if price:
-        details.append(f"priced at {format_money(price, currency, arabic=False)}")
-
-    first = " ".join(details) + "."
-
-    fit = budget_fit_phrase(variables, arabic=False)
-    strength = car_strength_phrase(variables, arabic=False)
-
-    middle_parts = []
-    if strength:
-        middle_parts.append(f"It is a strong option if you want something {strength}")
-    if fit:
-        middle_parts.append(fit)
-
-    if middle_parts:
-        return f"{first} {'; '.join(middle_parts)}. {cta}"
-
-    return f"{first} {cta}"
+    return f"{summary} {frame} {cta}"
 
 
 def compose_car_fact_answer(
@@ -503,21 +428,19 @@ def compose_car_fact_answer(
     price = item.get("price") or variables.get("matched_car_price")
     currency = item.get("currency") or variables.get("currency") or "EGP"
 
-    buyer_state = infer_buyer_state(message, variables)
-    cta = choose_stage_cta(
+    cta = choose_clean_cta(
         variables=variables,
-        buyer_state=buyer_state,
+        message=message,
         recent_messages=recent_messages,
-        arabic=arabic,
-        seed=message + model + fact_type,
+        intent=fact_type,
     )
 
     if fact_type == "transmission" and transmission:
         if arabic:
             if transmission == "automatic":
-                return f"أيوه، {model} أوتوماتيك. وده مناسب جدًا للاستخدام اليومي والزحمة. {cta}"
+                return f"أيوه، {model} أوتوماتيك. مريحة جدًا للاستخدام اليومي والزحمة. {cta}"
             if transmission == "manual":
-                return f"{model} مانيوال. لو ده مناسب لطريقة استخدامك، أقدر أكمّلك باقي التفاصيل. {cta}"
+                return f"{model} مانيوال. لو ده مناسب لاستخدامك، أقدر أكملك باقي التفاصيل. {cta}"
             return f"{model} فتيسها {transmission}. {cta}"
 
         if transmission == "automatic":
@@ -528,7 +451,7 @@ def compose_car_fact_answer(
 
     if fact_type == "km" and km:
         if arabic:
-            return f"{model} عاملة {format_km(km, arabic=True)}. وده عداد مناسب جدًا لو بتبص على موديلها وسعرها. {cta}"
+            return f"{model} عاملة {format_km(km, arabic=True)}. عداد مناسب على موديلها وسعرها. {cta}"
         return f"{model} has {format_km(km, arabic=False)}. {cta}"
 
     if fact_type == "price" and price:
@@ -540,7 +463,7 @@ def compose_car_fact_answer(
             return f"سعر {model} هو {format_money(price, currency, arabic=True)}. {cta}"
 
         if fit:
-            return f"{model} price is {format_money(price, currency, arabic=False)}, {fit}. {cta}"
+            return f"{model} price is {format_money(price, currency, arabic=False)}, and {fit}. {cta}"
         return f"{model} price is {format_money(price, currency, arabic=False)}. {cta}"
 
     if fact_type == "budget" and price:
@@ -552,7 +475,7 @@ def compose_car_fact_answer(
             return f"{model} سعرها {format_money(price, currency, arabic=True)}. {cta}"
 
         if fit:
-            return f"Good, {model} is {format_money(price, currency, arabic=False)}, {fit}. {cta}"
+            return f"Good, {model} is {format_money(price, currency, arabic=False)}, and {fit}. {cta}"
         return f"{model} is {format_money(price, currency, arabic=False)}. {cta}"
 
     return None
@@ -570,28 +493,22 @@ def compose_price_objection_answer(
     model = car_model_label(variables, arabic)
     price = item.get("price") or variables.get("matched_car_price")
     currency = item.get("currency") or variables.get("currency") or "EGP"
-    budget = variables.get("budget_max")
+    fit = budget_fit_phrase(variables, arabic=arabic)
 
-    cta = choose_stage_cta(
+    cta = choose_clean_cta(
         variables=variables,
-        buyer_state="price_sensitive",
+        message=message,
         recent_messages=recent_messages,
-        arabic=arabic,
-        seed=message + model + "objection",
+        intent="price_objection",
     )
 
     if arabic:
-        if price and budget:
-            fit = budget_fit_phrase(variables, arabic=True)
-            return (
-                f"فاهمك، طبيعي تسأل على السعر. السعر الحالي لـ {model} هو {format_money(price, currency, arabic=True)}، {fit}. "
-                f"في التفاوض أو التقسيط الأفضل نخلي حد من الفريق يتابع معاك حسب الجدية والمعاينة. {cta}"
-            )
-
         if price:
+            fit_part = f"، {fit}" if fit else ""
             return (
-                f"فاهمك، السعر نقطة مهمة. السعر الحالي لـ {model} هو {format_money(price, currency, arabic=True)}. "
-                f"لو شايفه عالي، نقدر إما نشوف بديل أقرب لميزانيتك أو نخلي الفريق يتابع معاك بخصوص التفاوض. {cta}"
+                f"فاهمك، طبيعي تسأل على السعر. السعر الحالي لـ {model} هو "
+                f"{format_money(price, currency, arabic=True)}{fit_part}. "
+                f"التفاوض أو التقسيط بيتحدد حسب الجدية والمعاينة. {cta}"
             )
 
         return f"فاهمك، السعر مهم طبعًا. أقدر أشوفلك بديل أقرب لميزانيتك أو أخلي حد من الفريق يتابع معاك. {cta}"
@@ -599,7 +516,7 @@ def compose_price_objection_answer(
     if price:
         return (
             f"I understand. {model} is currently {format_money(price, currency, arabic=False)}. "
-            f"If that feels high, I can suggest a closer alternative or have the team follow up about negotiation/installments. {cta}"
+            f"Negotiation or installments depend on the viewing and seriousness. {cta}"
         )
 
     return f"I understand. I can suggest a closer option or have the team follow up about pricing. {cta}"
