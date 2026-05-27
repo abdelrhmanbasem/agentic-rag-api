@@ -15,9 +15,13 @@
 # - deterministic mini-router
 # - summary/memory cooldowns
 # - compact production response mode
+# - smart escalation gate
+# - advisory GPT fallback only when useful
+# - deterministic date/time/location extraction
+# - workflow playbooks + assistant profiles
 
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -75,6 +79,14 @@ from app.super_efficiency import (
     should_write_memory,
     compact_chat_response,
 )
+from app.smart_escalation import (
+    should_escalate_to_advisor,
+    build_advisor_route,
+    build_advisor_system_prompt,
+    build_advisor_context,
+)
+from app.datetime_location_extractor import extract_datetime_location_patch
+from app.playbooks import get_playbook, get_assistant_profile
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -121,7 +133,7 @@ class PatchVariablesRequest(BaseModel):
     user_id: str
     conversation_id: str
     updates: Dict[str, Any] = {}
-    deletions: list[str] = []
+    deletions: List[str] = []
 
 
 def check_auth(x_api_key: str):
@@ -234,7 +246,7 @@ def calculate_missing_required_variables(
     variables: Dict[str, Any],
     intent: str = "general_question",
     assistant_id: str = "",
-) -> list[str]:
+) -> List[str]:
     missing = []
     variables = variables or {}
     schema = schema or {}
@@ -418,7 +430,7 @@ def autofill_channel_context(variables: Dict[str, Any], req: ChatRequest) -> Dic
     return variables
 
 
-def extract_prices_from_text(text):
+def extract_prices_from_text(text: str) -> List[int]:
     text = (text or "").lower()
     prices = []
 
@@ -437,7 +449,7 @@ def extract_prices_from_text(text):
     return prices
 
 
-def choose_best_knowledge_for_variables(knowledge, variables):
+def choose_best_knowledge_for_variables(knowledge: List[Dict[str, Any]], variables: Dict[str, Any]):
     if not knowledge:
         return None
 
@@ -1134,6 +1146,50 @@ Missing variables:
     return answer, model, selected_model_tier
 
 
+def generate_advisor_answer(
+    assistant,
+    summary,
+    variables,
+    knowledge,
+    memories,
+    user_message,
+    selected_model_tier="normal",
+):
+    model = model_for_tier(selected_model_tier)
+
+    if MOCK_MODE:
+        mock_answer = (
+            "فاهمك. بناءً على التفاصيل المتاحة، الاختيار مناسب مبدئيًا، "
+            "بس الأفضل نأكد الحالة والمعاينة قبل القرار النهائي."
+        )
+        return mock_answer, model, selected_model_tier
+
+    system_prompt = build_advisor_system_prompt(
+        assistant=assistant,
+        message=user_message,
+        variables=variables,
+    )
+
+    context = build_advisor_context(
+        message=user_message,
+        summary=summary,
+        variables=variables,
+        knowledge=knowledge,
+        memories=memories,
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": context},
+        {"role": "user", "content": user_message},
+    ]
+
+    answer = chat_text(model, messages, max_tokens=350)
+    answer = enforce_reply_language(user_message, answer, model)
+
+    return answer, model, selected_model_tier
+
+
 def should_use_cached_rag(message, route):
     if not RAG_CACHE_ENABLED:
         return False
@@ -1381,19 +1437,20 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
 
+    workflow_type = infer_workflow_type(schema, req.assistant_id)
+    playbook = get_playbook(workflow_type)
+    assistant_profile = get_assistant_profile(req.assistant_id)
+
     # ------------------------------------------------------------
     # Universal entry path
     # ------------------------------------------------------------
-    # Handles obvious first-turn business intent before GPT router,
-    # variable extraction, answer generation, summary, and memory.
-    # First tries structured inventory to avoid vector embeddings.
     entry_path_result = None
 
     if should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
         entry_knowledge = []
         entry_knowledge_source = "none"
 
-        if infer_workflow_type(schema, req.assistant_id) == "car_sales":
+        if workflow_type == "car_sales":
             entry_query_variables = extract_car_variables(schema, req.message)
 
             structured_items = search_structured_inventory(
@@ -1470,6 +1527,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "message": req.message,
             "variables": updated_variables,
             "entry_path": entry_path_result,
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
         }
 
         token_usage = build_token_usage_report(
@@ -1538,8 +1597,6 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Universal pre-router fast path
     # ------------------------------------------------------------
-    # This answers obvious state/workflow/factual turns before
-    # router/extraction/RAG/GPT to save tokens.
     fast_path_result = None
 
     if should_try_fast_path(req.message, existing_variables, schema):
@@ -1598,6 +1655,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "message": req.message,
             "variables": updated_variables,
             "fast_path": fast_path_result,
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
         }
 
         token_usage = build_token_usage_report(
@@ -1663,6 +1722,134 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
         return compact_chat_response(response_payload)
 
+    # ------------------------------------------------------------
+    # Smart advisor escalation
+    # ------------------------------------------------------------
+    if should_escalate_to_advisor(
+        message=req.message,
+        variables=existing_variables,
+        schema=schema,
+        assistant_id=req.assistant_id,
+    ):
+        route = build_advisor_route("User needs advice, comparison, or judgment.")
+
+        knowledge = []
+        knowledge_source = "none"
+
+        cached = get_rag_cache(req.conversation_id, RAG_CACHE_MAX_AGE_MINUTES) if RAG_CACHE_ENABLED else None
+
+        if cached:
+            knowledge = cached.get("compressed_payload") or cached.get("knowledge_payload") or []
+            knowledge_source = "cache"
+            route["rag_cache_hit"] = True
+        else:
+            raw_knowledge = search_knowledge(
+                req.assistant_id,
+                req.message,
+                limit=KNOWLEDGE_TOP_K,
+            )
+            knowledge = compress_knowledge(raw_knowledge, req.message)
+            knowledge_source = "qdrant" if knowledge else "none"
+            route["rag_cache_hit"] = False
+
+            if raw_knowledge:
+                save_rag_cache(
+                    conversation_id=req.conversation_id,
+                    assistant_id=req.assistant_id,
+                    user_id=req.user_id,
+                    query=req.message,
+                    knowledge_payload=raw_knowledge,
+                    compressed_payload=knowledge,
+                )
+
+        memories = []
+
+        answer, model, tier = generate_advisor_answer(
+            assistant=assistant,
+            summary=summary,
+            variables=existing_variables,
+            knowledge=knowledge,
+            memories=memories,
+            user_message=req.message,
+            selected_model_tier=route.get("selected_model_tier", "normal"),
+        )
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        token_usage = build_token_usage_report(
+            model_used=model,
+            model_tier=tier,
+            answer_mode="advisor",
+            input_obj={
+                "message": req.message,
+                "summary": summary,
+                "variables": existing_variables,
+                "knowledge": knowledge,
+                "route": route,
+                "playbook": playbook,
+                "assistant_profile": assistant_profile,
+            },
+            output_text=answer,
+            knowledge_source=knowledge_source,
+            rag_cache_hit=route.get("rag_cache_hit", False),
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model=model,
+            purpose="chat_advisor",
+            input_obj={
+                "message": req.message,
+                "summary": summary,
+                "variables": existing_variables,
+                "knowledge": knowledge,
+                "route": route,
+                "playbook": playbook,
+                "assistant_profile": assistant_profile,
+            },
+            output_text=answer,
+            metadata={
+                "model_tier": tier,
+                "answer_mode": "advisor",
+                "knowledge_source": knowledge_source,
+                "rag_cache_hit": route.get("rag_cache_hit", False),
+                "token_usage": token_usage,
+            },
+        )
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": "advisory_question",
+            "variables": existing_variables,
+            "variable_updates": {},
+            "variable_deletions": [],
+            "missing_variables": [],
+            "recommended_next_action": "advisor_response",
+            "route": route,
+            "knowledge_used": knowledge,
+            "knowledge_source": knowledge_source,
+            "memories_used": memories,
+            "summary": summary,
+            "long_term_memories_written": [],
+            "model_used": model,
+            "model_tier": tier,
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": False,
+        }
+
+        return compact_chat_response(response_payload)
+
     route = deterministic_route_guess(
         message=req.message,
         schema=schema,
@@ -1715,6 +1902,19 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     )
 
     updated_variables = autofill_channel_context(updated_variables, req)
+
+    deterministic_time_place_updates = extract_datetime_location_patch(
+        message=req.message,
+        variables=updated_variables,
+        workflow=workflow_type,
+    )
+
+    if deterministic_time_place_updates:
+        updated_variables = apply_variable_patch(
+            updated_variables,
+            deterministic_time_place_updates,
+            [],
+        )
 
     current_intent = normalize_intent_for_schema(
         extraction.get("intent") or updated_variables.get("intent") or "general_question",
@@ -1969,6 +2169,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "knowledge": knowledge,
         "memories": memories,
         "route": route,
+        "playbook": playbook,
+        "assistant_profile": assistant_profile,
     }
 
     token_usage = build_token_usage_report(
