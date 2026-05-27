@@ -4,11 +4,16 @@
 # - Handle obvious business-intent messages before GPT router/extraction/generation.
 # - Keep the agent smart and fluid while minimizing tokens.
 # - Works for this assistant and future assistants through schema/workflow detection.
+# - Uses conversation_brain.py to make deterministic responses feel intelligent and human-like.
 # - IMPORTANT: entry_path should NOT write long-term memory by default.
-#   Memory writes are expensive and should happen only on confirmed/important events.
 
 import re
 from typing import Dict, Any, Optional, List
+
+from app.conversation_brain import (
+    compose_car_entry_answer,
+    compose_service_entry_answer,
+)
 
 
 def is_arabic_text(text: str) -> bool:
@@ -535,127 +540,23 @@ def build_selected_item(variables: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def format_money_ar(amount, currency="EGP") -> str:
-    try:
-        formatted = f"{int(amount):,}"
-    except Exception:
-        formatted = str(amount)
-
-    if currency == "EGP":
-        return f"{formatted} جنيه"
-
-    return f"{formatted} {currency}"
-
-
-def format_money_en(amount, currency="EGP") -> str:
-    try:
-        formatted = f"{int(amount):,}"
-    except Exception:
-        formatted = str(amount)
-
-    return f"{formatted} {currency}"
-
-
 def build_car_entry_answer(variables: Dict[str, Any], message: str) -> str:
-    arabic = is_arabic_text(message)
-
-    model = variables.get("matched_car_model") or variables.get("car_brand") or ("العربية" if arabic else "the car")
-    year = variables.get("matched_car_year")
-    km = variables.get("matched_car_km")
-    price = variables.get("matched_car_price")
-    currency = variables.get("currency") or "EGP"
-    transmission = variables.get("transmission")
-    budget = variables.get("budget_max")
-
-    if arabic:
-        parts = [f"عندنا {model}"]
-
-        if year:
-            parts.append(f"موديل {year}")
-
-        if transmission == "automatic":
-            parts.append("أوتوماتيك")
-        elif transmission == "manual":
-            parts.append("مانيوال")
-
-        if km:
-            try:
-                km_text = f"{int(km):,}"
-            except Exception:
-                km_text = str(km)
-            parts.append(f"عاملة {km_text} كيلو")
-
-        if price:
-            parts.append(f"وسعرها {format_money_ar(price, currency)}")
-
-        sentence = "، ".join(parts) + "."
-
-        if price and budget:
-            try:
-                if int(price) <= int(budget):
-                    sentence += " وده مناسب لميزانيتك."
-                else:
-                    sentence += " بس السعر أعلى من الميزانية اللي قلتها."
-            except Exception:
-                pass
-
-        sentence += " تحب تشوفها؟"
-        return sentence
-
-    parts = [f"We have {model}"]
-
-    if year:
-        parts.append(f"from {year}")
-
-    if transmission:
-        parts.append(f"with {transmission} transmission")
-
-    if km:
-        try:
-            km_text = f"{int(km):,}"
-        except Exception:
-            km_text = str(km)
-        parts.append(f"and {km_text} km")
-
-    if price:
-        parts.append(f"priced at {format_money_en(price, currency)}")
-
-    sentence = " ".join(parts) + "."
-
-    if price and budget:
-        try:
-            if int(price) <= int(budget):
-                sentence += " It fits your budget."
-            else:
-                sentence += " It is above your stated budget."
-        except Exception:
-            pass
-
-    sentence += " Would you like to schedule a viewing?"
-    return sentence
+    return compose_car_entry_answer(
+        variables=variables,
+        message=message,
+        recent_messages=None,
+    )
 
 
 def build_service_entry_answer(variables: Dict[str, Any], message: str) -> str:
-    arabic = is_arabic_text(message)
-    service = variables.get("service_needed")
-
-    if arabic:
-        if service:
-            return f"تمام، أقدر أساعدك تحجز {service}. تحب المعاد يكون إمتى؟"
-        return "تمام، أقدر أساعدك في الحجز. تحب تحجز لأي خدمة؟"
-
-    if service:
-        return f"Sure, I can help you book {service}. What day works best for you?"
-
-    return "Sure, I can help with booking. What service would you like to book?"
+    return compose_service_entry_answer(
+        variables=variables,
+        message=message,
+        recent_messages=None,
+    )
 
 
 def should_try_entry_path(message: str, schema: Dict[str, Any], variables: Dict[str, Any], assistant_id: str = "") -> bool:
-    """
-    Try entry path when:
-    - There is no meaningful selected item/state yet.
-    - The user message has obvious business intent.
-    """
     variables = variables or {}
     workflow = infer_workflow_type(schema, assistant_id)
 
@@ -687,13 +588,10 @@ def build_entry_path_response(
 ) -> Optional[Dict[str, Any]]:
     """
     Builds deterministic first-turn answer after caller provides knowledge.
-    Caller is responsible for search_knowledge/compress_knowledge.
 
     IMPORTANT:
     Entry path returns skip_summary=True and skip_memory=True by default.
     This keeps first-turn obvious business intents extremely cheap for all assistants.
-    Important memory should be written later only when the lead confirms booking,
-    asks for human handoff, or provides a strong stable preference in the normal path.
     """
     variables = dict(variables or {})
     workflow = infer_workflow_type(schema, assistant_id)
