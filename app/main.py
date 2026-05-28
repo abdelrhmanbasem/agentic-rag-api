@@ -19,6 +19,7 @@
 # - advisory GPT fallback only when useful
 # - deterministic date/time/location extraction
 # - early zero-token datetime scheduling path
+# - universal assistant brain
 # - workflow playbooks + assistant profiles
 
 import re
@@ -91,6 +92,10 @@ from app.datetime_location_extractor import (
     build_datetime_location_fast_response,
 )
 from app.playbooks import get_playbook, get_assistant_profile
+from app.assistant_brain import (
+    build_brain_deterministic_response,
+    build_brain_advisor_hint,
+)
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -1602,7 +1607,6 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Early deterministic date/time/location scheduling path
     # ------------------------------------------------------------
-    # Handles messages like "بكرة 3 في التجمع" before router/extraction/GPT.
     datetime_fast_result = build_datetime_location_fast_response(
         message=req.message,
         variables=existing_variables,
@@ -1871,6 +1875,167 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         return compact_chat_response(response_payload)
 
     # ------------------------------------------------------------
+    # Universal assistant brain
+    # ------------------------------------------------------------
+    brain_result = build_brain_deterministic_response(
+        message=req.message,
+        schema=schema,
+        assistant_id=req.assistant_id,
+        variables=existing_variables,
+        recent_messages=recent_messages,
+    )
+
+    if brain_result and brain_result.get("should_use_gpt"):
+        brain_hint = build_brain_advisor_hint(
+            message=req.message,
+            schema=schema,
+            assistant_id=req.assistant_id,
+            variables=existing_variables,
+            recent_messages=recent_messages,
+        )
+
+        existing_variables = dict(existing_variables or {})
+        existing_variables["_brain_hint"] = brain_hint
+
+    elif brain_result and not brain_result.get("no_direct_answer"):
+        brain_updates = brain_result.get("updates") or {}
+        updated_variables = dict(existing_variables or {})
+        updated_variables.update(brain_updates)
+
+        updated_variables = autofill_channel_context(updated_variables, req)
+        updated_variables = sync_selected_item_state(updated_variables)
+
+        current_intent = updated_variables.get("intent") or existing_variables.get("intent") or "general_question"
+
+        updated_variables = set_workflow_stage(
+            schema,
+            req.assistant_id,
+            updated_variables,
+            current_intent,
+        )
+
+        updated_variables = compute_lead_score(
+            updated_variables,
+            current_intent,
+        )
+
+        answer = brain_result["answer"]
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = summary
+        long_term_memories_written = []
+
+        if not brain_result.get("skip_summary", True):
+            updated_summary = update_conversation_summary(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                variables=updated_variables,
+            )
+
+        if not brain_result.get("skip_memory", True):
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
+
+        usage_input_obj = {
+            "message": req.message,
+            "variables": updated_variables,
+            "brain_result": brain_result,
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used="none",
+            model_tier=brain_result.get("model_tier", "assistant_brain"),
+            answer_mode=brain_result.get("answer_mode", "assistant_brain"),
+            input_obj=usage_input_obj,
+            output_text=answer,
+            knowledge_source="none",
+            rag_cache_hit=False,
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model="none",
+            purpose="chat_assistant_brain",
+            input_obj=usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": brain_result.get("model_tier", "assistant_brain"),
+                "answer_mode": brain_result.get("answer_mode", "assistant_brain"),
+                "needs_rag": False,
+                "needs_memory": not brain_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+                "brain_decision": brain_result.get("brain_decision"),
+            },
+        )
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", current_intent),
+            "variables": updated_variables,
+            "variable_updates": brain_updates,
+            "variable_deletions": [],
+            "missing_variables": calculate_missing_required_variables(
+                schema=schema,
+                variables=updated_variables,
+                intent=updated_variables.get("intent", current_intent),
+                assistant_id=req.assistant_id,
+            ),
+            "recommended_next_action": brain_result.get("action", "assistant_brain"),
+            "next_best_action": {
+                "action": brain_result.get("action", "assistant_brain"),
+                "reason": "Handled by universal assistant brain before GPT routing.",
+                "confidence": 0.9,
+            },
+            "route": {
+                "answer_mode": brain_result.get("answer_mode", "assistant_brain"),
+                "needs_rag": False,
+                "needs_memory": not brain_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "brain_decision": brain_result.get("brain_decision"),
+            },
+            "knowledge_used": [],
+            "knowledge_source": "none",
+            "memories_used": [],
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": "none",
+            "model_tier": brain_result.get("model_tier", "assistant_brain"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
+
+        return compact_chat_response(response_payload)
+
+    # ------------------------------------------------------------
     # Smart advisor escalation
     # ------------------------------------------------------------
     if should_escalate_to_advisor(
@@ -1912,10 +2077,16 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
         memories = []
 
+        advisor_variables = dict(existing_variables or {})
+        brain_hint = advisor_variables.pop("_brain_hint", None)
+
+        if brain_hint:
+            advisor_variables["brain_strategy"] = brain_hint
+
         answer, model, tier = generate_advisor_answer(
             assistant=assistant,
             summary=summary,
-            variables=existing_variables,
+            variables=advisor_variables,
             knowledge=knowledge,
             memories=memories,
             user_message=req.message,
@@ -1937,7 +2108,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             input_obj={
                 "message": req.message,
                 "summary": summary,
-                "variables": existing_variables,
+                "variables": advisor_variables,
                 "knowledge": knowledge,
                 "route": route,
                 "playbook": playbook,
@@ -1957,7 +2128,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             input_obj={
                 "message": req.message,
                 "summary": summary,
-                "variables": existing_variables,
+                "variables": advisor_variables,
                 "knowledge": knowledge,
                 "route": route,
                 "playbook": playbook,
