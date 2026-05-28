@@ -8,9 +8,9 @@
 # - Produce deterministic premium answers when possible.
 # - Work for this assistant and future assistants.
 #
-# Important:
-# - This brain should make the assistant human-quality, not deceptive.
-# - If asked whether it is AI/human, it must be honest through the normal system path.
+# Update:
+# - Objections update conversation variables but do NOT write long-term memory.
+# - This avoids storing temporary objections like "السعر غالي شوية" as stable memory.
 
 import re
 from typing import Dict, Any, List, Optional
@@ -21,8 +21,6 @@ from app.objection_playbooks import build_objection_reply, detect_objection_type
 from app.response_composer import (
     compose_premium_entry_reply,
     compose_fact_reply,
-    compose_cta,
-    get_selected_item,
 )
 from app.self_check import self_check_answer
 
@@ -156,7 +154,6 @@ def detect_user_state(message: str, variables: Dict[str, Any]) -> Dict[str, Any]
 def should_use_gpt_for_message(message: str, variables: Dict[str, Any], workflow: str) -> bool:
     text = normalize_text(message)
 
-    # Simple factual state questions should not use GPT.
     if detect_fact_type(message):
         return False
 
@@ -290,10 +287,6 @@ def build_brain_deterministic_response(
     variables: Dict[str, Any],
     recent_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Try to answer through the assistant brain without GPT.
-    Return None when GPT/advisor or existing paths should handle it.
-    """
     decision = diagnose_brain(
         message=message,
         schema=schema,
@@ -321,8 +314,10 @@ def build_brain_deterministic_response(
             answer=answer,
             action=objection.get("action", "handle_objection"),
             updates=objection.get("updates", {}),
-            skip_summary=False if objection.get("updates") else True,
-            skip_memory=False if objection.get("updates") else True,
+            # Objections should update conversation variables,
+            # but should not automatically become long-term memory.
+            skip_summary=True,
+            skip_memory=True,
             model_tier="assistant_brain",
             answer_mode="assistant_brain_objection",
         ).to_dict() | {"brain_decision": decision.to_dict(), "should_use_gpt": False}
@@ -354,7 +349,6 @@ def build_brain_deterministic_response(
                 answer_mode="assistant_brain_fact",
             ).to_dict() | {"brain_decision": decision.to_dict(), "should_use_gpt": False}
 
-    # Entry-like premium reply if there is a selected item but no simple fact.
     if decision.sales_move == "answer_then_soft_close" and (variables.get("selected_item") or variables.get("matched_car_model")):
         answer = compose_premium_entry_reply(
             message=message,
@@ -405,7 +399,7 @@ def build_brain_advisor_hint(
     return {
         "brain_decision": decision.to_dict(),
         "advisor_instruction": (
-            "Use this brain decision as strategy. Answer naturally, briefly, and practically. "
+            "Use this brain decision as strategy. Answer naturally, briefly, practically, and without pressure. "
             "Do not reveal internal strategy. Do not pretend to be human. "
             "Use one clear next step."
         ),
