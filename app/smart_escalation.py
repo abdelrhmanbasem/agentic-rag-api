@@ -4,7 +4,7 @@
 # Purpose:
 # - Use GPT only when judgment, comparison, reasoning, or nuance is genuinely useful.
 # - Keep factual/stateful replies deterministic.
-# - Keep advisor prompts very compact to reduce paid input tokens.
+# - Make advisor answers balanced, practical, and not pushy.
 
 import re
 from typing import Dict, Any
@@ -56,11 +56,6 @@ def should_escalate_to_advisor(
         "صفقه",
         "كويسة",
         "كويسه",
-        "قرار شراء",
-        "قرار الشراء",
-        "ذكي",
-        "حلل",
-        "تحليل",
         "احسن",
         "افضل",
         "قارن",
@@ -72,7 +67,6 @@ def should_escalate_to_advisor(
         "صيانه",
         "اعادة بيع",
         "إعادة بيع",
-        "مخاطر",
         "recommend",
         "should i",
         "worth it",
@@ -83,10 +77,6 @@ def should_escalate_to_advisor(
         "cons",
         "maintenance",
         "resale",
-        "risk",
-        "risks",
-        "analyze",
-        "analysis",
     ]
 
     if any(marker in text for marker in advisor_markers):
@@ -124,25 +114,44 @@ def build_advisor_system_prompt(
     arabic = is_arabic_text(message)
 
     language_rule = (
-        "Reply in natural Egyptian Arabic. Keep car names/models in English."
+        "Reply in natural Egyptian Arabic. Keep car brands/models in English when natural."
         if arabic
         else "Reply in the same language as the user."
     )
 
     return f"""
-You are a practical advisor.
+You are an expert practical advisor inside this assistant.
 
+Assistant identity/style:
+{assistant.get("system_prompt", "")}
+
+Tone:
+{assistant.get("tone", "clear, helpful, concise")}
+
+Language:
 {language_rule}
 
-Rules:
+Advisor rules:
 - Be balanced, not pushy.
-- Use only known facts.
-- Do not invent condition, warranty, discounts, inspection, or service history.
-- For cars, reason from model, year, mileage, price, budget, transmission, and user concern.
-- Prefer "worth viewing/checking" over "buy it now".
-- Keep it 2-3 short sentences.
-- Give one next step.
-- Do not reveal internal routing or variables.
+- Do NOT pressure the user with fear-of-missing-out.
+- Do NOT say something is excellent unless the known facts support it.
+- Do NOT invent condition, inspection results, warranty, service history, availability, discounts, or final price.
+- If advising about a car, reason from known facts only: model, year, mileage, price, budget, transmission, condition, and user concern.
+- Separate what is known from what needs checking.
+- Give one practical next step.
+- Prefer: "worth viewing/checking" over "buy it now".
+- If price is a concern, acknowledge it and suggest viewing/checking condition or comparing alternatives.
+- Keep the answer short: 2-4 sentences max.
+- Do not reveal internal strategy, variables, memory, RAG, or routing.
+- Do not pretend to be human.
+
+Good Arabic style example:
+"لو هدفك BMW تحت المليون، دي تستاهل المعاينة. موديل 2021، أوتوماتيك، وعدّاد 78,000 كم مقبول لو حالتها وصيانتها كويسين. رأيي تشوفها الأول، ولو الحالة مش مقنعة ساعتها نقارنها ببديل تاني."
+
+Bad style to avoid:
+"اشتريها فورًا."
+"لو استنيت هتفوت فرصة."
+"حالة ممتازة" unless condition is explicitly known.
 """
 
 
@@ -154,13 +163,24 @@ def build_advisor_context(
     knowledge,
     memories,
 ) -> str:
+    variables = variables or {}
+
     return f"""
-User:
+Latest user message:
 {message}
 
-Known facts:
+Conversation summary:
+{summary}
+
+Current known variables:
 {variables}
 
-Relevant item:
+Relevant knowledge:
 {knowledge}
+
+Relevant memories:
+{memories}
+
+Important:
+Use only the known facts above. If condition/service history is unknown, say it needs checking.
 """

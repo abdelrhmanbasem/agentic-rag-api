@@ -1234,6 +1234,54 @@ Missing variables:
     return answer, model, selected_model_tier
 
 
+
+def build_compact_advisor_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+    variables = variables or {}
+
+    selected = variables.get("selected_item") if isinstance(variables.get("selected_item"), dict) else {}
+
+    compact = {
+        "workflow": variables.get("workflow"),
+        "intent": variables.get("intent"),
+        "car_brand": variables.get("car_brand") or selected.get("brand"),
+        "car_condition": variables.get("car_condition") or selected.get("condition"),
+        "budget_max": variables.get("budget_max"),
+        "matched_car_model": variables.get("matched_car_model") or selected.get("model"),
+        "matched_car_year": variables.get("matched_car_year") or selected.get("year"),
+        "matched_car_km": variables.get("matched_car_km") or selected.get("km"),
+        "matched_car_price": variables.get("matched_car_price") or selected.get("price"),
+        "currency": variables.get("currency") or selected.get("currency"),
+        "transmission": variables.get("transmission") or selected.get("transmission"),
+        "last_objection_type": variables.get("last_objection_type"),
+        "price_sensitive": variables.get("price_sensitive"),
+    }
+
+    return {k: v for k, v in compact.items() if v not in [None, "", [], {}]}
+
+
+def build_compact_advisor_knowledge(knowledge: List[Dict[str, Any]], limit: int = 1) -> List[Dict[str, Any]]:
+    compact = []
+
+    for item in (knowledge or [])[:limit]:
+        metadata = item.get("metadata") or {}
+
+        clean = {
+            "title": item.get("title"),
+            "text": item.get("text"),
+            "model": metadata.get("model"),
+            "year": metadata.get("year"),
+            "km": metadata.get("km"),
+            "price": metadata.get("price"),
+            "currency": metadata.get("currency"),
+            "transmission": metadata.get("transmission"),
+            "condition": metadata.get("condition"),
+        }
+
+        compact.append({k: v for k, v in clean.items() if v not in [None, "", [], {}]})
+
+    return compact
+
+
 def generate_advisor_answer(
     assistant,
     summary,
@@ -2015,9 +2063,23 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Universal pre-router fast path
     # ------------------------------------------------------------
+    # Safety default:
+    # If the assistant brain block did not run or did not define this flag,
+    # keep fast_path allowed by default.
+    if "brain_wants_gpt" not in locals():
+        brain_wants_gpt = False
+
     fast_path_result = None
 
-    if should_try_fast_path(req.message, existing_variables, schema):
+    # Hard guard:
+    # If assistant_brain requested GPT/advisor, fast_path must NOT steal the message.
+    brain_has_advisor_hint = isinstance(existing_variables, dict) and bool(existing_variables.get("_brain_hint"))
+
+    if (
+        not brain_wants_gpt
+        and not brain_has_advisor_hint
+        and should_try_fast_path(req.message, existing_variables, schema)
+    ):
         fast_path_result = build_workflow_fast_answer(
             message=req.message,
             schema=schema,
@@ -2182,18 +2244,27 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
         memories = []
 
-        advisor_variables = dict(existing_variables or {})
-        brain_hint = advisor_variables.pop("_brain_hint", None)
+        advisor_variables_raw = dict(existing_variables or {})
+        brain_hint = advisor_variables_raw.pop("_brain_hint", None)
+
+        advisor_variables = build_compact_advisor_variables(advisor_variables_raw)
 
         if brain_hint:
-            advisor_variables["brain_strategy"] = brain_hint
+            decision = brain_hint.get("brain_decision", {}) if isinstance(brain_hint, dict) else {}
+            advisor_variables["brain_strategy"] = {
+                "user_state": decision.get("user_state"),
+                "sales_move": decision.get("sales_move"),
+                "recommended_action": decision.get("recommended_action"),
+            }
+
+        compact_knowledge = build_compact_advisor_knowledge(knowledge, limit=1)
 
         answer, model, tier = generate_advisor_answer(
             assistant=assistant,
-            summary=summary,
+            summary="",
             variables=advisor_variables,
-            knowledge=knowledge,
-            memories=memories,
+            knowledge=compact_knowledge,
+            memories=[],
             user_message=req.message,
             selected_model_tier=route.get("selected_model_tier", "normal"),
         )
@@ -2212,9 +2283,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             answer_mode="advisor",
             input_obj={
                 "message": req.message,
-                "summary": summary,
+                "summary": "",
                 "variables": advisor_variables,
-                "knowledge": knowledge,
+                "knowledge": compact_knowledge,
                 "route": route,
                 "playbook": playbook,
                 "assistant_profile": assistant_profile,
@@ -2232,9 +2303,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             purpose="chat_advisor",
             input_obj={
                 "message": req.message,
-                "summary": summary,
+                "summary": "",
                 "variables": advisor_variables,
-                "knowledge": knowledge,
+                "knowledge": compact_knowledge,
                 "route": route,
                 "playbook": playbook,
                 "assistant_profile": assistant_profile,
@@ -2260,7 +2331,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "missing_variables": [],
             "recommended_next_action": "advisor_response",
             "route": route,
-            "knowledge_used": knowledge,
+            "knowledge_used": compact_knowledge,
             "knowledge_source": knowledge_source,
             "memories_used": memories,
             "summary": summary,
