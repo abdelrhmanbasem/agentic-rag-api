@@ -9,17 +9,15 @@
 # - lead scoring
 # - objection/repair/final confirmation handling
 # - token_usage reporting
-# - universal pre-router fast_path for follow-up efficiency
 # - universal entry_path for obvious first-turn efficiency
 # - structured inventory before vector RAG
-# - deterministic mini-router
-# - summary/memory cooldowns
-# - compact production response mode
-# - smart escalation gate
-# - advisory GPT fallback only when useful
+# - structured inventory auto-rebuild from RAG if /app/data disappears
 # - deterministic date/time/location extraction
 # - early zero-token datetime scheduling path
-# - universal assistant brain
+# - universal assistant brain before fast_path
+# - universal pre-router fast_path for simple follow-ups
+# - smart escalation gate
+# - advisory GPT fallback only when useful
 # - workflow playbooks + assistant profiles
 
 import re
@@ -74,6 +72,7 @@ from app.structured_inventory import (
     upsert_structured_inventory_from_text,
     search_structured_inventory,
     inventory_items_to_knowledge,
+    rebuild_structured_inventory_from_knowledge,
 )
 from app.super_efficiency import (
     deterministic_route_guess,
@@ -1458,6 +1457,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     if should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
         entry_knowledge = []
         entry_knowledge_source = "none"
+        entry_query_variables = {}
 
         if workflow_type == "car_sales":
             entry_query_variables = extract_car_variables(schema, req.message)
@@ -1479,8 +1479,31 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
                 req.message,
                 limit=KNOWLEDGE_TOP_K,
             )
-            entry_knowledge = compress_knowledge(raw_entry_knowledge, req.message)
-            entry_knowledge_source = "qdrant" if entry_knowledge else "none"
+            compressed_entry_knowledge = compress_knowledge(raw_entry_knowledge, req.message)
+
+            rebuilt_count = 0
+
+            if workflow_type == "car_sales" and compressed_entry_knowledge:
+                rebuilt_count = rebuild_structured_inventory_from_knowledge(
+                    assistant_id=req.assistant_id,
+                    knowledge=compressed_entry_knowledge,
+                )
+
+                if rebuilt_count:
+                    structured_items = search_structured_inventory(
+                        assistant_id=req.assistant_id,
+                        query_variables=entry_query_variables,
+                        limit=KNOWLEDGE_TOP_K,
+                        raw_query=req.message,
+                    )
+
+                    if structured_items:
+                        entry_knowledge = inventory_items_to_knowledge(structured_items)
+                        entry_knowledge_source = "structured_inventory_rebuilt"
+
+            if not entry_knowledge:
+                entry_knowledge = compressed_entry_knowledge
+                entry_knowledge_source = "qdrant" if entry_knowledge else "none"
 
         entry_path_result = build_entry_path_response(
             message=req.message,
@@ -1747,136 +1770,10 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         return compact_chat_response(response_payload)
 
     # ------------------------------------------------------------
-    # Universal pre-router fast path
-    # ------------------------------------------------------------
-    fast_path_result = None
-
-    if should_try_fast_path(req.message, existing_variables, schema):
-        fast_path_result = build_workflow_fast_answer(
-            message=req.message,
-            schema=schema,
-            assistant_id=req.assistant_id,
-            variables=existing_variables,
-            recent_messages=recent_messages,
-        )
-
-    if fast_path_result:
-        fast_updates = fast_path_result.get("updates") or {}
-        updated_variables = dict(existing_variables or {})
-        updated_variables.update(fast_updates)
-
-        save_variables(
-            req.conversation_id,
-            req.assistant_id,
-            req.user_id,
-            updated_variables,
-        )
-
-        answer = fast_path_result["answer"]
-
-        save_message(
-            req.conversation_id,
-            req.assistant_id,
-            req.user_id,
-            "assistant",
-            answer,
-        )
-
-        updated_summary = summary
-        long_term_memories_written = []
-
-        if not fast_path_result.get("skip_summary", True):
-            updated_summary = update_conversation_summary(
-                conversation_id=req.conversation_id,
-                assistant_id=req.assistant_id,
-                user_id=req.user_id,
-                variables=updated_variables,
-            )
-
-        if not fast_path_result.get("skip_memory", True):
-            long_term_memories_written = decide_and_write_long_term_memories(
-                assistant_id=req.assistant_id,
-                user_id=req.user_id,
-                conversation_id=req.conversation_id,
-                summary=updated_summary,
-                recent_messages=get_recent_messages(req.conversation_id, limit=8),
-                variables=updated_variables,
-            )
-
-        fast_usage_input_obj = {
-            "message": req.message,
-            "variables": updated_variables,
-            "fast_path": fast_path_result,
-            "playbook": playbook,
-            "assistant_profile": assistant_profile,
-        }
-
-        token_usage = build_token_usage_report(
-            model_used="none",
-            model_tier=fast_path_result.get("model_tier", "fast_path"),
-            answer_mode="fast_path",
-            input_obj=fast_usage_input_obj,
-            output_text=answer,
-            knowledge_source="none",
-            rag_cache_hit=False,
-        )
-
-        log_estimated_usage(
-            assistant_id=req.assistant_id,
-            conversation_id=req.conversation_id,
-            user_id=req.user_id,
-            model="none",
-            purpose="chat_fast_path",
-            input_obj=fast_usage_input_obj,
-            output_text=answer,
-            metadata={
-                "model_tier": fast_path_result.get("model_tier", "fast_path"),
-                "answer_mode": "fast_path",
-                "needs_rag": False,
-                "needs_memory": not fast_path_result.get("skip_memory", True),
-                "rag_cache_hit": False,
-                "token_usage": token_usage,
-            },
-        )
-
-        response_payload = {
-            "answer": answer,
-            "assistant_id": req.assistant_id,
-            "conversation_id": req.conversation_id,
-            "intent": updated_variables.get("intent", existing_variables.get("intent", "general_question")),
-            "variables": updated_variables,
-            "variable_updates": fast_updates,
-            "variable_deletions": [],
-            "missing_variables": [],
-            "recommended_next_action": fast_path_result.get("action", "fast_path"),
-            "next_best_action": {
-                "action": fast_path_result.get("action", "fast_path"),
-                "reason": "Handled by universal pre-router fast path.",
-                "confidence": 0.95,
-            },
-            "route": {
-                "answer_mode": "fast_path",
-                "needs_rag": False,
-                "needs_memory": not fast_path_result.get("skip_memory", True),
-                "rag_cache_hit": False,
-            },
-            "knowledge_used": [],
-            "knowledge_source": "none",
-            "memories_used": [],
-            "summary": updated_summary,
-            "long_term_memories_written": long_term_memories_written,
-            "model_used": "none",
-            "model_tier": fast_path_result.get("model_tier", "fast_path"),
-            "token_usage": token_usage,
-            "mock_mode": MOCK_MODE,
-            "memory_saved": bool(long_term_memories_written),
-        }
-
-        return compact_chat_response(response_payload)
-
-    # ------------------------------------------------------------
     # Universal assistant brain
     # ------------------------------------------------------------
+    # Runs before fast_path so objections/advice/commercial psychology
+    # are handled by the real brain first.
     brain_result = build_brain_deterministic_response(
         message=req.message,
         schema=schema,
@@ -2011,7 +1908,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "recommended_next_action": brain_result.get("action", "assistant_brain"),
             "next_best_action": {
                 "action": brain_result.get("action", "assistant_brain"),
-                "reason": "Handled by universal assistant brain before GPT routing.",
+                "reason": "Handled by universal assistant brain before fast path and GPT routing.",
                 "confidence": 0.9,
             },
             "route": {
@@ -2028,6 +1925,134 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "long_term_memories_written": long_term_memories_written,
             "model_used": "none",
             "model_tier": brain_result.get("model_tier", "assistant_brain"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
+
+        return compact_chat_response(response_payload)
+
+    # ------------------------------------------------------------
+    # Universal pre-router fast path
+    # ------------------------------------------------------------
+    fast_path_result = None
+
+    if should_try_fast_path(req.message, existing_variables, schema):
+        fast_path_result = build_workflow_fast_answer(
+            message=req.message,
+            schema=schema,
+            assistant_id=req.assistant_id,
+            variables=existing_variables,
+            recent_messages=recent_messages,
+        )
+
+    if fast_path_result:
+        fast_updates = fast_path_result.get("updates") or {}
+        updated_variables = dict(existing_variables or {})
+        updated_variables.update(fast_updates)
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        answer = fast_path_result["answer"]
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = summary
+        long_term_memories_written = []
+
+        if not fast_path_result.get("skip_summary", True):
+            updated_summary = update_conversation_summary(
+                conversation_id=req.conversation_id,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                variables=updated_variables,
+            )
+
+        if not fast_path_result.get("skip_memory", True):
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
+
+        fast_usage_input_obj = {
+            "message": req.message,
+            "variables": updated_variables,
+            "fast_path": fast_path_result,
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used="none",
+            model_tier=fast_path_result.get("model_tier", "fast_path"),
+            answer_mode="fast_path",
+            input_obj=fast_usage_input_obj,
+            output_text=answer,
+            knowledge_source="none",
+            rag_cache_hit=False,
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model="none",
+            purpose="chat_fast_path",
+            input_obj=fast_usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": fast_path_result.get("model_tier", "fast_path"),
+                "answer_mode": "fast_path",
+                "needs_rag": False,
+                "needs_memory": not fast_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+            },
+        )
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", existing_variables.get("intent", "general_question")),
+            "variables": updated_variables,
+            "variable_updates": fast_updates,
+            "variable_deletions": [],
+            "missing_variables": [],
+            "recommended_next_action": fast_path_result.get("action", "fast_path"),
+            "next_best_action": {
+                "action": fast_path_result.get("action", "fast_path"),
+                "reason": "Handled by universal pre-router fast path.",
+                "confidence": 0.95,
+            },
+            "route": {
+                "answer_mode": "fast_path",
+                "needs_rag": False,
+                "needs_memory": not fast_path_result.get("skip_memory", True),
+                "rag_cache_hit": False,
+            },
+            "knowledge_used": [],
+            "knowledge_source": "none",
+            "memories_used": [],
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": "none",
+            "model_tier": fast_path_result.get("model_tier", "fast_path"),
             "token_usage": token_usage,
             "mock_mode": MOCK_MODE,
             "memory_saved": bool(long_term_memories_written),
