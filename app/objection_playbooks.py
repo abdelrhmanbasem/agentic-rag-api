@@ -4,6 +4,10 @@
 # Purpose:
 # - Handle common objections without GPT when possible.
 # - Keep replies human, short, persuasive, and safe.
+#
+# Update:
+# - Price objections now mark the lead as negotiation / price-sensitive.
+# - This gives lead scoring better signals without needing GPT.
 
 import re
 from typing import Dict, Any, Optional
@@ -258,7 +262,6 @@ def build_hesitation_reply(message: str, variables: Dict[str, Any]) -> str:
 
 
 def build_comparison_reply(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    # Comparison usually benefits from GPT advisor if multiple options/tradeoffs are involved.
     return None
 
 
@@ -278,6 +281,9 @@ def build_objection_reply(message: str, variables: Dict[str, Any]) -> Optional[D
             "updates": {
                 "needs_human": True,
                 "handoff_reason": "price_or_negotiation",
+                "last_objection_type": "price",
+                "price_sensitive": True,
+                "lead_stage": "negotiation",
             },
         }
 
@@ -288,7 +294,9 @@ def build_objection_reply(message: str, variables: Dict[str, Any]) -> Optional[D
             "objection_type": "mileage",
             "action": "handle_mileage_objection",
             "should_use_gpt": False,
-            "updates": {},
+            "updates": {
+                "last_objection_type": "mileage",
+            },
         }
 
     if objection_type == "trust":
@@ -298,7 +306,9 @@ def build_objection_reply(message: str, variables: Dict[str, Any]) -> Optional[D
             "objection_type": "trust",
             "action": "handle_trust_objection",
             "should_use_gpt": False,
-            "updates": {},
+            "updates": {
+                "last_objection_type": "trust",
+            },
         }
 
     if objection_type == "hesitation":
@@ -308,7 +318,9 @@ def build_objection_reply(message: str, variables: Dict[str, Any]) -> Optional[D
             "objection_type": "hesitation",
             "action": "handle_hesitation",
             "should_use_gpt": False,
-            "updates": {},
+            "updates": {
+                "last_objection_type": "hesitation",
+            },
         }
 
     if objection_type == "comparison":
@@ -317,7 +329,9 @@ def build_objection_reply(message: str, variables: Dict[str, Any]) -> Optional[D
             "objection_type": "comparison",
             "action": "advisor_comparison",
             "should_use_gpt": True,
-            "updates": {},
+            "updates": {
+                "last_objection_type": "comparison",
+            },
         }
 
     return None
