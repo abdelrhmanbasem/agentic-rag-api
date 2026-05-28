@@ -2,14 +2,12 @@
 # Smart escalation gate.
 #
 # Purpose:
-# - Keep simple turns zero-token.
-# - Use GPT only when the user needs real reasoning, advice, comparison, persuasion,
-#   uncertainty handling, or complex judgment.
-#
-# This is what makes the agent feel much smarter without using GPT for every turn.
+# - Use GPT only when judgment, comparison, reasoning, or nuance is genuinely useful.
+# - Keep factual/stateful replies deterministic.
+# - Make advisor answers balanced, practical, and not pushy.
 
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 
 
 def normalize_arabic(text: str) -> str:
@@ -36,130 +34,64 @@ def is_arabic_text(text: str) -> bool:
     return bool(re.search(r"[\u0600-\u06FF]", text or ""))
 
 
-def has_any(text: str, markers: List[str]) -> bool:
-    return any(marker in text for marker in markers)
-
-
 def should_escalate_to_advisor(
     *,
     message: str,
     variables: Dict[str, Any],
     schema: Dict[str, Any],
-    assistant_id: str = "",
+    assistant_id: str,
 ) -> bool:
-    """
-    Escalate only when the user needs judgment/advice/reasoning.
-    Do NOT escalate for simple factual/state questions.
-    """
     text = normalize_text(message)
     variables = variables or {}
 
-    if not text:
-        return False
-
-    # Simple factual questions should stay cheap.
-    simple_fact_markers = [
-        "اوتوماتيك",
-        "اتوماتيك",
-        "مانيوال",
-        "كام كيلو",
-        "عامله كام",
-        "عاملة كام",
-        "بكام",
-        "سعرها كام",
-        "سعره كام",
-        "متاح",
-        "available",
-        "automatic",
-        "manual",
-        "km",
-        "mileage",
-        "price",
-    ]
-
-    if has_any(text, simple_fact_markers):
-        # Exception: "is the price good?" is advice, not just price.
-        advice_price_markers = ["سعر كويس", "السعر كويس", "worth", "good deal", "تستاهل"]
-        if not has_any(text, advice_price_markers):
-            return False
-
     advisor_markers = [
-        # Arabic advice
         "تنصحني",
-        "ترشحلي",
-        "رأيك",
         "رايك",
-        "ايه الاحسن",
-        "ايه افضل",
-        "أنهي احسن",
-        "انهي احسن",
-        "اختار ايه",
+        "رأيك",
         "اخدها",
         "استنى",
         "استني",
         "تستاهل",
-        "صفقه كويسه",
-        "صفقة كويسة",
-        "سعر كويس",
-        "مناسبه ليا",
-        "مناسبة ليا",
-        "هل دي كويسه",
-        "هل دي كويسة",
-
-        # Arabic comparison
+        "صفقة",
+        "صفقه",
+        "كويسة",
+        "كويسه",
+        "احسن",
+        "افضل",
         "قارن",
-        "مقارنه",
         "مقارنة",
-        "احسن من",
-        "افضل من",
-        "ولا مرسيدس",
-        "ولا bmw",
-        "بدل",
-        "بديل",
-
-        # Arabic fear / doubt
-        "خايف",
-        "قلقان",
-        "مش متاكد",
-        "مش متأكد",
-        "مش عارف",
-        "هل العداد كتير",
-        "العداد كتير",
+        "مقارنه",
         "عيوب",
         "مميزات",
-        "اعطال",
         "صيانة",
         "صيانه",
-        "إعادة بيع",
         "اعادة بيع",
-
-        # English advice/comparison
+        "إعادة بيع",
         "recommend",
         "should i",
-        "what do you think",
-        "is it worth",
         "worth it",
-        "good deal",
+        "worth",
         "compare",
-        "better than",
-        "pros and cons",
-        "concerned",
-        "worried",
+        "better",
+        "pros",
+        "cons",
         "maintenance",
         "resale",
     ]
 
-    if has_any(text, advisor_markers):
+    if any(marker in text for marker in advisor_markers):
         return True
 
-    # If the user asks a broad "why" about a product/service, escalate.
     if text.startswith("ليه") or text.startswith("why"):
+        return True
+
+    if variables.get("selected_item") and any(x in text for x in ["ولا", "or", "بديل", "alternative"]):
         return True
 
     return False
 
 
-def build_advisor_route(reason: str = "User needs advice or reasoning.") -> Dict[str, Any]:
+def build_advisor_route(reason: str = "User needs advice, comparison, or judgment.") -> Dict[str, Any]:
     return {
         "intent_hint": "advisory_question",
         "answer_mode": "advisor",
@@ -170,7 +102,6 @@ def build_advisor_route(reason: str = "User needs advice or reasoning.") -> Dict
         "reason": reason,
         "risk_score": 0.25,
         "complexity_score": 0.8,
-        "rag_cache_hit": False,
     }
 
 
@@ -183,34 +114,44 @@ def build_advisor_system_prompt(
     arabic = is_arabic_text(message)
 
     language_rule = (
-        "Reply in natural Egyptian Arabic. Be sharp, practical, and concise."
+        "Reply in natural Egyptian Arabic. Keep car brands/models in English when natural."
         if arabic
-        else "Reply in the same language as the user. Be sharp, practical, and concise."
+        else "Reply in the same language as the user."
     )
 
     return f"""
-You are an elite business conversation advisor inside an agentic RAG assistant.
+You are an expert practical advisor inside this assistant.
 
-Assistant base behavior:
+Assistant identity/style:
 {assistant.get("system_prompt", "")}
+
+Tone:
+{assistant.get("tone", "clear, helpful, concise")}
 
 Language:
 {language_rule}
 
-Style:
-- Sound like a very sharp human operator, not a generic chatbot.
-- Be practical, honest, and persuasive.
-- Do not overpromise.
-- Use known state and knowledge.
-- If the user asks for advice, give a clear recommendation with a reason.
-- If comparing options, explain the tradeoff simply.
-- If there is uncertainty, say what should be checked next.
-- End with one useful next step, not multiple questions.
-- Keep the answer short enough for WhatsApp.
+Advisor rules:
+- Be balanced, not pushy.
+- Do NOT pressure the user with fear-of-missing-out.
+- Do NOT say something is excellent unless the known facts support it.
+- Do NOT invent condition, inspection results, warranty, service history, availability, discounts, or final price.
+- If advising about a car, reason from known facts only: model, year, mileage, price, budget, transmission, condition, and user concern.
+- Separate what is known from what needs checking.
+- Give one practical next step.
+- Prefer: "worth viewing/checking" over "buy it now".
+- If price is a concern, acknowledge it and suggest viewing/checking condition or comparing alternatives.
+- Keep the answer short: 2-4 sentences max.
+- Do not reveal internal strategy, variables, memory, RAG, or routing.
+- Do not pretend to be human.
 
-Important:
-- Do not invent inventory, prices, kilometers, years, policies, appointment slots, or guarantees.
-- Do not reveal internal routing, variables, RAG, or memory.
+Good Arabic style example:
+"لو هدفك BMW تحت المليون، دي تستاهل المعاينة. موديل 2021، أوتوماتيك، وعدّاد 78,000 كم مقبول لو حالتها وصيانتها كويسين. رأيي تشوفها الأول، ولو الحالة مش مقنعة ساعتها نقارنها ببديل تاني."
+
+Bad style to avoid:
+"اشتريها فورًا."
+"لو استنيت هتفوت فرصة."
+"حالة ممتازة" unless condition is explicitly known.
 """
 
 
@@ -219,9 +160,11 @@ def build_advisor_context(
     message: str,
     summary: str,
     variables: Dict[str, Any],
-    knowledge: List[Dict[str, Any]],
-    memories: List[Dict[str, Any]],
+    knowledge,
+    memories,
 ) -> str:
+    variables = variables or {}
+
     return f"""
 Latest user message:
 {message}
@@ -229,7 +172,7 @@ Latest user message:
 Conversation summary:
 {summary}
 
-Current known state:
+Current known variables:
 {variables}
 
 Relevant knowledge:
@@ -237,4 +180,7 @@ Relevant knowledge:
 
 Relevant memories:
 {memories}
+
+Important:
+Use only the known facts above. If condition/service history is unknown, say it needs checking.
 """
