@@ -667,31 +667,111 @@ def add_asked_question(variables: Dict[str, Any], question_key: str) -> Dict[str
 def compute_lead_score(variables: Dict[str, Any], intent: str) -> Dict[str, Any]:
     variables = dict(variables or {})
     intent = normalize_intent(intent)
+
     score = 0
     reasons = []
 
-    checks = [
-        (variables.get("car_brand") or variables.get("service_needed"), 15, "clear interest"),
-        (variables.get("matched_car_model") or variables.get("selected_item"), 20, "matched item/service"),
-        (variables.get("budget_max"), 15, "budget provided"),
-        (variables.get("preferred_viewing_date") or variables.get("appointment_date"), 15, "date provided"),
-        (variables.get("preferred_viewing_time") or variables.get("appointment_time"), 10, "time provided"),
-        (variables.get("location"), 10, "location provided"),
-        (variables.get("phone_number"), 10, "contact available"),
-        (intent in ["viewing_request", "booking_request"], 15, "action requested"),
-        (variables.get("needs_human"), 10, "human follow-up needed"),
-    ]
+    workflow = variables.get("workflow") or "general"
 
-    for ok, points, reason in checks:
-        if ok:
-            score += points
-            reasons.append(reason)
+    def add(points: int, reason: str):
+        nonlocal score
+        score += points
+        reasons.append(reason)
+
+    has_interest = bool(
+        variables.get("car_brand")
+        or variables.get("service_needed")
+        or variables.get("selected_item")
+        or variables.get("matched_car_model")
+    )
+
+    has_matched_item = bool(
+        variables.get("selected_item")
+        or variables.get("matched_car_model")
+    )
+
+    has_budget = bool(variables.get("budget_max"))
+    has_date = bool(variables.get("preferred_viewing_date") or variables.get("appointment_date"))
+    has_time = bool(variables.get("preferred_viewing_time") or variables.get("appointment_time"))
+    has_location = bool(variables.get("location"))
+    has_phone = bool(variables.get("phone_number"))
+
+    is_action_intent = intent in ["viewing_request", "booking_request"]
+
+    is_price_sensitive = bool(
+        variables.get("price_sensitive")
+        or variables.get("last_objection_type") == "price"
+        or variables.get("handoff_reason") == "price_or_negotiation"
+    )
+
+    needs_human = bool(variables.get("needs_human"))
+
+    if has_interest:
+        add(20, "clear interest")
+
+    if has_matched_item:
+        add(25, "matched item/service")
+
+    if has_budget:
+        add(15, "budget provided")
+
+    if has_date:
+        add(15, "date provided")
+
+    if has_time:
+        add(10, "time provided")
+
+    if has_location:
+        add(10, "location provided")
+
+    if has_phone:
+        add(15, "contact available")
+
+    if is_action_intent:
+        add(20, "action requested")
+
+    if is_price_sensitive:
+        add(15, "price-sensitive but engaged")
+
+    if needs_human:
+        add(10, "human follow-up needed")
+
+    # Smart floor rules:
+    # A user who selected an item and objected to price is not cold.
+    # They are commercially engaged and should be treated as warm.
+    if workflow == "car_sales" and has_matched_item and is_price_sensitive:
+        score = max(score, 60)
+        if "price-sensitive qualified lead" not in reasons:
+            reasons.append("price-sensitive qualified lead")
+
+    if workflow == "car_sales" and has_matched_item and has_phone:
+        score = max(score, 70)
+        if "matched item with contact" not in reasons:
+            reasons.append("matched item with contact")
+
+    if workflow == "car_sales" and has_date and has_time and has_location:
+        score = max(score, 80)
+        if "viewing details collected" not in reasons:
+            reasons.append("viewing details collected")
+
+    if variables.get("lead_stage") in ["confirmed", "negotiation"]:
+        score = max(score, 65)
+        stage_reason = f"lead stage: {variables.get('lead_stage')}"
+        if stage_reason not in reasons:
+            reasons.append(stage_reason)
 
     score = min(score, 100)
 
+    if score >= 80:
+        temperature = "hot"
+    elif score >= 50:
+        temperature = "warm"
+    else:
+        temperature = "cold"
+
     variables["lead_score"] = score
-    variables["lead_temperature"] = "hot" if score >= 80 else "warm" if score >= 50 else "cold"
-    variables["lead_score_reasons"] = reasons
+    variables["lead_temperature"] = temperature
+    variables["lead_score_reasons"] = list(dict.fromkeys(reasons))
 
     return variables
 
