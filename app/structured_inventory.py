@@ -1,11 +1,11 @@
 # app/structured_inventory.py
 # Structured inventory index for ultra-low-token / low-embedding lookups.
-# Stores parsed inventory in a local JSON file and searches it before vector RAG.
 #
-# This version is intentionally forgiving:
-# - Works even if assistant schema is empty.
-# - Can score from extracted variables and/or raw user query.
-# - Returns relevant inventory before Qdrant whenever possible.
+# Fixes:
+# - Auto-creates /app/data.
+# - Can rebuild structured inventory from Qdrant/RAG knowledge results when local file is missing.
+# - Makes first-turn inventory lookup recover after restart/redeploy.
+# - Searches by query variables and raw Arabic/English query.
 
 import json
 import os
@@ -275,6 +275,75 @@ def upsert_structured_inventory_from_text(
     return len(parsed)
 
 
+def rebuild_structured_inventory_from_knowledge(
+    assistant_id: str,
+    knowledge: List[Dict[str, Any]],
+) -> int:
+    """
+    Rebuild local structured_inventory.json from retrieved RAG/Qdrant results.
+
+    This is a recovery path for restarts/redeploys where /app/data is not persisted.
+    It lets the system fall back to Qdrant once, rebuild the local structured file,
+    then continue using structured_inventory afterward.
+    """
+    if not knowledge:
+        return 0
+
+    existing = load_inventory()
+    parsed_all: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(knowledge):
+        text = item.get("text") or ""
+        metadata = item.get("metadata") or {}
+
+        document_id = item.get("document_id") or metadata.get("document_id") or "inventory_rebuilt"
+        title = item.get("title") or metadata.get("title") or "Rebuilt Inventory"
+
+        parsed = parse_inventory_items(
+            assistant_id=assistant_id,
+            document_id=document_id,
+            title=title,
+            text=text,
+            metadata={
+                **metadata,
+                "source": metadata.get("source") or "rebuilt_from_rag",
+                "rebuilt": True,
+            },
+        )
+
+        parsed_all.extend(parsed)
+
+    if not parsed_all:
+        return 0
+
+    # Remove duplicates for this assistant/model/year/price.
+    combined = [
+        item
+        for item in existing
+        if item.get("assistant_id") != assistant_id
+    ]
+
+    seen = set()
+
+    for item in parsed_all:
+        key = (
+            item.get("assistant_id"),
+            item.get("model"),
+            item.get("year"),
+            item.get("price"),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        combined.append(item)
+
+    save_inventory(combined)
+
+    return len(parsed_all)
+
+
 def extract_query_hints(raw_query: str) -> Dict[str, Any]:
     raw_query = raw_query or ""
     hints: Dict[str, Any] = {}
@@ -292,7 +361,6 @@ def extract_query_hints(raw_query: str) -> Dict[str, Any]:
     if transmission:
         hints["transmission"] = transmission
 
-    # Budget examples: مليون, 1 million, 950000, 950 ألف
     text = normalize_text(raw_query)
 
     if "مليون" in text:
@@ -333,7 +401,6 @@ def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any], 
     item_model = str(item.get("model") or "").lower()
     item_text = normalize_text(item.get("text") or "")
 
-    # Brand/model matching.
     if q_brand:
         if q_brand == item_brand:
             score += 120
@@ -342,7 +409,6 @@ def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any], 
         else:
             score -= 80
 
-    # Raw text overlap helps when schema/extraction is weak.
     if raw_query_norm:
         for token in raw_query_norm.split():
             if len(token) >= 3 and token in item_text:
@@ -360,7 +426,6 @@ def score_inventory_item(item: Dict[str, Any], query_variables: Dict[str, Any], 
         except Exception:
             pass
 
-    # Base completeness score so inventory can still be returned when query is broad.
     if item_price:
         score += 8
 
@@ -398,8 +463,6 @@ def search_structured_inventory(
         enriched = dict(item)
         enriched["score"] = score
 
-        # Keep any positive score.
-        # If raw query is very broad, completeness base score will still surface inventory.
         if score > 0:
             scored.append(enriched)
 
