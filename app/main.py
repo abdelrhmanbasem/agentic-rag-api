@@ -1991,14 +1991,19 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             variables=updated_variables,
         )
 
-        long_term_memories_written = decide_and_write_long_term_memories(
-            assistant_id=req.assistant_id,
-            user_id=req.user_id,
-            conversation_id=req.conversation_id,
-            summary=updated_summary,
-            recent_messages=get_recent_messages(req.conversation_id, limit=8),
-            variables=updated_variables,
-        )
+        premium_memory_decision = premium_result.get("premium_memory_decision", {}) or {}
+
+        if premium_memory_decision.get("suppress_long_term_memory"):
+            long_term_memories_written = []
+        else:
+            long_term_memories_written = decide_and_write_long_term_memories(
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                summary=updated_summary,
+                recent_messages=get_recent_messages(req.conversation_id, limit=8),
+                variables=updated_variables,
+            )
 
         premium_usage_input_obj = {
             "message": req.message,
@@ -2010,6 +2015,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             "memories": premium_result.get("memories_used"),
             "evidence_judgment": premium_result.get("evidence_judgment"),
             "critique": premium_result.get("critique"),
+            "premium_memory_decision": premium_result.get("premium_memory_decision"),
+            "premium_debug": premium_result.get("premium_debug"),
             "playbook": playbook,
             "assistant_profile": assistant_profile,
         }
@@ -2064,6 +2071,8 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
                 "confidence": premium_result.get("evidence_judgment", {}).get("confidence", 0.75),
             },
             "route": premium_result.get("route", {}),
+            "premium_debug": premium_result.get("premium_debug", {}),
+            "premium_memory_decision": premium_result.get("premium_memory_decision", {}),
             "knowledge_used": premium_result.get("knowledge_used", []),
             "knowledge_source": premium_result.get("knowledge_source", "none"),
             "memories_used": premium_result.get("memories_used", []),
