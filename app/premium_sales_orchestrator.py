@@ -6,6 +6,7 @@
 # It does:
 # - mode-aware broad retrieval
 # - evidence judgment
+# - premium memory decision
 # - premium answer generation
 # - critic pass
 # - safe revision if needed
@@ -14,14 +15,12 @@
 # The premium LLM is allowed to extract user-provided facts,
 # but it is NOT allowed to directly write system-computed fields
 # like lead_score, lead_temperature, workflow_stage, workflow, etc.
-# Those must remain controlled by main.py deterministic functions:
-# - set_workflow_stage(...)
-# - compute_lead_score(...)
 
 from typing import Dict, Any, List, Tuple
 
 from app.llm import chat_text, chat_json, model_for_tier
 from app.premium_retrieval import retrieve_premium_evidence
+from app.premium_memory import build_premium_memory_decision
 from app.premium_prompts import (
     build_language_rule,
     build_premium_sales_system_prompt,
@@ -55,30 +54,11 @@ def safe_json_result(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def clean_premium_extraction_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Remove fields the LLM should not directly control.
-
-    The premium LLM may infer facts like:
-    - budget_max
-    - car_brand
-    - preferred_contact_method
-    - location
-    - phone_number
-    - intent-related variables
-
-    But it should NOT set computed system fields like:
-    - lead_score
-    - lead_temperature
-    - workflow_stage
-
-    Those are recalculated deterministically in main.py.
-    """
     cleaned = dict(updates or {})
 
     for key in SYSTEM_COMPUTED_VARIABLES:
         cleaned.pop(key, None)
 
-    # Also remove private/debug-only keys if an LLM ever tries to write them.
     for key in list(cleaned.keys()):
         if str(key).startswith("_"):
             cleaned.pop(key, None)
@@ -87,9 +67,6 @@ def clean_premium_extraction_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def clean_premium_extraction_deletions(deletions: List[str]) -> List[str]:
-    """
-    Prevent the LLM from deleting system-computed or private fields.
-    """
     safe_deletions = []
 
     for key in deletions or []:
@@ -127,7 +104,7 @@ def judge_evidence(
         result,
         {
             "enough_to_answer": bool(knowledge or variables),
-            "confidence": 0.6 if knowledge or variables else 0.3,
+            "confidence": 0.6 if knowledge or variables else 0.25,
             "missing_facts": [],
             "conflicting_facts": [],
             "best_evidence_titles": [],
@@ -150,6 +127,7 @@ def generate_premium_answer(
     memories: List[Dict[str, Any]],
     mode_decision: Dict[str, Any],
     evidence_judgment: Dict[str, Any],
+    premium_memory_decision: Dict[str, Any],
 ) -> str:
     mode = mode_decision.get("mode", "premium_sales")
 
@@ -168,6 +146,7 @@ def generate_premium_answer(
         memories=memories,
         mode_decision=mode_decision,
         evidence_judgment=evidence_judgment,
+        premium_memory_decision=premium_memory_decision,
     )
 
     messages = [
@@ -210,6 +189,7 @@ def critique_answer(
             "did_not_answer_user": False,
             "too_pushy": False,
             "too_long": False,
+            "too_generic": False,
             "revision_instruction": "",
         },
     )
@@ -279,7 +259,39 @@ def should_revise(critique: Dict[str, Any]) -> bool:
     if critique.get("too_pushy"):
         return True
 
+    if critique.get("too_generic"):
+        return True
+
     return False
+
+
+def build_premium_debug(
+    *,
+    mode_decision: Dict[str, Any],
+    retrieval: Dict[str, Any],
+    evidence_judgment: Dict[str, Any],
+    critique: Dict[str, Any],
+    premium_memory_decision: Dict[str, Any],
+) -> Dict[str, Any]:
+    knowledge = retrieval.get("knowledge", []) or []
+    memories = retrieval.get("memories", []) or []
+
+    return {
+        "mode": mode_decision.get("mode"),
+        "reason": mode_decision.get("reason"),
+        "model_tier": mode_decision.get("selected_model_tier"),
+        "retrieval_queries": retrieval.get("queries", []),
+        "evidence_count": len(knowledge),
+        "memory_count": len(memories),
+        "evidence_confidence": evidence_judgment.get("confidence"),
+        "evidence_enough": evidence_judgment.get("enough_to_answer"),
+        "answer_risk": evidence_judgment.get("answer_risk"),
+        "critic_passed": critique.get("passes"),
+        "critic_too_generic": critique.get("too_generic", False),
+        "memory_allow_long_term": premium_memory_decision.get("allow_long_term_memory"),
+        "memory_suppress_long_term": premium_memory_decision.get("suppress_long_term_memory"),
+        "memory_session_signals": premium_memory_decision.get("session_signals", []),
+    }
 
 
 def run_adaptive_premium_turn(
@@ -342,6 +354,13 @@ def run_adaptive_premium_turn(
     if extraction.get("intent"):
         updated_variables["intent"] = extraction.get("intent")
 
+    premium_memory_decision = build_premium_memory_decision(
+        user_message=user_message,
+        variables=updated_variables,
+        recent_messages=recent_messages,
+        mode_decision=mode_decision,
+    )
+
     retrieval = retrieve_premium_evidence(
         assistant_id=assistant_id,
         user_id=user_id,
@@ -372,6 +391,7 @@ def run_adaptive_premium_turn(
         memories=memories,
         mode_decision=mode_decision,
         evidence_judgment=evidence_judgment,
+        premium_memory_decision=premium_memory_decision,
     )
 
     critique = critique_answer(
@@ -389,6 +409,14 @@ def run_adaptive_premium_turn(
             original_answer=answer,
             critique=critique,
         )
+
+    premium_debug = build_premium_debug(
+        mode_decision=mode_decision,
+        retrieval=retrieval,
+        evidence_judgment=evidence_judgment,
+        critique=critique,
+        premium_memory_decision=premium_memory_decision,
+    )
 
     result = {
         "answer": answer,
@@ -415,6 +443,8 @@ def run_adaptive_premium_turn(
         "retrieval_queries": retrieval.get("queries", []),
         "evidence_judgment": evidence_judgment,
         "critique": critique,
+        "premium_memory_decision": premium_memory_decision,
+        "premium_debug": premium_debug,
         "model_used": model,
         "model_tier": selected_tier,
         "recommended_next_action": mode_decision.get("mode", "adaptive_premium"),
