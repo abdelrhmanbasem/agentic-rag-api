@@ -1898,12 +1898,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
         return compact_chat_response(response_payload)
 
-    # ------------------------------------------------------------
-    # Universal assistant brain
+        # ------------------------------------------------------------
+    # Universal assistant brain before fast_path
     # ------------------------------------------------------------
     # Runs before fast_path so objections/advice/commercial psychology
     # are handled by the real brain first.
-              brain_wants_gpt = False
+    brain_wants_gpt = False
 
     brain_result = build_brain_deterministic_response(
         message=req.message,
