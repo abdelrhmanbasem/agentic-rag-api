@@ -2,12 +2,21 @@
 # Adaptive premium sales reasoning orchestrator.
 #
 # This is the "breathtaking when needed" layer.
+#
 # It does:
 # - mode-aware broad retrieval
 # - evidence judgment
 # - premium answer generation
 # - critic pass
 # - safe revision if needed
+#
+# Important safety rule:
+# The premium LLM is allowed to extract user-provided facts,
+# but it is NOT allowed to directly write system-computed fields
+# like lead_score, lead_temperature, workflow_stage, workflow, etc.
+# Those must remain controlled by main.py deterministic functions:
+# - set_workflow_stage(...)
+# - compute_lead_score(...)
 
 from typing import Dict, Any, List, Tuple
 
@@ -24,8 +33,73 @@ from app.intelligence_modes import choose_intelligence_mode
 from app.variables import extract_variables, apply_variable_patch
 
 
+SYSTEM_COMPUTED_VARIABLES = {
+    "lead_score",
+    "lead_temperature",
+    "lead_score_reasons",
+    "workflow",
+    "workflow_stage",
+    "recommended_next_action",
+    "next_best_action",
+    "knowledge_source",
+    "model_used",
+    "model_tier",
+    "token_usage",
+    "memory_saved",
+    "long_term_memories_written",
+}
+
+
 def safe_json_result(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     return value if isinstance(value, dict) else fallback
+
+
+def clean_premium_extraction_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove fields the LLM should not directly control.
+
+    The premium LLM may infer facts like:
+    - budget_max
+    - car_brand
+    - preferred_contact_method
+    - location
+    - phone_number
+    - intent-related variables
+
+    But it should NOT set computed system fields like:
+    - lead_score
+    - lead_temperature
+    - workflow_stage
+
+    Those are recalculated deterministically in main.py.
+    """
+    cleaned = dict(updates or {})
+
+    for key in SYSTEM_COMPUTED_VARIABLES:
+        cleaned.pop(key, None)
+
+    # Also remove private/debug-only keys if an LLM ever tries to write them.
+    for key in list(cleaned.keys()):
+        if str(key).startswith("_"):
+            cleaned.pop(key, None)
+
+    return cleaned
+
+
+def clean_premium_extraction_deletions(deletions: List[str]) -> List[str]:
+    """
+    Prevent the LLM from deleting system-computed or private fields.
+    """
+    safe_deletions = []
+
+    for key in deletions or []:
+        if key in SYSTEM_COMPUTED_VARIABLES:
+            continue
+        if str(key).startswith("_"):
+            continue
+        safe_deletions.append(key)
+
+    return safe_deletions
 
 
 def judge_evidence(
@@ -155,7 +229,8 @@ def revise_answer(
             "role": "system",
             "content": (
                 "Revise the answer according to the critic. "
-                "Do not add unsupported facts. Keep the same language as the user. "
+                "Do not add unsupported facts. "
+                "Keep the same language as the user. "
                 "Return only the revised final answer."
             ),
         },
@@ -252,10 +327,16 @@ def run_adaptive_premium_turn(
         user_message=user_message,
     )
 
+    raw_updates = extraction.get("updates", {}) or {}
+    raw_deletions = extraction.get("deletions", []) or []
+
+    extraction_updates = clean_premium_extraction_updates(raw_updates)
+    extraction_deletions = clean_premium_extraction_deletions(raw_deletions)
+
     updated_variables = apply_variable_patch(
         variables,
-        extraction.get("updates", {}),
-        extraction.get("deletions", []),
+        extraction_updates,
+        extraction_deletions,
     )
 
     if extraction.get("intent"):
@@ -312,8 +393,10 @@ def run_adaptive_premium_turn(
     result = {
         "answer": answer,
         "variables": updated_variables,
-        "variable_updates": extraction.get("updates", {}),
-        "variable_deletions": extraction.get("deletions", []),
+        "variable_updates": extraction_updates,
+        "variable_deletions": extraction_deletions,
+        "raw_variable_updates": raw_updates,
+        "raw_variable_deletions": raw_deletions,
         "missing_variables": extraction.get("missing_variables", []),
         "intent": updated_variables.get("intent", extraction.get("intent", "general_question")),
         "mode_decision": mode_decision,
