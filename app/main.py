@@ -95,6 +95,7 @@ from app.assistant_brain import (
     build_brain_deterministic_response,
     build_brain_advisor_hint,
 )
+from app.premium_sales_orchestrator import run_adaptive_premium_turn
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -1902,27 +1903,183 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Runs before fast_path so objections/advice/commercial psychology
     # are handled by the real brain first.
+              brain_wants_gpt = False
+
     brain_result = build_brain_deterministic_response(
         message=req.message,
         schema=schema,
-        assistant_id=req.assistant_id,
         variables=existing_variables,
+        assistant_id=req.assistant_id,
         recent_messages=recent_messages,
     )
 
     if brain_result and brain_result.get("should_use_gpt"):
+        brain_wants_gpt = True
+
         brain_hint = build_brain_advisor_hint(
             message=req.message,
             schema=schema,
-            assistant_id=req.assistant_id,
             variables=existing_variables,
-            recent_messages=recent_messages,
+            assistant_id=req.assistant_id,
         )
 
         existing_variables = dict(existing_variables or {})
         existing_variables["_brain_hint"] = brain_hint
 
+    # ------------------------------------------------------------
+    # Adaptive premium intelligence layer
+    # ------------------------------------------------------------
+    premium_handled, premium_result = run_adaptive_premium_turn(
+        assistant=assistant,
+        assistant_id=req.assistant_id,
+        user_id=req.user_id,
+        schema=schema,
+        variables=existing_variables,
+        recent_messages=recent_messages,
+        summary=summary,
+        user_message=req.message,
+        route={
+            "brain_wants_gpt": brain_wants_gpt,
+            "brain_hint": existing_variables.get("_brain_hint") if isinstance(existing_variables, dict) else None,
+        },
+    )
+
+    if premium_handled:
+        updated_variables = premium_result.get("variables") or dict(existing_variables or {})
+        answer = premium_result["answer"]
+
+        updated_variables = autofill_channel_context(updated_variables, req)
+        updated_variables = sync_selected_item_state(updated_variables)
+
+        current_intent = (
+            premium_result.get("intent")
+            or updated_variables.get("intent")
+            or "general_question"
+        )
+
+        updated_variables = set_workflow_stage(
+            schema,
+            req.assistant_id,
+            updated_variables,
+            current_intent,
+        )
+
+        updated_variables = compute_lead_score(
+            updated_variables,
+            current_intent,
+        )
+
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
+
+        save_message(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            "assistant",
+            answer,
+        )
+
+        updated_summary = update_conversation_summary(
+            conversation_id=req.conversation_id,
+            assistant_id=req.assistant_id,
+            user_id=req.user_id,
+            variables=updated_variables,
+        )
+
+        long_term_memories_written = decide_and_write_long_term_memories(
+            assistant_id=req.assistant_id,
+            user_id=req.user_id,
+            conversation_id=req.conversation_id,
+            summary=updated_summary,
+            recent_messages=get_recent_messages(req.conversation_id, limit=8),
+            variables=updated_variables,
+        )
+
+        premium_usage_input_obj = {
+            "message": req.message,
+            "summary": summary,
+            "variables": updated_variables,
+            "mode_decision": premium_result.get("mode_decision"),
+            "retrieval_queries": premium_result.get("retrieval_queries"),
+            "knowledge": premium_result.get("knowledge_used"),
+            "memories": premium_result.get("memories_used"),
+            "evidence_judgment": premium_result.get("evidence_judgment"),
+            "critique": premium_result.get("critique"),
+            "playbook": playbook,
+            "assistant_profile": assistant_profile,
+        }
+
+        token_usage = build_token_usage_report(
+            model_used=premium_result.get("model_used"),
+            model_tier=premium_result.get("model_tier"),
+            answer_mode="adaptive_premium",
+            input_obj=premium_usage_input_obj,
+            output_text=answer,
+            knowledge_source=premium_result.get("knowledge_source", "none"),
+            rag_cache_hit=False,
+            notes="Adaptive premium estimate includes retrieval, evidence judgment, answer generation, critique, and revision payloads.",
+        )
+
+        log_estimated_usage(
+            assistant_id=req.assistant_id,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            model=premium_result.get("model_used"),
+            purpose="chat_adaptive_premium",
+            input_obj=premium_usage_input_obj,
+            output_text=answer,
+            metadata={
+                "model_tier": premium_result.get("model_tier"),
+                "answer_mode": "adaptive_premium",
+                "premium_mode": premium_result.get("mode_decision", {}).get("mode"),
+                "knowledge_source": premium_result.get("knowledge_source", "none"),
+                "rag_cache_hit": False,
+                "token_usage": token_usage,
+            },
+        )
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": current_intent,
+            "variables": updated_variables,
+            "variable_updates": premium_result.get("variable_updates", {}),
+            "variable_deletions": premium_result.get("variable_deletions", []),
+            "missing_variables": calculate_missing_required_variables(
+                schema=schema,
+                variables=updated_variables,
+                intent=current_intent,
+                assistant_id=req.assistant_id,
+            ),
+            "recommended_next_action": premium_result.get("recommended_next_action", "adaptive_premium"),
+            "next_best_action": {
+                "action": premium_result.get("recommended_next_action", "adaptive_premium"),
+                "reason": premium_result.get("mode_decision", {}).get("reason", "Handled by adaptive premium layer."),
+                "confidence": premium_result.get("evidence_judgment", {}).get("confidence", 0.75),
+            },
+            "route": premium_result.get("route", {}),
+            "knowledge_used": premium_result.get("knowledge_used", []),
+            "knowledge_source": premium_result.get("knowledge_source", "none"),
+            "memories_used": premium_result.get("memories_used", []),
+            "summary": updated_summary,
+            "long_term_memories_written": long_term_memories_written,
+            "model_used": premium_result.get("model_used"),
+            "model_tier": premium_result.get("model_tier"),
+            "token_usage": token_usage,
+            "mock_mode": MOCK_MODE,
+            "memory_saved": bool(long_term_memories_written),
+        }
+
+        return compact_chat_response(response_payload)
+
     elif brain_result and not brain_result.get("no_direct_answer"):
+        # existing old brain block continues here
         brain_updates = brain_result.get("updates") or {}
         updated_variables = dict(existing_variables or {})
         updated_variables.update(brain_updates)
