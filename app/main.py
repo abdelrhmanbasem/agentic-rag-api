@@ -2290,7 +2290,12 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
             + existing_variables.get("_do_not_repeat_instruction", "")
             + "\n\nPLAYBOOK RULE:\n"
             "Use the assistant's prompt, knowledge base, and conversation playbook to decide the next best step. "
-            "Do not behave like this is the first message if known_facts, last_user_answer, summary, or issue_description already contain context."
+            "Do not behave like this is the first message if known_facts, last_user_answer, summary, or issue_description already contain context. "
+            "\n\nSTRUCTURED OUTPUT RULE:\n"
+            "When you recommend a service section in the answer, you must also return structured variables: "
+            "recommended_section, service_needed, customer_facing_section, diagnostic_stage, and next_service_action. "
+            "The booking sub-agent depends on recommended_section and must not diagnose the section itself. "
+            "Never expose these variable names to the customer."
         )
 
     premium_handled, premium_result = run_adaptive_premium_turn(
