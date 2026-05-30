@@ -49,6 +49,15 @@ SYSTEM_COMPUTED_VARIABLES = {
 }
 
 
+SERVICE_DECISION_VARIABLES = {
+    "recommended_section",
+    "service_needed",
+    "customer_facing_section",
+    "diagnostic_stage",
+    "next_service_action",
+}
+
+
 def safe_json_result(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     return value if isinstance(value, dict) else fallback
 
@@ -77,6 +86,203 @@ def clean_premium_extraction_deletions(deletions: List[str]) -> List[str]:
         safe_deletions.append(key)
 
     return safe_deletions
+
+
+def ensure_service_decision_variables(
+    variables: Dict[str, Any],
+    answer: str,
+    assistant_id: str = "",
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Ensures the service assistant stores structured service decision variables.
+
+    Why this exists:
+    - The main brain may correctly say "قسم كشف الموتور" in the answer.
+    - The booking sub-agent needs the internal variable "recommended_section".
+    - This repair layer makes the main brain's visible decision explicit.
+
+    Scope:
+    - Only applies to service_center_agentic_rag.
+    - Does not affect future assistants.
+    - Does not make the booking sub-agent diagnose.
+    """
+
+    variables = dict(variables or {})
+    assistant_id = str(assistant_id or "")
+
+    if assistant_id != "service_center_agentic_rag":
+        return variables, {}
+
+    existing_recommended = variables.get("recommended_section")
+    existing_customer = variables.get("customer_facing_section")
+
+    if existing_recommended and existing_customer:
+        return variables, {}
+
+    symptoms = variables.get("symptoms", [])
+    if isinstance(symptoms, list):
+        symptoms_text = " ".join(str(item) for item in symptoms)
+    else:
+        symptoms_text = str(symptoms or "")
+
+    text = (
+        str(answer or "")
+        + " "
+        + str(variables.get("issue_description", ""))
+        + " "
+        + symptoms_text
+    ).lower()
+
+    section_map = [
+        {
+            "internal": "Engine Diagnostics",
+            "customer": "قسم كشف الموتور",
+            "keys": [
+                "قسم كشف الموتور",
+                "engine diagnostics",
+                "overheating",
+                "heat smell",
+                "smell of overheating",
+                "gauge rising",
+                "سخونة",
+                "بتسخن",
+                "ريحة سخونة",
+                "مؤشر الحرارة",
+                "المؤشر بيعلى",
+                "ريداتير",
+                "ردياتير",
+                "دورة التبريد",
+                "مروحة الردياتير",
+                "مروحة الريداتير",
+            ],
+        },
+        {
+            "internal": "AC Cooling",
+            "customer": "قسم التكييف",
+            "keys": [
+                "قسم التكييف",
+                "ac cooling",
+                "weak ac",
+                "تكييف",
+                "مش بيبرد",
+                "فريون",
+                "كمبروسر",
+                "مروحة كوندنسر",
+            ],
+        },
+        {
+            "internal": "Brakes & Safety",
+            "customer": "قسم الفرامل",
+            "keys": [
+                "قسم الفرامل",
+                "brakes",
+                "brake",
+                "فرامل",
+                "تيل",
+                "طنابير",
+                "بتصفر",
+                "صوت صفارة",
+            ],
+        },
+        {
+            "internal": "Electrical & Battery",
+            "customer": "قسم الكهرباء والبطارية",
+            "keys": [
+                "قسم الكهرباء",
+                "قسم الكهرباء والبطارية",
+                "battery",
+                "electrical",
+                "بطارية",
+                "دينامو",
+                "مارش",
+                "مش بتدور",
+                "تك تك",
+                "كهرباء",
+            ],
+        },
+        {
+            "internal": "Suspension & Steering",
+            "customer": "قسم العفشة والدركسيون",
+            "keys": [
+                "قسم العفشة",
+                "قسم العفشة والدركسيون",
+                "suspension",
+                "steering",
+                "عفشة",
+                "دركسيون",
+                "رعشة",
+                "اهتزاز",
+                "تخبيط",
+            ],
+        },
+        {
+            "internal": "Tires & Alignment",
+            "customer": "قسم الزوايا والكاوتش",
+            "keys": [
+                "قسم الزوايا",
+                "قسم الزوايا والكاوتش",
+                "tires",
+                "alignment",
+                "زوايا",
+                "كاوتش",
+                "ترصيص",
+                "بتحدف",
+            ],
+        },
+        {
+            "internal": "Transmission",
+            "customer": "قسم الفتيس",
+            "keys": [
+                "قسم الفتيس",
+                "transmission",
+                "gearbox",
+                "فتيس",
+                "نتشة",
+                "نقلات",
+                "غيار",
+            ],
+        },
+        {
+            "internal": "Quick Service",
+            "customer": "قسم الصيانة السريعة",
+            "keys": [
+                "قسم الصيانة السريعة",
+                "quick service",
+                "صيانة سريعة",
+                "تغيير زيت",
+                "زيت",
+                "فلتر",
+            ],
+        },
+    ]
+
+    updates: Dict[str, Any] = {}
+
+    for item in section_map:
+        if any(str(key).lower() in text for key in item["keys"]):
+            if not variables.get("recommended_section"):
+                variables["recommended_section"] = item["internal"]
+                updates["recommended_section"] = item["internal"]
+
+            if not variables.get("service_needed"):
+                variables["service_needed"] = item["internal"]
+                updates["service_needed"] = item["internal"]
+
+            if not variables.get("customer_facing_section"):
+                variables["customer_facing_section"] = item["customer"]
+                updates["customer_facing_section"] = item["customer"]
+
+            if not variables.get("diagnostic_stage"):
+                variables["diagnostic_stage"] = "qualified"
+                updates["diagnostic_stage"] = "qualified"
+
+            if not variables.get("next_service_action"):
+                variables["next_service_action"] = "offer_booking"
+                updates["next_service_action"] = "offer_booking"
+
+            break
+
+    return variables, updates
 
 
 def judge_evidence(
@@ -272,6 +478,7 @@ def build_premium_debug(
     evidence_judgment: Dict[str, Any],
     critique: Dict[str, Any],
     premium_memory_decision: Dict[str, Any],
+    service_decision_updates: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     knowledge = retrieval.get("knowledge", []) or []
     memories = retrieval.get("memories", []) or []
@@ -291,6 +498,7 @@ def build_premium_debug(
         "memory_allow_long_term": premium_memory_decision.get("allow_long_term_memory"),
         "memory_suppress_long_term": premium_memory_decision.get("suppress_long_term_memory"),
         "memory_session_signals": premium_memory_decision.get("session_signals", []),
+        "service_decision_updates": service_decision_updates or {},
     }
 
 
@@ -394,6 +602,14 @@ def run_adaptive_premium_turn(
         premium_memory_decision=premium_memory_decision,
     )
 
+    service_decision_updates: Dict[str, Any] = {}
+
+    updated_variables, service_decision_updates = ensure_service_decision_variables(
+        variables=updated_variables,
+        answer=answer,
+        assistant_id=assistant_id,
+    )
+
     critique = critique_answer(
         model=model,
         user_message=user_message,
@@ -410,21 +626,34 @@ def run_adaptive_premium_turn(
             critique=critique,
         )
 
+        updated_variables, revised_service_decision_updates = ensure_service_decision_variables(
+            variables=updated_variables,
+            answer=answer,
+            assistant_id=assistant_id,
+        )
+
+        service_decision_updates.update(revised_service_decision_updates)
+
+    combined_variable_updates = dict(extraction_updates or {})
+    combined_variable_updates.update(service_decision_updates)
+
     premium_debug = build_premium_debug(
         mode_decision=mode_decision,
         retrieval=retrieval,
         evidence_judgment=evidence_judgment,
         critique=critique,
         premium_memory_decision=premium_memory_decision,
+        service_decision_updates=service_decision_updates,
     )
 
     result = {
         "answer": answer,
         "variables": updated_variables,
-        "variable_updates": extraction_updates,
+        "variable_updates": combined_variable_updates,
         "variable_deletions": extraction_deletions,
         "raw_variable_updates": raw_updates,
         "raw_variable_deletions": raw_deletions,
+        "service_decision_updates": service_decision_updates,
         "missing_variables": extraction.get("missing_variables", []),
         "intent": updated_variables.get("intent", extraction.get("intent", "general_question")),
         "mode_decision": mode_decision,
@@ -447,7 +676,10 @@ def run_adaptive_premium_turn(
         "premium_debug": premium_debug,
         "model_used": model,
         "model_tier": selected_tier,
-        "recommended_next_action": mode_decision.get("mode", "adaptive_premium"),
+        "recommended_next_action": (
+            updated_variables.get("next_service_action")
+            or mode_decision.get("mode", "adaptive_premium")
+        ),
     }
 
     return True, result
