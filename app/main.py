@@ -1972,7 +1972,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         workflow=workflow_type,
     )
 
-    if datetime_fast_result:
+    if req.assistant_id != "service_center_agentic_rag" and datetime_fast_result:
         datetime_updates = datetime_fast_result.get("updates") or {}
         updated_variables = dict(existing_variables or {})
         updated_variables.update(datetime_updates)
@@ -2158,14 +2158,23 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         updated_variables = dict(existing_variables or {})
         updated_variables.update(booking_result.get("variables", {}))
 
-        save_variables(req.conversation_id, updated_variables)
+        save_variables(
+            req.conversation_id,
+            req.assistant_id,
+            req.user_id,
+            updated_variables,
+        )
 
         answer = booking_result.get("answer", "")
 
-        save_message(req.conversation_id, "user", req.message)
-
         if answer:
-            save_message(req.conversation_id, "assistant", answer)
+            save_message(
+                req.conversation_id,
+                req.assistant_id,
+                req.user_id,
+                "assistant",
+                answer,
+            )
 
         response_payload = {
             "answer": answer,
