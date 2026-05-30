@@ -2136,7 +2136,88 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
         existing_variables = dict(existing_variables or {})
         existing_variables["_brain_hint"] = brain_hint
+   
+    # ------------------------------------------------------------
+    # Internal booking sub-agent
+    # ------------------------------------------------------------
 
+    booking_result = run_booking_subagent(
+        assistant=assistant,
+        assistant_id=req.assistant_id,
+        user_id=req.user_id,
+        conversation_id=req.conversation_id,
+        message=req.message,
+        variables=existing_variables,
+        recent_messages=recent_messages,
+        summary=summary,
+        schema=schema,
+        tool_result=req.tool_result,
+    )
+
+    if booking_result.get("handled"):
+        updated_variables = dict(existing_variables or {})
+        updated_variables.update(booking_result.get("variables", {}))
+
+        save_variables(req.conversation_id, updated_variables)
+
+        answer = booking_result.get("answer", "")
+
+        save_message(req.conversation_id, "user", req.message)
+
+        if answer:
+            save_message(req.conversation_id, "assistant", answer)
+
+        response_payload = {
+            "answer": answer,
+            "assistant_id": req.assistant_id,
+            "conversation_id": req.conversation_id,
+            "intent": updated_variables.get("intent", "booking_request"),
+            "variables": updated_variables,
+            "variable_updates": booking_result.get("variables", {}),
+            "variable_deletions": [],
+            "missing_variables": booking_result.get("missing_variables", []),
+            "active_subagent": booking_result.get("active_subagent"),
+            "booking_stage": booking_result.get("booking_stage"),
+            "action_required": booking_result.get("action_required"),
+            "recommended_next_action": booking_result.get("recommended_next_action", "booking_flow"),
+            "next_best_action": {
+                "action": booking_result.get("recommended_next_action", "booking_flow"),
+                "reason": booking_result.get("reason", "Handled by internal booking sub-agent."),
+                "confidence": 0.9,
+            },
+            "route": {
+                "answer_mode": "booking_subagent",
+                "active_subagent": booking_result.get("active_subagent"),
+                "booking_stage": booking_result.get("booking_stage"),
+                "needs_rag": False,
+                "needs_memory": False,
+                "rag_cache_hit": False,
+                "reason": booking_result.get("reason", "Handled by internal booking sub-agent."),
+            },
+            "knowledge_used": [],
+            "knowledge_source": "booking_subagent",
+            "memories_used": [],
+            "summary": summary,
+            "long_term_memories_written": [],
+            "model_used": booking_result.get("model_used", "none"),
+            "model_tier": booking_result.get("model_tier", "booking_subagent"),
+            "token_usage": {
+                "model_used": booking_result.get("model_used", "none"),
+                "model_tier": booking_result.get("model_tier", "booking_subagent"),
+                "answer_mode": "booking_subagent",
+                "input_tokens_estimate": 0,
+                "output_tokens_estimate": 0,
+                "total_tokens_estimate": 0,
+                "estimated_cost_usd": 0.0,
+                "is_estimate": True,
+                "notes": "Handled by internal booking sub-agent before premium/RAG generation.",
+            },
+            "mock_mode": MOCK_MODE,
+            "memory_saved": False,
+        }
+
+        return compact_chat_response(response_payload)
+    
     # ------------------------------------------------------------
     # Adaptive premium intelligence layer
     # ------------------------------------------------------------
