@@ -1608,7 +1608,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     entry_path_result = None
 
-    if should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
+    if req.assistant_id != "service_center_agentic_rag" and should_try_entry_path(req.message, schema, existing_variables, req.assistant_id):
         entry_knowledge = []
         entry_knowledge_source = "none"
         entry_query_variables = {}
