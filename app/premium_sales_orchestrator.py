@@ -88,6 +88,27 @@ def clean_premium_extraction_deletions(deletions: List[str]) -> List[str]:
     return safe_deletions
 
 
+def _set_service_decision(
+    variables: Dict[str, Any],
+    *,
+    internal: str,
+    customer: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    variables = dict(variables or {})
+
+    updates = {
+        "recommended_section": internal,
+        "service_needed": internal,
+        "customer_facing_section": customer,
+        "diagnostic_stage": "qualified",
+        "next_service_action": "offer_booking",
+    }
+
+    variables.update(updates)
+
+    return variables, updates
+
+
 def ensure_service_decision_variables(
     variables: Dict[str, Any],
     answer: str,
@@ -96,15 +117,10 @@ def ensure_service_decision_variables(
     """
     Ensures the service assistant stores structured service decision variables.
 
-    Why this exists:
-    - The main brain may correctly say "قسم كشف الموتور" in the answer.
-    - The booking sub-agent needs the internal variable "recommended_section".
-    - This repair layer makes the main brain's visible decision explicit.
-
-    Scope:
-    - Only applies to service_center_agentic_rag.
-    - Does not affect future assistants.
-    - Does not make the booking sub-agent diagnose.
+    Important:
+    - Prioritizes the latest user issue and answer.
+    - Does not let old symptoms, old summaries, or old bookings override a new issue.
+    - Scoped only to service_center_agentic_rag.
     """
 
     variables = dict(variables or {})
@@ -113,176 +129,208 @@ def ensure_service_decision_variables(
     if assistant_id != "service_center_agentic_rag":
         return variables, {}
 
+    latest_text = (
+        str(answer or "")
+        + " "
+        + str(variables.get("issue_description", ""))
+        + " "
+        + str(variables.get("last_user_answer", ""))
+    ).lower()
+
+    symptoms = variables.get("symptoms", [])
+    if isinstance(symptoms, list):
+        historical_text = " ".join(str(item) for item in symptoms).lower()
+    else:
+        historical_text = str(symptoms or "").lower()
+
+    # ------------------------------------------------------------------
+    # Strong latest-issue overrides.
+    # These must run before checking existing recommended_section, because
+    # existing state may belong to a previous issue in the same conversation.
+    # ------------------------------------------------------------------
+
+    if any(
+        key in latest_text
+        for key in [
+            "فرامل",
+            "تيل",
+            "طنابير",
+            "صفارة",
+            "بتصفر",
+            "صوت صفارة",
+            "brake",
+            "brakes",
+            "braking",
+            "pads",
+            "discs",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Brakes & Safety",
+            customer="قسم الفرامل",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "تكييف",
+            "مش بيبرد",
+            "فريون",
+            "كمبروسر",
+            "كوندنسر",
+            "ac",
+            "air conditioning",
+            "cooling",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="AC Cooling",
+            customer="قسم التكييف",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "بطارية",
+            "دينامو",
+            "مارش",
+            "مش بتدور",
+            "تك تك",
+            "كهرباء",
+            "battery",
+            "starter",
+            "alternator",
+            "electrical",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Electrical & Battery",
+            customer="قسم الكهرباء والبطارية",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "عفشة",
+            "دركسيون",
+            "رعشة",
+            "اهتزاز",
+            "تخبيط",
+            "suspension",
+            "steering",
+            "vibration",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Suspension & Steering",
+            customer="قسم العفشة والدركسيون",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "زوايا",
+            "كاوتش",
+            "ترصيص",
+            "بتحدف",
+            "alignment",
+            "tires",
+            "tyres",
+            "balancing",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Tires & Alignment",
+            customer="قسم الزوايا والكاوتش",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "فتيس",
+            "نتشة",
+            "نقلات",
+            "غيار",
+            "جير",
+            "transmission",
+            "gearbox",
+            "gear",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Transmission",
+            customer="قسم الفتيس",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "سخونة",
+            "بتسخن",
+            "حرارة",
+            "مؤشر الحرارة",
+            "المؤشر بيعلى",
+            "ريحة سخونة",
+            "ريداتير",
+            "ردياتير",
+            "دورة التبريد",
+            "مروحة الردياتير",
+            "overheating",
+            "heat smell",
+            "gauge rising",
+            "radiator",
+            "coolant",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Engine Diagnostics",
+            customer="قسم كشف الموتور",
+        )
+
+    if any(
+        key in latest_text
+        for key in [
+            "تغيير زيت",
+            "زيت",
+            "فلتر",
+            "صيانة سريعة",
+            "quick service",
+            "oil",
+            "filter",
+        ]
+    ):
+        return _set_service_decision(
+            variables,
+            internal="Quick Service",
+            customer="قسم الصيانة السريعة",
+        )
+
+    # If current variables already contain a complete service decision and
+    # the latest text does not introduce a different issue, keep it.
     existing_recommended = variables.get("recommended_section")
     existing_customer = variables.get("customer_facing_section")
 
     if existing_recommended and existing_customer:
         return variables, {}
 
-    symptoms = variables.get("symptoms", [])
-    if isinstance(symptoms, list):
-        symptoms_text = " ".join(str(item) for item in symptoms)
-    else:
-        symptoms_text = str(symptoms or "")
+    # Weak fallback from historical symptoms only.
+    # This is intentionally after latest_text checks to avoid old context
+    # overriding a new customer issue.
+    if "overheating" in historical_text:
+        return _set_service_decision(
+            variables,
+            internal="Engine Diagnostics",
+            customer="قسم كشف الموتور",
+        )
 
-    text = (
-        str(answer or "")
-        + " "
-        + str(variables.get("issue_description", ""))
-        + " "
-        + symptoms_text
-    ).lower()
-
-    section_map = [
-        {
-            "internal": "Engine Diagnostics",
-            "customer": "قسم كشف الموتور",
-            "keys": [
-                "قسم كشف الموتور",
-                "engine diagnostics",
-                "overheating",
-                "heat smell",
-                "smell of overheating",
-                "gauge rising",
-                "سخونة",
-                "بتسخن",
-                "ريحة سخونة",
-                "مؤشر الحرارة",
-                "المؤشر بيعلى",
-                "ريداتير",
-                "ردياتير",
-                "دورة التبريد",
-                "مروحة الردياتير",
-                "مروحة الريداتير",
-            ],
-        },
-        {
-            "internal": "AC Cooling",
-            "customer": "قسم التكييف",
-            "keys": [
-                "قسم التكييف",
-                "ac cooling",
-                "weak ac",
-                "تكييف",
-                "مش بيبرد",
-                "فريون",
-                "كمبروسر",
-                "مروحة كوندنسر",
-            ],
-        },
-        {
-            "internal": "Brakes & Safety",
-            "customer": "قسم الفرامل",
-            "keys": [
-                "قسم الفرامل",
-                "brakes",
-                "brake",
-                "فرامل",
-                "تيل",
-                "طنابير",
-                "بتصفر",
-                "صوت صفارة",
-            ],
-        },
-        {
-            "internal": "Electrical & Battery",
-            "customer": "قسم الكهرباء والبطارية",
-            "keys": [
-                "قسم الكهرباء",
-                "قسم الكهرباء والبطارية",
-                "battery",
-                "electrical",
-                "بطارية",
-                "دينامو",
-                "مارش",
-                "مش بتدور",
-                "تك تك",
-                "كهرباء",
-            ],
-        },
-        {
-            "internal": "Suspension & Steering",
-            "customer": "قسم العفشة والدركسيون",
-            "keys": [
-                "قسم العفشة",
-                "قسم العفشة والدركسيون",
-                "suspension",
-                "steering",
-                "عفشة",
-                "دركسيون",
-                "رعشة",
-                "اهتزاز",
-                "تخبيط",
-            ],
-        },
-        {
-            "internal": "Tires & Alignment",
-            "customer": "قسم الزوايا والكاوتش",
-            "keys": [
-                "قسم الزوايا",
-                "قسم الزوايا والكاوتش",
-                "tires",
-                "alignment",
-                "زوايا",
-                "كاوتش",
-                "ترصيص",
-                "بتحدف",
-            ],
-        },
-        {
-            "internal": "Transmission",
-            "customer": "قسم الفتيس",
-            "keys": [
-                "قسم الفتيس",
-                "transmission",
-                "gearbox",
-                "فتيس",
-                "نتشة",
-                "نقلات",
-                "غيار",
-            ],
-        },
-        {
-            "internal": "Quick Service",
-            "customer": "قسم الصيانة السريعة",
-            "keys": [
-                "قسم الصيانة السريعة",
-                "quick service",
-                "صيانة سريعة",
-                "تغيير زيت",
-                "زيت",
-                "فلتر",
-            ],
-        },
-    ]
-
-    updates: Dict[str, Any] = {}
-
-    for item in section_map:
-        if any(str(key).lower() in text for key in item["keys"]):
-            if not variables.get("recommended_section"):
-                variables["recommended_section"] = item["internal"]
-                updates["recommended_section"] = item["internal"]
-
-            if not variables.get("service_needed"):
-                variables["service_needed"] = item["internal"]
-                updates["service_needed"] = item["internal"]
-
-            if not variables.get("customer_facing_section"):
-                variables["customer_facing_section"] = item["customer"]
-                updates["customer_facing_section"] = item["customer"]
-
-            if not variables.get("diagnostic_stage"):
-                variables["diagnostic_stage"] = "qualified"
-                updates["diagnostic_stage"] = "qualified"
-
-            if not variables.get("next_service_action"):
-                variables["next_service_action"] = "offer_booking"
-                updates["next_service_action"] = "offer_booking"
-
-            break
-
-    return variables, updates
+    return variables, {}
 
 
 def judge_evidence(
