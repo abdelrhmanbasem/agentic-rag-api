@@ -198,46 +198,71 @@ def normalize_intent(intent: str) -> str:
 
 
 def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
-    schema = schema or {}
     assistant_id = (assistant_id or "").lower()
 
-    has_car_schema = any(
-        key in schema
-        for key in [
-            "car_brand",
-            "car_condition",
-            "transmission",
-            "budget_max",
-            "matched_car_model",
-            "matched_car_year",
-            "matched_car_km",
-            "matched_car_price",
-            "preferred_viewing_date",
-            "preferred_viewing_time",
-        ]
-    )
-
-    has_service_schema = any(
-        key in schema
-        for key in [
-            "service_needed",
-            "appointment_date",
-            "appointment_time",
-            "doctor_preference",
-            "patient_name",
-            "insurance_provider",
-        ]
-    )
-
-    if has_car_schema or any(x in assistant_id for x in ["car", "cars", "auto", "vehicle", "dealer"]):
-        return "car_sales"
-
-    if has_service_schema or any(
-        x in assistant_id for x in ["clinic", "doctor", "medical", "dental", "dentist", "health"]
-    ):
+    # Hard override:
+    # This assistant is for car service diagnostics + visit booking.
+    # Do NOT let it fall into car_sales / structured inventory matching.
+    if assistant_id == "service_center_agentic_rag":
         return "service_booking"
 
-    return "general"
+    schema = schema or {}
+    keys = set(schema.keys())
+
+    car_sales_keys = {
+        "car_brand",
+        "car_model",
+        "budget_max",
+        "matched_car_model",
+        "matched_car_price",
+        "matched_car_year",
+        "matched_car_km",
+        "selected_item",
+        "transmission",
+        "car_condition",
+    }
+
+    service_booking_keys = {
+        "service_needed",
+        "issue_description",
+        "symptoms",
+        "recommended_section",
+        "appointment_date",
+        "appointment_time",
+        "customer_full_name",
+        "plate_digits",
+        "visit_id",
+        "slot_status",
+        "booking_status",
+        "location_branch",
+    }
+
+    medical_keys = {
+        "doctor_name",
+        "specialty",
+        "insurance_provider",
+        "appointment_type",
+    }
+
+    if assistant_id in {"car_sales_demo", "car_sales", "cars", "auto_sales"}:
+        return "car_sales"
+
+    if "service" in assistant_id or "maintenance" in assistant_id or "repair" in assistant_id:
+        return "service_booking"
+
+    if "medical" in assistant_id or "clinic" in assistant_id or "doctor" in assistant_id:
+        return "medical_booking"
+
+    if keys & service_booking_keys:
+        return "service_booking"
+
+    if keys & car_sales_keys:
+        return "car_sales"
+
+    if keys & medical_keys:
+        return "medical_booking"
+
+    return "generic"
 
 
 def normalize_intent_for_schema(intent: str, schema: Dict[str, Any], assistant_id: str = "") -> str:
@@ -1588,7 +1613,7 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         entry_knowledge_source = "none"
         entry_query_variables = {}
 
-        if workflow_type == "car_sales":
+        if workflow_type == "car_sales" and req.assistant_id != "service_center_agentic_rag":
             entry_query_variables = extract_car_variables(schema, req.message)
 
             structured_items = search_structured_inventory(
@@ -1612,7 +1637,11 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
             rebuilt_count = 0
 
-            if workflow_type == "car_sales" and compressed_entry_knowledge:
+            if (
+                workflow_type == "car_sales"
+                and req.assistant_id != "service_center_agentic_rag"
+                and compressed_entry_knowledge
+            ):
                 rebuilt_count = rebuild_structured_inventory_from_knowledge(
                     assistant_id=req.assistant_id,
                     knowledge=compressed_entry_knowledge,
