@@ -2312,7 +2312,9 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         updated_variables = premium_result.get("variables") or dict(existing_variables or {})
         answer = premium_result["answer"]
 
-        updated_variables = apply_service_section_from_context(updated_variables, answer)
+    # Temporary fallback disabled.
+    # The permanent solution is structured variable output from the main brain.
+    # updated_variables = apply_service_section_from_context(updated_variables, answer)
 
         updated_variables = autofill_channel_context(updated_variables, req)
         updated_variables = sync_selected_item_state(updated_variables)
