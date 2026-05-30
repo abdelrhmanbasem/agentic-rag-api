@@ -202,7 +202,7 @@ def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
 
     # Hard override:
     # This assistant is for car service diagnostics + visit booking.
-    # Do NOT let it fall into car_sales / structured inventory matching.
+    # Never classify it as car_sales.
     if assistant_id == "service_center_agentic_rag":
         return "service_booking"
 
