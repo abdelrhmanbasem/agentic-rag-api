@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from app.llm import chat_text, model_for_tier
+
 
 BOOKING_AGENT_NAME = "booking_agent"
 DEFAULT_TZ = "Africa/Cairo"
@@ -77,6 +79,113 @@ def _arabic_digits_to_latin(text: str) -> str:
         result = result.replace(digit, str(i))
 
     return result
+
+
+def compose_booking_reply(
+    *,
+    user_message: str,
+    variables: Dict[str, Any],
+    stage: str,
+    instruction: str,
+    tool_result: Optional[Dict[str, Any]] = None,
+    missing_variables: Optional[List[str]] = None,
+) -> str:
+    """
+    LLM composer for customer-facing booking replies.
+
+    The booking sub-agent controls state and actions.
+    The LLM only writes the natural WhatsApp message.
+    """
+    model = model_for_tier("cheap")
+
+    system_prompt = """
+You are the booking reply composer for Apex AutoCare in Egypt.
+
+Write only the final customer-facing WhatsApp reply.
+Use natural Egyptian Arabic unless the customer wrote in English.
+Sound like a helpful human service advisor, not a system or workflow.
+Do not mention JSON, variables, tools, stages, backend, availability API, or internal logic.
+Keep it short: 1 to 3 natural sentences.
+Be warm, practical, and clear.
+
+Rules:
+- If the slot is unavailable, explain the reason naturally if known.
+- If nearest slots exist, offer them smoothly.
+- If the slot is available, ask if the customer wants to confirm it.
+- If booking details are missing, ask only for the missing details.
+- If booking is confirmed, give the visit ID and appointment summary.
+- Do not invent availability, prices, visit IDs, or customer details.
+- Do not ask repeated questions if the needed value is already present in known variables.
+"""
+
+    prompt = f"""
+Latest user message:
+{user_message}
+
+Current booking stage:
+{stage}
+
+Instruction:
+{instruction}
+
+Known variables:
+{variables}
+
+Tool result:
+{tool_result or {}}
+
+Missing variables:
+{missing_variables or []}
+
+Write the customer-facing reply only.
+"""
+
+    try:
+        answer = chat_text(
+            model,
+            [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": prompt.strip()},
+            ],
+            max_tokens=220,
+        ).strip()
+    except Exception:
+        answer = ""
+
+    if answer:
+        return answer
+
+    # Safe fallback if the LLM composer fails.
+    if stage == "availability_available_waiting_confirmation":
+        branch = variables.get("location_branch", "الفرع")
+        date = variables.get("appointment_date", "اليوم")
+        time = variables.get("appointment_time", "الوقت")
+        return f"تمام، الميعاد متاح في {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
+
+    if stage == "availability_unavailable_waiting_new_slot":
+        reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
+        nearest = _norm(variables.get("nearest_slots_text"))
+        if nearest:
+            return f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. بس لقيتلك أقرب اختيارات متاحة:\n\n{nearest}\n\nتحب أثبتلك واحد منهم؟"
+        return f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
+
+    if stage == "booking_collecting_customer_details":
+        return ask_for_missing_confirmation_fields(missing_variables or [])
+
+    if stage == "booking_create_ready":
+        return "تمام، هثبتلك الحجز دلوقتي."
+
+    if stage == "booking_confirmed":
+        visit_id = variables.get("visit_id", "")
+        branch = variables.get("location_branch", "الفرع")
+        date = variables.get("appointment_date", "اليوم")
+        time = variables.get("appointment_time", "الوقت")
+        section = variables.get("customer_facing_section") or variables.get("recommended_section") or "القسم"
+        if visit_id:
+            return f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+        return f"تمام، كده الحجز اتأكد. ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+
+    return "تمام، معاك."
 
 
 def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
@@ -224,19 +333,16 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
         if phrase in text:
             return value
 
-    # Match 14:00, 2:30, etc.
     match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
     if match:
         return _normalize_time(int(match.group(1)), int(match.group(2)))
 
-    # Match "2 pm", "10 am".
     match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
     if match:
         hour = int(match.group(1))
         suffix = match.group(2)
         return _normalize_time(hour, 0, pm_hint=suffix == "pm", am_hint=suffix == "am")
 
-    # Match "الساعة 2", "at 2".
     match = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
     if match:
         hour = int(match.group(1))
@@ -244,7 +350,6 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
         am_hint = any(x in text for x in ["صباح", "الصبح", "am"])
         return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
 
-    # If user says only "10 الصبح" without "الساعة".
     match = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
     if match:
         hour = int(match.group(1))
@@ -271,13 +376,10 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     text = _lower(_arabic_digits_to_latin(message))
     today = _today_egypt().date()
 
-    # ISO date.
     match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
     if match:
         return match.group(1)
 
-    # Relative dates.
-    # Important: check "day after tomorrow" before "tomorrow".
     if any(x in text for x in ["بعد بكرة", "بعد بكره", "day after tomorrow"]):
         return (today + timedelta(days=2)).isoformat()
 
@@ -287,7 +389,6 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     if any(x in text for x in ["بكرة", "بكره", "tomorrow"]):
         return (today + timedelta(days=1)).isoformat()
 
-    # Arabic weekdays. Python weekday: Monday=0, Sunday=6.
     weekday_map = {
         "الاثنين": 0,
         "الإثنين": 0,
@@ -418,9 +519,6 @@ def collect_slot_variables(
     date = extract_date(message, variables)
     time = extract_time(message, variables)
 
-    # IMPORTANT:
-    # Booking sub-agent should not diagnose or choose the service section.
-    # The main brain / diagnostic advisor should set recommended_section first.
     section = (
         variables.get("recommended_section")
         or variables.get("service_needed")
@@ -550,13 +648,16 @@ def handle_availability_result(
         variables["booking_stage"] = "availability_available_waiting_confirmation"
         variables["booking_confirmation_requested"] = True
 
-        branch = variables.get("location_branch", "الفرع")
-        date = variables.get("appointment_date", "اليوم")
-        time = variables.get("appointment_time", "الوقت")
-
-        answer = (
-            f"تمام، الميعاد متاح في {branch} يوم {date} الساعة {time}. "
-            "تحب أثبتهولك؟"
+        answer = compose_booking_reply(
+            user_message="__tool_result__",
+            variables=variables,
+            stage=variables["booking_stage"],
+            tool_result=tool_result,
+            missing_variables=[],
+            instruction=(
+                "The requested appointment slot is available. "
+                "Tell the customer naturally that the slot is available and ask if they want to confirm it."
+            ),
         )
 
         return {
@@ -578,21 +679,19 @@ def handle_availability_result(
     variables["nearest_slots"] = tool_result.get("nearest_slots") or []
     variables["nearest_slots_text"] = tool_result.get("nearest_slots_text") or ""
 
-    reason_text = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
-    nearest_text = _norm(variables.get("nearest_slots_text"))
-
-    if nearest_text:
-        answer = (
-            f"تمام، الميعاد ده مش متاح للأسف لأن {reason_text}. "
-            "بس لقيتلك أقرب اختيارات متاحة:\n\n"
-            f"{nearest_text}\n\n"
-            "تحب أثبتلك واحد منهم؟"
-        )
-    else:
-        answer = (
-            f"تمام، الميعاد ده مش متاح للأسف لأن {reason_text}. "
-            "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
-        )
+    answer = compose_booking_reply(
+        user_message="__tool_result__",
+        variables=variables,
+        stage=variables["booking_stage"],
+        tool_result=tool_result,
+        missing_variables=[],
+        instruction=(
+            "The requested appointment slot is unavailable. "
+            "Explain the reason naturally if available. "
+            "If nearest_slots_text exists, offer those nearest slots. "
+            "If there are no nearest slots, ask whether to try another time in the same branch or another nearby branch."
+        ),
+    )
 
     return {
         "handled": True,
@@ -749,27 +848,17 @@ def handle_booking_result(
         variables["booking_stage"] = "booking_confirmed"
         variables["visit_id"] = visit_id
 
-        branch = variables.get("location_branch", "الفرع")
-        date = variables.get("appointment_date", "اليوم")
-        time = variables.get("appointment_time", "الوقت")
-        section = (
-            variables.get("customer_facing_section")
-            or variables.get("recommended_section")
-            or "القسم"
+        answer = compose_booking_reply(
+            user_message="__tool_result__",
+            variables=variables,
+            stage=variables["booking_stage"],
+            tool_result=tool_result,
+            missing_variables=[],
+            instruction=(
+                "The booking was created successfully. "
+                "Confirm the booking naturally, include the visit ID if available, and summarize branch, date, time, and section."
+            ),
         )
-
-        if visit_id:
-            answer = (
-                f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. "
-                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}. "
-                "خلي رقم الزيارة معاك وتوريه للمهندس أول ما توصل."
-            )
-        else:
-            answer = (
-                f"تمام، كده الحجز اتأكد. "
-                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}. "
-                "هنأكد التفاصيل معاك على نفس الرقم."
-            )
 
         return {
             "handled": True,
@@ -786,11 +875,16 @@ def handle_booking_result(
     variables["booking_status"] = "failed"
     variables["booking_stage"] = "booking_failed"
 
-    reason = tool_result.get("reason") or tool_result.get("error") or "حصلت مشكلة أثناء تثبيت الحجز"
-
-    answer = (
-        f"معلش، مقدرتش أثبت الحجز دلوقتي بسبب: {reason}. "
-        "تحب أجربلك نفس الميعاد تاني، ولا نختار ميعاد مختلف؟"
+    answer = compose_booking_reply(
+        user_message="__tool_result__",
+        variables=variables,
+        stage=variables["booking_stage"],
+        tool_result=tool_result,
+        missing_variables=[],
+        instruction=(
+            "The booking creation failed. "
+            "Apologize naturally, mention the reason if available, and ask whether to retry or choose another appointment."
+        ),
     )
 
     return {
@@ -863,9 +957,21 @@ def run_booking_subagent(
             missing_details = missing_confirmation_fields(variables)
 
             if missing_details:
+                answer = compose_booking_reply(
+                    user_message=message,
+                    variables=variables,
+                    stage=variables["booking_stage"],
+                    tool_result=None,
+                    missing_variables=missing_details,
+                    instruction=(
+                        "The customer wants to confirm the available slot, but booking confirmation details are missing. "
+                        "Ask only for the missing details: full name, car plate digits, and phone confirmation as needed."
+                    ),
+                )
+
                 return {
                     "handled": True,
-                    "answer": ask_for_missing_confirmation_fields(missing_details),
+                    "answer": answer,
                     "variables": variables,
                     "active_subagent": BOOKING_AGENT_NAME,
                     "booking_stage": variables["booking_stage"],
@@ -877,9 +983,21 @@ def run_booking_subagent(
 
             variables["booking_stage"] = "booking_create_ready"
 
+            answer = compose_booking_reply(
+                user_message=message,
+                variables=variables,
+                stage=variables["booking_stage"],
+                tool_result=None,
+                missing_variables=[],
+                instruction=(
+                    "All booking details are complete. "
+                    "Tell the customer briefly that you are confirming the booking now."
+                ),
+            )
+
             return {
                 "handled": True,
-                "answer": "تمام، هثبتلك الحجز دلوقتي.",
+                "answer": answer,
                 "variables": variables,
                 "active_subagent": BOOKING_AGENT_NAME,
                 "booking_stage": variables["booking_stage"],
@@ -889,9 +1007,21 @@ def run_booking_subagent(
                 "reason": "Booking confirmation details complete; create booking required.",
             }
 
+        answer = compose_booking_reply(
+            user_message=message,
+            variables=variables,
+            stage=booking_stage,
+            tool_result=None,
+            missing_variables=[],
+            instruction=(
+                "The customer has not clearly confirmed the available slot yet. "
+                "Ask naturally whether they want to confirm this appointment or choose another time."
+            ),
+        )
+
         return {
             "handled": True,
-            "answer": "تمام، تحب أثبتلك الميعاد ده ولا تختار وقت تاني؟",
+            "answer": answer,
             "variables": variables,
             "active_subagent": BOOKING_AGENT_NAME,
             "booking_stage": booking_stage,
@@ -906,9 +1036,21 @@ def run_booking_subagent(
         missing_details = missing_confirmation_fields(variables)
 
         if missing_details:
+            answer = compose_booking_reply(
+                user_message=message,
+                variables=variables,
+                stage=variables["booking_stage"],
+                tool_result=None,
+                missing_variables=missing_details,
+                instruction=(
+                    "The customer is providing booking details, but some details are still missing. "
+                    "Ask only for the missing details: full name, car plate digits, and phone confirmation as needed."
+                ),
+            )
+
             return {
                 "handled": True,
-                "answer": ask_for_missing_confirmation_fields(missing_details),
+                "answer": answer,
                 "variables": variables,
                 "active_subagent": BOOKING_AGENT_NAME,
                 "booking_stage": variables["booking_stage"],
@@ -920,9 +1062,21 @@ def run_booking_subagent(
 
         variables["booking_stage"] = "booking_create_ready"
 
+        answer = compose_booking_reply(
+            user_message=message,
+            variables=variables,
+            stage=variables["booking_stage"],
+            tool_result=None,
+            missing_variables=[],
+            instruction=(
+                "All booking details are complete. "
+                "Tell the customer briefly that you are confirming the booking now."
+            ),
+        )
+
         return {
             "handled": True,
-            "answer": "تمام، هثبتلك الحجز دلوقتي.",
+            "answer": answer,
             "variables": variables,
             "active_subagent": BOOKING_AGENT_NAME,
             "booking_stage": variables["booking_stage"],
