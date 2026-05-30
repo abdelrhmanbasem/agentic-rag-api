@@ -334,12 +334,14 @@ def apply_conversation_stage_governor(
         do_not_repeat = _append_unique_list(do_not_repeat, last_question)
         variables["do_not_repeat"] = do_not_repeat
 
-        variables["next_conversation_action"] = "move_forward"
+        variables["next_conversation_action"] = "consult_playbook_and_move_forward"
         variables["_stage_instruction"] = (
             "The user answered the previous assistant question. "
+            "Treat known_facts and last_user_answer as authoritative context. "
             "Do not ask the same question again. "
-            "Use known_facts and last_user_answer as authoritative context. "
-            "Summarize what is known briefly, then move to the next logical step."
+            "Do not continue discovery unless the user introduces a new issue or the playbook says more information is required. "
+            "Use the assistant playbook to decide the next business step. "
+            "Summarize what is known briefly, then move forward."
         )
 
     else:
@@ -348,9 +350,10 @@ def apply_conversation_stage_governor(
         variables.setdefault("next_conversation_action", "ask_or_answer")
 
         variables["_stage_instruction"] = (
-            "Use known_facts and recent conversation before asking anything. "
+            "Use known_facts, recent conversation, and the assistant playbook before asking anything. "
             "Do not repeat questions listed in do_not_repeat or answered_questions. "
-            "Ask at most one new useful question only if needed."
+            "Ask at most one useful question only if the playbook says discovery is still needed. "
+            "If enough context exists, move to the next playbook step."
         )
 
     # Generic anti-loop instruction, useful for every future assistant.
