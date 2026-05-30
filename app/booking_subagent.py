@@ -166,8 +166,15 @@ Write the customer-facing reply only.
         reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
         nearest = _norm(variables.get("nearest_slots_text"))
         if nearest:
-            return f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. بس لقيتلك أقرب اختيارات متاحة:\n\n{nearest}\n\nتحب أثبتلك واحد منهم؟"
-        return f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
+            return (
+                f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
+                f"بس لقيتلك أقرب اختيارات متاحة:\n\n{nearest}\n\n"
+                "تحب أثبتلك واحد منهم؟"
+            )
+        return (
+            f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
+            "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
+        )
 
     if stage == "booking_collecting_customer_details":
         return ask_for_missing_confirmation_fields(missing_variables or [])
@@ -181,8 +188,13 @@ Write the customer-facing reply only.
         date = variables.get("appointment_date", "اليوم")
         time = variables.get("appointment_time", "الوقت")
         section = variables.get("customer_facing_section") or variables.get("recommended_section") or "القسم"
+
         if visit_id:
-            return f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+            return (
+                f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. "
+                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+            )
+
         return f"تمام، كده الحجز اتأكد. ميعادك في {branch} يوم {date} الساعة {time} في {section}."
 
     return "تمام، معاك."
@@ -468,8 +480,6 @@ def infer_section_fallback(message: str, variables: Dict[str, Any]) -> Optional[
     Preferred behavior:
     - Main brain / diagnostic advisor sets recommended_section.
     - Booking sub-agent uses that section and does not diagnose.
-
-    This fallback is intentionally not called automatically.
     """
     existing = (
         variables.get("recommended_section")
@@ -525,12 +535,33 @@ def collect_slot_variables(
         or variables.get("section")
     )
 
+    # Safety fallback:
+    # If the main brain already stored overheating symptoms but section is missing,
+    # use the expected structured service decision to avoid asking the same issue again.
+    symptoms = variables.get("symptoms") or []
+    issue_description = _lower(variables.get("issue_description", ""))
+
+    if not section:
+        if (
+            (isinstance(symptoms, list) and any("overheating" in str(s).lower() for s in symptoms))
+            or "سخونة" in issue_description
+            or "بتسخن" in issue_description
+            or "المؤشر بيعلى" in issue_description
+        ):
+            section = "Engine Diagnostics"
+            variables["recommended_section"] = section
+            variables["service_needed"] = section
+            variables.setdefault("customer_facing_section", "قسم كشف الموتور")
+
     if branch:
         variables["location_branch"] = branch
+
     if date:
         variables["appointment_date"] = date
+
     if time:
         variables["appointment_time"] = time
+
     if section:
         variables["recommended_section"] = section
         variables["service_needed"] = section
@@ -718,22 +749,67 @@ def _extract_plate_digits(message: str) -> Optional[str]:
 
 def _extract_customer_name(message: str) -> Optional[str]:
     """
-    Simple first version.
-    Later this should become LLM extraction for smoother handling.
+    Extracts customer name from explicit patterns and simple free-form replies.
+
+    Handles:
+    - اسمي أحمد علي
+    - الاسم أحمد علي
+    - أنا أحمد علي
+    - أحمد علي ٣٤٥٦ نفس الرقم
     """
-    text = _norm(message)
+    raw_text = _norm(message)
+    text = _arabic_digits_to_latin(raw_text)
 
     patterns = [
-        r"(?:اسمي|الاسم|انا اسمي|أنا اسمي)\s+([^،,\n]+)",
-        r"(?:name is|my name is)\s+([^،,\n]+)",
+        r"(?:اسمي|الاسم|انا اسمي|أنا اسمي|انا|أنا)\s+([^،,\n\d]+)",
+        r"(?:name is|my name is|i am|i'm)\s+([^،,\n\d]+)",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             name = match.group(1).strip()
+            name = re.sub(
+                r"\b(?:ونفس الرقم|نفس الرقم|same number|yes same|this number)\b",
+                "",
+                name,
+                flags=re.IGNORECASE,
+            ).strip()
+
             if 2 <= len(name) <= 60:
                 return name
+
+    # Free-form fallback:
+    # Remove digits and common confirmation phrases, then keep name-like words.
+    cleaned = re.sub(r"\b\d{3,6}\b", " ", text)
+    cleaned = re.sub(
+        r"(ونفس الرقم|نفس الرقم|اه نفس الرقم|أه نفس الرقم|ايوه نفس الرقم|أيوه نفس الرقم|same number|yes same|this number|use this number)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"[،,.;:()\[\]{}]", " ", cleaned)
+    cleaned = " ".join(cleaned.split()).strip()
+
+    bad_phrases = [
+        "تمام",
+        "ماشي",
+        "اوكي",
+        "أوكي",
+        "احجز",
+        "احجزلي",
+        "ثبته",
+        "ثبت",
+        "نفس الرقم",
+    ]
+
+    if any(cleaned.lower() == bad.lower() for bad in bad_phrases):
+        return None
+
+    words = cleaned.split()
+
+    if 2 <= len(words) <= 4 and 2 <= len(cleaned) <= 60:
+        return cleaned
 
     return None
 
