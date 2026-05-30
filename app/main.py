@@ -1942,6 +1942,10 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         recent_messages=recent_messages,
     )
 
+    if req.assistant_id == "service_center_agentic_rag":
+        brain_result = None
+        brain_wants_gpt = True
+
     if brain_result and brain_result.get("should_use_gpt"):
         brain_wants_gpt = True
 
