@@ -70,11 +70,11 @@ def _arabic_digits_to_latin(text: str) -> str:
     eastern_digits = "۰۱۲۳۴۵۶۷۸۹"
     result = str(text)
 
-    for i, d in enumerate(arabic_digits):
-        result = result.replace(d, str(i))
+    for i, digit in enumerate(arabic_digits):
+        result = result.replace(digit, str(i))
 
-    for i, d in enumerate(eastern_digits):
-        result = result.replace(d, str(i))
+    for i, digit in enumerate(eastern_digits):
+        result = result.replace(digit, str(i))
 
     return result
 
@@ -128,6 +128,7 @@ def detect_confirmation(message: str) -> bool:
         "أيوه",
         "ايوا",
         "أيوة",
+        "نعم",
         "تمام",
         "ماشي",
         "اوكي",
@@ -143,6 +144,7 @@ def detect_confirmation(message: str) -> bool:
         "أثبت",
         "احجز",
         "احجزه",
+        "احجزلي",
     ]
     return _has_any(text, confirmation_words)
 
@@ -204,7 +206,6 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
 
     text = _lower(_arabic_digits_to_latin(message))
 
-    # Arabic common phrases.
     phrase_map = {
         "2 الظهر": "14:00",
         "2 ظهر": "14:00",
@@ -224,30 +225,30 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
             return value
 
     # Match 14:00, 2:30, etc.
-    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
-    if m:
-        return _normalize_time(int(m.group(1)), int(m.group(2)))
+    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    if match:
+        return _normalize_time(int(match.group(1)), int(match.group(2)))
 
     # Match "2 pm", "10 am".
-    m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
-    if m:
-        hour = int(m.group(1))
-        suffix = m.group(2)
+    match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
+    if match:
+        hour = int(match.group(1))
+        suffix = match.group(2)
         return _normalize_time(hour, 0, pm_hint=suffix == "pm", am_hint=suffix == "am")
 
     # Match "الساعة 2", "at 2".
-    m = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
-    if m:
-        hour = int(m.group(1))
+    match = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
+    if match:
+        hour = int(match.group(1))
         pm_hint = any(x in text for x in ["مساء", "بالليل", "الظهر", "العصر", "المغرب", "pm"])
         am_hint = any(x in text for x in ["صباح", "الصبح", "am"])
         return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
 
     # If user says only "10 الصبح" without "الساعة".
-    m = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
-    if m:
-        hour = int(m.group(1))
-        hint = m.group(2)
+    match = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
+    if match:
+        hour = int(match.group(1))
+        hint = match.group(2)
         pm_hint = hint in ["الظهر", "ظهر", "العصر", "مساء", "المغرب", "بالليل"]
         am_hint = hint in ["الصبح", "صباح"]
         return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
@@ -271,9 +272,9 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     today = _today_egypt().date()
 
     # ISO date.
-    m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
-    if m:
-        return m.group(1)
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if match:
+        return match.group(1)
 
     # Relative dates.
     # Important: check "day after tomorrow" before "tomorrow".
@@ -317,7 +318,6 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
             include_today = any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"])
             return _next_weekday(weekday, include_today=include_today)
 
-    # English weekdays.
     english_weekday_map = {
         "monday": 0,
         "tuesday": 1,
@@ -333,7 +333,6 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
             include_today = "today" in text
             return _next_weekday(weekday, include_today=include_today)
 
-    # Arabic June examples.
     june_map = {
         "1 يونيو": 1,
         "واحد يونيو": 1,
@@ -350,14 +349,13 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
         if phrase in text:
             return _parse_day_month(day, 6)
 
-    # English June.
-    m = re.search(r"\b(?:june)\s+(\d{1,2})\b", text)
-    if m:
-        return _parse_day_month(int(m.group(1)), 6)
+    match = re.search(r"\b(?:june)\s+(\d{1,2})\b", text)
+    if match:
+        return _parse_day_month(int(match.group(1)), 6)
 
-    m = re.search(r"\b(\d{1,2})\s+(?:june)\b", text)
-    if m:
-        return _parse_day_month(int(m.group(1)), 6)
+    match = re.search(r"\b(\d{1,2})\s+(?:june)\b", text)
+    if match:
+        return _parse_day_month(int(match.group(1)), 6)
 
     return None
 
@@ -370,8 +368,7 @@ def infer_section_fallback(message: str, variables: Dict[str, Any]) -> Optional[
     - Main brain / diagnostic advisor sets recommended_section.
     - Booking sub-agent uses that section and does not diagnose.
 
-    This fallback is intentionally not called automatically unless we explicitly decide
-    to use it later.
+    This fallback is intentionally not called automatically.
     """
     existing = (
         variables.get("recommended_section")
@@ -477,7 +474,7 @@ def ask_for_missing_slot_fields(missing: List[str]) -> str:
         return "تمام، أظبطهولك. تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
 
     if "recommended_section" in missing_set and len(missing_set) == 1:
-        return "تمام، أظبطهولك. بس محتاج أفهم المشكلة باختصار عشان أحددلك القسم الصح للكشف."
+        return "تمام، أظبطهولك. بس محتاج أعرف المشكلة أو نوع الكشف المطلوب عشان أحدد القسم الصح."
 
     parts = []
 
@@ -549,7 +546,9 @@ def handle_availability_result(
 
     if available:
         variables["slot_status"] = "available"
+        variables["booking_status"] = "slot_available"
         variables["booking_stage"] = "availability_available_waiting_confirmation"
+        variables["booking_confirmation_requested"] = True
 
         branch = variables.get("location_branch", "الفرع")
         date = variables.get("appointment_date", "اليوم")
@@ -568,10 +567,12 @@ def handle_availability_result(
             "booking_stage": variables["booking_stage"],
             "action_required": None,
             "missing_variables": [],
+            "recommended_next_action": "await_slot_confirmation",
             "reason": "Handled availability result: available.",
         }
 
     variables["slot_status"] = "unavailable"
+    variables["booking_status"] = "slot_unavailable"
     variables["booking_stage"] = "availability_unavailable_waiting_new_slot"
     variables["unavailable_reason"] = tool_result.get("reason") or tool_result.get("unavailable_reason")
     variables["nearest_slots"] = tool_result.get("nearest_slots") or []
@@ -601,7 +602,207 @@ def handle_availability_result(
         "booking_stage": variables["booking_stage"],
         "action_required": None,
         "missing_variables": [],
+        "recommended_next_action": "choose_new_slot",
         "reason": "Handled availability result: unavailable.",
+    }
+
+
+def _extract_plate_digits(message: str) -> Optional[str]:
+    text = _arabic_digits_to_latin(message)
+    matches = re.findall(r"\b\d{3,6}\b", text)
+
+    if matches:
+        return matches[-1]
+
+    return None
+
+
+def _extract_customer_name(message: str) -> Optional[str]:
+    """
+    Simple first version.
+    Later this should become LLM extraction for smoother handling.
+    """
+    text = _norm(message)
+
+    patterns = [
+        r"(?:اسمي|الاسم|انا اسمي|أنا اسمي)\s+([^،,\n]+)",
+        r"(?:name is|my name is)\s+([^،,\n]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            name = match.group(1).strip()
+            if 2 <= len(name) <= 60:
+                return name
+
+    return None
+
+
+def _detect_phone_confirmed(message: str) -> bool:
+    text = _lower(message)
+
+    return _has_any(
+        text,
+        [
+            "نفس الرقم",
+            "اه نفس الرقم",
+            "أه نفس الرقم",
+            "ايوه نفس الرقم",
+            "أيوه نفس الرقم",
+            "ايوا نفس الرقم",
+            "نعم نفس الرقم",
+            "same number",
+            "yes same",
+            "use this number",
+            "this number",
+        ],
+    )
+
+
+def collect_booking_confirmation_details(
+    message: str,
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    variables = dict(variables or {})
+
+    name = _extract_customer_name(message)
+    if name and not variables.get("customer_full_name"):
+        variables["customer_full_name"] = name
+
+    plate = _extract_plate_digits(message)
+    if plate and not variables.get("plate_digits"):
+        variables["plate_digits"] = plate
+
+    if _detect_phone_confirmed(message):
+        variables["phone_confirmed"] = True
+
+    return variables
+
+
+def missing_confirmation_fields(variables: Dict[str, Any]) -> List[str]:
+    missing = []
+
+    if not variables.get("customer_full_name"):
+        missing.append("customer_full_name")
+
+    if not variables.get("plate_digits"):
+        missing.append("plate_digits")
+
+    if not variables.get("phone_confirmed"):
+        missing.append("phone_confirmed")
+
+    return missing
+
+
+def ask_for_missing_confirmation_fields(missing: List[str]) -> str:
+    missing_set = set(missing)
+
+    if missing_set == {"customer_full_name", "plate_digits", "phone_confirmed"}:
+        return (
+            "تمام، عشان أثبت الحجز محتاج اسم حضرتك بالكامل، "
+            "ونمر العربية، وتأكيد إننا نستخدم نفس رقم الواتساب للتواصل."
+        )
+
+    parts = []
+
+    if "customer_full_name" in missing_set:
+        parts.append("اسم حضرتك بالكامل")
+
+    if "plate_digits" in missing_set:
+        parts.append("نمر العربية")
+
+    if "phone_confirmed" in missing_set:
+        parts.append("تأكيد نستخدم نفس رقم الواتساب للتواصل")
+
+    return "تمام، باقي بس " + " و".join(parts) + "."
+
+
+def action_create_booking(variables: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "create_booking",
+        "payload": {
+            "branch": variables.get("location_branch"),
+            "date": variables.get("appointment_date"),
+            "time": variables.get("appointment_time"),
+            "section": variables.get("recommended_section") or variables.get("service_needed"),
+            "customer_full_name": variables.get("customer_full_name"),
+            "plate_digits": variables.get("plate_digits"),
+            "phone_number": variables.get("phone_number"),
+        },
+    }
+
+
+def handle_booking_result(
+    tool_result: Dict[str, Any],
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    variables = dict(variables or {})
+    variables["active_subagent"] = BOOKING_AGENT_NAME
+
+    success = bool(tool_result.get("success"))
+
+    if success:
+        visit_id = tool_result.get("visit_id") or tool_result.get("booking_id") or ""
+
+        variables["booking_status"] = "confirmed"
+        variables["booking_stage"] = "booking_confirmed"
+        variables["visit_id"] = visit_id
+
+        branch = variables.get("location_branch", "الفرع")
+        date = variables.get("appointment_date", "اليوم")
+        time = variables.get("appointment_time", "الوقت")
+        section = (
+            variables.get("customer_facing_section")
+            or variables.get("recommended_section")
+            or "القسم"
+        )
+
+        if visit_id:
+            answer = (
+                f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. "
+                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}. "
+                "خلي رقم الزيارة معاك وتوريه للمهندس أول ما توصل."
+            )
+        else:
+            answer = (
+                f"تمام، كده الحجز اتأكد. "
+                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}. "
+                "هنأكد التفاصيل معاك على نفس الرقم."
+            )
+
+        return {
+            "handled": True,
+            "answer": answer,
+            "variables": variables,
+            "active_subagent": BOOKING_AGENT_NAME,
+            "booking_stage": variables["booking_stage"],
+            "action_required": None,
+            "missing_variables": [],
+            "recommended_next_action": "booking_confirmed",
+            "reason": "Handled booking result: success.",
+        }
+
+    variables["booking_status"] = "failed"
+    variables["booking_stage"] = "booking_failed"
+
+    reason = tool_result.get("reason") or tool_result.get("error") or "حصلت مشكلة أثناء تثبيت الحجز"
+
+    answer = (
+        f"معلش، مقدرتش أثبت الحجز دلوقتي بسبب: {reason}. "
+        "تحب أجربلك نفس الميعاد تاني، ولا نختار ميعاد مختلف؟"
+    )
+
+    return {
+        "handled": True,
+        "answer": answer,
+        "variables": variables,
+        "active_subagent": BOOKING_AGENT_NAME,
+        "booking_stage": variables["booking_stage"],
+        "action_required": None,
+        "missing_variables": [],
+        "recommended_next_action": "booking_retry_or_new_slot",
+        "reason": "Handled booking result: failed.",
     }
 
 
@@ -620,18 +821,24 @@ def run_booking_subagent(
     """
     Internal booking sub-agent.
 
-    First version:
-    - handles booking intent
-    - collects branch/date/time
-    - requires main brain to provide recommended_section/service_needed
-    - requests availability check
-    - handles availability_result tool output
+    Handles:
+    - booking intent
+    - branch/date/time collection
+    - check_availability action
+    - availability_result tool output
+    - available-slot confirmation
+    - customer name / plate / phone confirmation
+    - create_booking action
+    - booking_result tool output
     """
 
     variables = dict(variables or {})
 
     if tool_result and tool_result.get("type") == "availability_result":
         return handle_availability_result(tool_result, variables)
+
+    if tool_result and tool_result.get("type") == "booking_result":
+        return handle_booking_result(tool_result, variables)
 
     is_booking = detect_booking_intent(message, variables)
 
@@ -642,10 +849,88 @@ def run_booking_subagent(
     variables["intent"] = "booking_request"
     variables["workflow"] = variables.get("workflow") or "service_booking"
 
-    # Capture phone from WhatsApp user_id if available.
     if user_id and not variables.get("phone_number"):
         variables["phone_number"] = _clean_phone_from_user_id(user_id)
         variables["phone_source"] = "whatsapp_user_id"
+
+    booking_stage = variables.get("booking_stage")
+
+    if booking_stage == "availability_available_waiting_confirmation":
+        if detect_confirmation(message):
+            variables["booking_stage"] = "booking_collecting_customer_details"
+            variables = collect_booking_confirmation_details(message, variables)
+
+            missing_details = missing_confirmation_fields(variables)
+
+            if missing_details:
+                return {
+                    "handled": True,
+                    "answer": ask_for_missing_confirmation_fields(missing_details),
+                    "variables": variables,
+                    "active_subagent": BOOKING_AGENT_NAME,
+                    "booking_stage": variables["booking_stage"],
+                    "action_required": None,
+                    "missing_variables": missing_details,
+                    "recommended_next_action": "collect_booking_confirmation_details",
+                    "reason": "User confirmed available slot; collecting booking details.",
+                }
+
+            variables["booking_stage"] = "booking_create_ready"
+
+            return {
+                "handled": True,
+                "answer": "تمام، هثبتلك الحجز دلوقتي.",
+                "variables": variables,
+                "active_subagent": BOOKING_AGENT_NAME,
+                "booking_stage": variables["booking_stage"],
+                "action_required": action_create_booking(variables),
+                "missing_variables": [],
+                "recommended_next_action": "create_booking",
+                "reason": "Booking confirmation details complete; create booking required.",
+            }
+
+        return {
+            "handled": True,
+            "answer": "تمام، تحب أثبتلك الميعاد ده ولا تختار وقت تاني؟",
+            "variables": variables,
+            "active_subagent": BOOKING_AGENT_NAME,
+            "booking_stage": booking_stage,
+            "action_required": None,
+            "missing_variables": [],
+            "recommended_next_action": "await_slot_confirmation",
+            "reason": "Waiting for user to confirm available slot.",
+        }
+
+    if booking_stage == "booking_collecting_customer_details":
+        variables = collect_booking_confirmation_details(message, variables)
+        missing_details = missing_confirmation_fields(variables)
+
+        if missing_details:
+            return {
+                "handled": True,
+                "answer": ask_for_missing_confirmation_fields(missing_details),
+                "variables": variables,
+                "active_subagent": BOOKING_AGENT_NAME,
+                "booking_stage": variables["booking_stage"],
+                "action_required": None,
+                "missing_variables": missing_details,
+                "recommended_next_action": "collect_booking_confirmation_details",
+                "reason": "Still missing booking confirmation details.",
+            }
+
+        variables["booking_stage"] = "booking_create_ready"
+
+        return {
+            "handled": True,
+            "answer": "تمام، هثبتلك الحجز دلوقتي.",
+            "variables": variables,
+            "active_subagent": BOOKING_AGENT_NAME,
+            "booking_stage": variables["booking_stage"],
+            "action_required": action_create_booking(variables),
+            "missing_variables": [],
+            "recommended_next_action": "create_booking",
+            "reason": "Booking confirmation details complete; create booking required.",
+        }
 
     variables = collect_slot_variables(message, variables)
     missing = missing_slot_fields(variables)
