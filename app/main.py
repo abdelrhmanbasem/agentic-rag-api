@@ -2135,6 +2135,14 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     # ------------------------------------------------------------
     # Adaptive premium intelligence layer
     # ------------------------------------------------------------
+
+    if existing_variables.get("_stage_instruction"):
+        existing_variables["_conversation_governor_instruction"] = (
+            existing_variables.get("_stage_instruction", "")
+            + "\n"
+            + existing_variables.get("_do_not_repeat_instruction", "")
+        )
+
     premium_handled, premium_result = run_adaptive_premium_turn(
         assistant=assistant,
         assistant_id=req.assistant_id,
