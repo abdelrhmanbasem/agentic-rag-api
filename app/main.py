@@ -24,7 +24,7 @@ import re
 from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import (
     APP_SECRET,
@@ -134,8 +134,8 @@ class ChatRequest(BaseModel):
     conversation_id: str
     message: str
     channel: str = "n8n"
-    metadata: Dict[str, Any] = {}
-
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    tool_result: Optional[Dict[str, Any]] = None
 
 class PatchVariablesRequest(BaseModel):
     assistant_id: str
