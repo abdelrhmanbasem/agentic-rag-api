@@ -282,6 +282,57 @@ def _looks_like_user_answered_question(message: str) -> bool:
     return False
 
 
+def apply_service_section_from_context(variables: Dict[str, Any], answer: str = "") -> Dict[str, Any]:
+    """
+    Service-specific main-brain postprocessor.
+
+    If the main answer recommended a customer-facing section,
+    save the internal section variable so the booking sub-agent can use it later.
+    """
+    variables = dict(variables or {})
+    text = f"{variables.get('issue_description', '')} {answer or ''}".lower()
+
+    if variables.get("recommended_section") or variables.get("service_needed"):
+        return variables
+
+    if (
+        "قسم كشف الموتور" in text
+        or "engine diagnostics" in text
+        or "بتسخن" in text
+        or "سخونة" in text
+        or "مؤشر الحرارة" in text
+        or "المؤشر بيعلى" in text
+    ):
+        variables["recommended_section"] = "Engine Diagnostics"
+        variables["service_needed"] = "Engine Diagnostics"
+
+    elif "قسم التكييف" in text or "تكييف" in text or "ac cooling" in text:
+        variables["recommended_section"] = "AC Cooling"
+        variables["service_needed"] = "AC Cooling"
+
+    elif "قسم الفرامل" in text or "فرامل" in text or "brakes" in text:
+        variables["recommended_section"] = "Brakes & Safety"
+        variables["service_needed"] = "Brakes & Safety"
+
+    elif "قسم الكهرباء" in text or "بطارية" in text or "مارش" in text or "دينامو" in text:
+        variables["recommended_section"] = "Electrical & Battery"
+        variables["service_needed"] = "Electrical & Battery"
+
+    elif "قسم الفتيس" in text or "فتيس" in text or "transmission" in text:
+        variables["recommended_section"] = "Transmission"
+        variables["service_needed"] = "Transmission"
+
+    elif "قسم الزوايا" in text or "كاوتش" in text or "زوايا" in text:
+        variables["recommended_section"] = "Tires & Alignment"
+        variables["service_needed"] = "Tires & Alignment"
+
+    elif "قسم العفشة" in text or "عفشة" in text or "دركسيون" in text:
+        variables["recommended_section"] = "Suspension & Steering"
+        variables["service_needed"] = "Suspension & Steering"
+
+        return variables
+
+
 def apply_conversation_stage_governor(
     message: str,
     variables: Dict[str, Any],
