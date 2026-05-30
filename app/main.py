@@ -1765,6 +1765,13 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     schema = get_schema(req.assistant_id)
     existing_variables = get_variables(req.conversation_id)
 
+    existing_variables = apply_conversation_stage_governor(
+        message=req.message,
+        variables=existing_variables,
+        recent_messages=recent_messages,
+        assistant_id=req.assistant_id,
+    )
+
     workflow_type = infer_workflow_type(schema, req.assistant_id)
     playbook = get_playbook(workflow_type)
     assistant_profile = get_assistant_profile(req.assistant_id)
