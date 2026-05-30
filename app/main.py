@@ -197,6 +197,172 @@ def normalize_intent(intent: str) -> str:
     return aliases.get(intent, intent)
 
 
+def _normalize_text_for_stage(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return str(value)
+        except Exception:
+            return ""
+    return str(value).strip().lower()
+
+
+def _append_unique_list(values: Any, item: str) -> list:
+    result = values if isinstance(values, list) else []
+    if item and item not in result:
+        result.append(item)
+    return result
+
+
+def _extract_last_assistant_question(recent_messages: list) -> str:
+    """
+    Returns the most recent assistant question if available.
+    Works generically for any assistant.
+    """
+    for msg in reversed(recent_messages or []):
+        role = msg.get("role") if isinstance(msg, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+
+        if role == "assistant" and content:
+            text = str(content).strip()
+            if "?" in text or "؟" in text:
+                return text
+
+    return ""
+
+
+def _looks_like_user_answered_question(message: str) -> bool:
+    """
+    Generic signal that the user is answering a previous question.
+    Works for Arabic/English without domain-specific logic.
+    """
+    text = _normalize_text_for_stage(message)
+
+    answer_markers = [
+        "yes",
+        "no",
+        "yeah",
+        "yep",
+        "nope",
+        "اه",
+        "أه",
+        "ايوه",
+        "أيوه",
+        "لا",
+        "تمام",
+        "معظم",
+        "غالبا",
+        "غالبًا",
+        "في ",
+        "مفيش",
+        "مافيش",
+        "مش",
+        "بيحصل",
+        "بتحصل",
+        "بيظهر",
+        "بتظهر",
+        "بيطلع",
+        "بيعلى",
+        "عايز",
+        "محتاج",
+        "اختار",
+        "احجز",
+    ]
+
+    if any(marker in text for marker in answer_markers):
+        return True
+
+    # Short user replies after an assistant question are often answers.
+    if 1 <= len(text.split()) <= 12:
+        return True
+
+    return False
+
+
+def apply_conversation_stage_governor(
+    message: str,
+    variables: Dict[str, Any],
+    recent_messages: list,
+    assistant_id: str,
+) -> Dict[str, Any]:
+    """
+    Universal state governor for all assistants.
+
+    It does NOT contain domain-specific service/car/medical logic.
+    It prevents repeated questions and helps the LLM know where the conversation is.
+
+    Generic stages:
+    - discovery: assistant is still understanding the user's need
+    - awaiting_answer: assistant asked a question and is waiting for user reply
+    - qualified: user answered enough to move forward
+    - action_ready: enough info exists for workflow/action
+    """
+
+    variables = dict(variables or {})
+    text = _normalize_text_for_stage(message)
+
+    known_facts = variables.get("known_facts")
+    if not isinstance(known_facts, list):
+        known_facts = []
+
+    answered_questions = variables.get("answered_questions")
+    if not isinstance(answered_questions, list):
+        answered_questions = []
+
+    do_not_repeat = variables.get("do_not_repeat")
+    if not isinstance(do_not_repeat, list):
+        do_not_repeat = []
+
+    last_question = variables.get("last_assistant_question") or _extract_last_assistant_question(recent_messages)
+
+    user_answered = bool(last_question and _looks_like_user_answered_question(message))
+
+    if last_question:
+        variables["last_assistant_question"] = last_question
+
+    if user_answered:
+        variables["conversation_stage"] = "qualified"
+        variables["last_user_answer"] = message
+        variables["answered_questions"] = _append_unique_list(answered_questions, last_question)
+
+        # Store a generic fact from the user answer.
+        known_facts = _append_unique_list(known_facts, message)
+        variables["known_facts"] = known_facts
+
+        # Tell GPT not to ask the same question again.
+        do_not_repeat = _append_unique_list(do_not_repeat, last_question)
+        variables["do_not_repeat"] = do_not_repeat
+
+        variables["next_conversation_action"] = "move_forward"
+        variables["_stage_instruction"] = (
+            "The user answered the previous assistant question. "
+            "Do not ask the same question again. "
+            "Use known_facts and last_user_answer as authoritative context. "
+            "Summarize what is known briefly, then move to the next logical step."
+        )
+
+    else:
+        # If no previous question was answered, keep discovery/action flow.
+        variables.setdefault("conversation_stage", "discovery")
+        variables.setdefault("next_conversation_action", "ask_or_answer")
+
+        variables["_stage_instruction"] = (
+            "Use known_facts and recent conversation before asking anything. "
+            "Do not repeat questions listed in do_not_repeat or answered_questions. "
+            "Ask at most one new useful question only if needed."
+        )
+
+    # Generic anti-loop instruction, useful for every future assistant.
+    variables["_do_not_repeat_instruction"] = (
+        "Never ask again about information already present in known_facts, "
+        "last_user_answer, issue_description, summary, answered_questions, or do_not_repeat. "
+        "If enough context exists, move forward instead of continuing discovery."
+    )
+
+    return variables
+
+
 def infer_workflow_type(schema: Dict[str, Any], assistant_id: str = "") -> str:
     assistant_id = (assistant_id or "").lower()
 
