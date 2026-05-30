@@ -2141,9 +2141,13 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
 
     if existing_variables.get("_stage_instruction"):
         existing_variables["_conversation_governor_instruction"] = (
-            existing_variables.get("_stage_instruction", "")
-            + "\n"
+            "HIGH PRIORITY CONVERSATION STATE INSTRUCTION:\n"
+            + existing_variables.get("_stage_instruction", "")
+            + "\n\nANTI-REPEAT RULE:\n"
             + existing_variables.get("_do_not_repeat_instruction", "")
+            + "\n\nPLAYBOOK RULE:\n"
+            "Use the assistant's prompt, knowledge base, and conversation playbook to decide the next best step. "
+            "Do not behave like this is the first message if known_facts, last_user_answer, summary, or issue_description already contain context."
         )
 
     premium_handled, premium_result = run_adaptive_premium_turn(
