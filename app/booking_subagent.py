@@ -1,11 +1,13 @@
 # app/booking_subagent.py
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 
 BOOKING_AGENT_NAME = "booking_agent"
+DEFAULT_TZ = "Africa/Cairo"
 
 
 def _norm(value: Any) -> str:
@@ -26,6 +28,55 @@ def _has_any(text: str, words: List[str]) -> bool:
 def _clean_phone_from_user_id(user_id: str) -> str:
     user_id = _norm(user_id).replace("=", "")
     return user_id.replace("@s.whatsapp.net", "").strip()
+
+
+def _today_egypt() -> datetime:
+    return datetime.now(ZoneInfo(DEFAULT_TZ))
+
+
+def _next_weekday(target_weekday: int, include_today: bool = False) -> str:
+    """
+    target_weekday: Monday=0, Sunday=6
+    """
+    today = _today_egypt().date()
+    days_ahead = target_weekday - today.weekday()
+
+    if days_ahead < 0 or (days_ahead == 0 and not include_today):
+        days_ahead += 7
+
+    return (today + timedelta(days=days_ahead)).isoformat()
+
+
+def _parse_day_month(day: int, month: int) -> str:
+    """
+    Converts day/month without year into the next valid upcoming date.
+    """
+    today = _today_egypt().date()
+    year = today.year
+
+    try:
+        candidate = datetime(year, month, day, tzinfo=ZoneInfo(DEFAULT_TZ)).date()
+    except ValueError:
+        return ""
+
+    if candidate < today:
+        candidate = datetime(year + 1, month, day, tzinfo=ZoneInfo(DEFAULT_TZ)).date()
+
+    return candidate.isoformat()
+
+
+def _arabic_digits_to_latin(text: str) -> str:
+    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
+    eastern_digits = "۰۱۲۳۴۵۶۷۸۹"
+    result = str(text)
+
+    for i, d in enumerate(arabic_digits):
+        result = result.replace(d, str(i))
+
+    for i, d in enumerate(eastern_digits):
+        result = result.replace(d, str(i))
+
+    return result
 
 
 def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
@@ -49,12 +100,14 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
         "أحجز",
         "عايز احجز",
         "عايز أروح",
+        "عايز اروح",
         "عايز اكشف",
         "عايز أكشف",
         "اظبط",
         "أظبط",
         "ميعاد",
         "معاد",
+        "موعد",
         "appointment",
         "book",
         "booking",
@@ -73,10 +126,14 @@ def detect_confirmation(message: str) -> bool:
         "أه",
         "ايوه",
         "أيوه",
+        "ايوا",
+        "أيوة",
         "تمام",
         "ماشي",
         "اوكي",
+        "أوكي",
         "ok",
+        "okay",
         "yes",
         "confirm",
         "confirmed",
@@ -92,8 +149,8 @@ def detect_confirmation(message: str) -> bool:
 
 def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
     """
-    First version: branch aliases for your service assistant.
-    Later we can load branches from playbook/schema.
+    First version: branch aliases for the service assistant.
+    Later this can load branches from assistant playbook/schema.
     """
     existing = variables.get("location_branch") or variables.get("branch")
     if existing:
@@ -104,9 +161,11 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
     branch_map = {
         "new cairo": "New Cairo",
         "القاهرة الجديدة": "New Cairo",
+        "القاهره الجديده": "New Cairo",
         "التجمع": "New Cairo",
         "nasr city": "Nasr City",
         "مدينة نصر": "Nasr City",
+        "مدينه نصر": "Nasr City",
         "sheikh zayed": "Sheikh Zayed",
         "zayed": "Sheikh Zayed",
         "زايد": "Sheikh Zayed",
@@ -116,7 +175,9 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
         "alexandria": "Alexandria",
         "alex": "Alexandria",
         "اسكندرية": "Alexandria",
+        "إسكندرية": "Alexandria",
         "الإسكندرية": "Alexandria",
+        "الاسكندرية": "Alexandria",
     }
 
     for key, branch in branch_map.items():
@@ -129,8 +190,10 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
 def _normalize_time(hour: int, minute: int = 0, pm_hint: bool = False, am_hint: bool = False) -> str:
     if pm_hint and hour < 12:
         hour += 12
+
     if am_hint and hour == 12:
         hour = 0
+
     return f"{hour:02d}:{minute:02d}"
 
 
@@ -139,33 +202,40 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
     if existing:
         return existing
 
-    text = _lower(message)
+    text = _lower(_arabic_digits_to_latin(message))
 
-    # Arabic common phrases
-    if "2 الظهر" in text or "٢ الظهر" in text or "2 ظهر" in text or "٢ ظهر" in text:
-        return "14:00"
-    if "10 الصبح" in text or "١٠ الصبح" in text or "10 صباح" in text or "١٠ صباح" in text:
-        return "10:00"
-    if "12 الظهر" in text or "١٢ الظهر" in text:
-        return "12:00"
-    if "4 العصر" in text or "٤ العصر" in text:
-        return "16:00"
-    if "6 المغرب" in text or "٦ المغرب" in text or "6 مساء" in text or "٦ مساء" in text:
-        return "18:00"
+    # Arabic common phrases.
+    phrase_map = {
+        "2 الظهر": "14:00",
+        "2 ظهر": "14:00",
+        "2 العصر": "14:00",
+        "10 الصبح": "10:00",
+        "10 صباح": "10:00",
+        "12 الظهر": "12:00",
+        "12 ظهر": "12:00",
+        "4 العصر": "16:00",
+        "4 مساء": "16:00",
+        "6 المغرب": "18:00",
+        "6 مساء": "18:00",
+    }
+
+    for phrase, value in phrase_map.items():
+        if phrase in text:
+            return value
 
     # Match 14:00, 2:30, etc.
     m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
     if m:
         return _normalize_time(int(m.group(1)), int(m.group(2)))
 
-    # Match "2 pm", "10 am"
+    # Match "2 pm", "10 am".
     m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
     if m:
         hour = int(m.group(1))
         suffix = m.group(2)
         return _normalize_time(hour, 0, pm_hint=suffix == "pm", am_hint=suffix == "am")
 
-    # Match Arabic/English hour only when context suggests time
+    # Match "الساعة 2", "at 2".
     m = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
     if m:
         hour = int(m.group(1))
@@ -173,45 +243,136 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
         am_hint = any(x in text for x in ["صباح", "الصبح", "am"])
         return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
 
+    # If user says only "10 الصبح" without "الساعة".
+    m = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
+    if m:
+        hour = int(m.group(1))
+        hint = m.group(2)
+        pm_hint = hint in ["الظهر", "ظهر", "العصر", "مساء", "المغرب", "بالليل"]
+        am_hint = hint in ["الصبح", "صباح"]
+        return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
+
     return None
 
 
 def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     """
-    First version handles ISO dates and the specific June examples.
-    Later we can improve with dateparser.
+    Handles:
+    - ISO dates: 2026-06-01
+    - relative Arabic: النهارده، بكرة، بعد بكرة
+    - weekdays Arabic/English: الأحد، Monday, next Tuesday
+    - simple June examples: 1 يونيو, June 1
     """
     existing = variables.get("appointment_date") or variables.get("date")
     if existing:
         return existing
 
-    text = _lower(message)
+    text = _lower(_arabic_digits_to_latin(message))
+    today = _today_egypt().date()
 
-    # ISO date
+    # ISO date.
     m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
     if m:
         return m.group(1)
 
-    # Your current test data year is 2026
-    if "1 يونيو" in text or "١ يونيو" in text or "واحد يونيو" in text or "اول يونيو" in text or "أول يونيو" in text:
-        return "2026-06-01"
-    if "2 يونيو" in text or "٢ يونيو" in text or "اتنين يونيو" in text or "تاني يونيو" in text:
-        return "2026-06-02"
-    if "3 يونيو" in text or "٣ يونيو" in text or "تلاتة يونيو" in text:
-        return "2026-06-03"
+    # Relative dates.
+    # Important: check "day after tomorrow" before "tomorrow".
+    if any(x in text for x in ["بعد بكرة", "بعد بكره", "day after tomorrow"]):
+        return (today + timedelta(days=2)).isoformat()
 
-    # English June
-    if "june 1" in text or "1 june" in text:
-        return "2026-06-01"
-    if "june 2" in text or "2 june" in text:
-        return "2026-06-02"
-    if "june 3" in text or "3 june" in text:
-        return "2026-06-03"
+    if any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"]):
+        return today.isoformat()
+
+    if any(x in text for x in ["بكرة", "بكره", "tomorrow"]):
+        return (today + timedelta(days=1)).isoformat()
+
+    # Arabic weekdays. Python weekday: Monday=0, Sunday=6.
+    weekday_map = {
+        "الاثنين": 0,
+        "الإثنين": 0,
+        "الاتنين": 0,
+        "اتنين": 0,
+        "التلات": 1,
+        "الثلاثاء": 1,
+        "الثلاثا": 1,
+        "تلات": 1,
+        "الأربعاء": 2,
+        "الاربعاء": 2,
+        "اربع": 2,
+        "الخميس": 3,
+        "خميس": 3,
+        "الجمعة": 4,
+        "الجمعه": 4,
+        "جمعه": 4,
+        "جمعة": 4,
+        "السبت": 5,
+        "سبت": 5,
+        "الأحد": 6,
+        "الاحد": 6,
+        "حد": 6,
+    }
+
+    for word, weekday in weekday_map.items():
+        if word in text:
+            include_today = any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"])
+            return _next_weekday(weekday, include_today=include_today)
+
+    # English weekdays.
+    english_weekday_map = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+
+    for word, weekday in english_weekday_map.items():
+        if word in text:
+            include_today = "today" in text
+            return _next_weekday(weekday, include_today=include_today)
+
+    # Arabic June examples.
+    june_map = {
+        "1 يونيو": 1,
+        "واحد يونيو": 1,
+        "اول يونيو": 1,
+        "أول يونيو": 1,
+        "2 يونيو": 2,
+        "اتنين يونيو": 2,
+        "تاني يونيو": 2,
+        "3 يونيو": 3,
+        "تلاتة يونيو": 3,
+    }
+
+    for phrase, day in june_map.items():
+        if phrase in text:
+            return _parse_day_month(day, 6)
+
+    # English June.
+    m = re.search(r"\b(?:june)\s+(\d{1,2})\b", text)
+    if m:
+        return _parse_day_month(int(m.group(1)), 6)
+
+    m = re.search(r"\b(\d{1,2})\s+(?:june)\b", text)
+    if m:
+        return _parse_day_month(int(m.group(1)), 6)
 
     return None
 
 
-def infer_section(message: str, variables: Dict[str, Any]) -> str:
+def infer_section_fallback(message: str, variables: Dict[str, Any]) -> Optional[str]:
+    """
+    Fallback only.
+
+    Preferred behavior:
+    - Main brain / diagnostic advisor sets recommended_section.
+    - Booking sub-agent uses that section and does not diagnose.
+
+    This fallback is intentionally not called automatically unless we explicitly decide
+    to use it later.
+    """
     existing = (
         variables.get("recommended_section")
         or variables.get("service_needed")
@@ -222,6 +383,7 @@ def infer_section(message: str, variables: Dict[str, Any]) -> str:
 
     text = _lower(message)
     symptoms = variables.get("symptoms") or []
+
     if isinstance(symptoms, str):
         symptoms = [symptoms]
 
@@ -246,7 +408,7 @@ def infer_section(message: str, variables: Dict[str, Any]) -> str:
     if _has_any(text, ["فتيس", "نتشة", "نقلات", "غيار"]):
         return "Transmission"
 
-    return "Engine Diagnostics"
+    return None
 
 
 def collect_slot_variables(
@@ -258,7 +420,15 @@ def collect_slot_variables(
     branch = extract_branch(message, variables)
     date = extract_date(message, variables)
     time = extract_time(message, variables)
-    section = infer_section(message, variables)
+
+    # IMPORTANT:
+    # Booking sub-agent should not diagnose or choose the service section.
+    # The main brain / diagnostic advisor should set recommended_section first.
+    section = (
+        variables.get("recommended_section")
+        or variables.get("service_needed")
+        or variables.get("section")
+    )
 
     if branch:
         variables["location_branch"] = branch
@@ -275,14 +445,19 @@ def collect_slot_variables(
 
 def missing_slot_fields(variables: Dict[str, Any]) -> List[str]:
     missing = []
+
     if not variables.get("location_branch"):
         missing.append("location_branch")
+
     if not variables.get("appointment_date"):
         missing.append("appointment_date")
+
     if not variables.get("appointment_time"):
         missing.append("appointment_time")
+
     if not variables.get("recommended_section") and not variables.get("service_needed"):
         missing.append("recommended_section")
+
     return missing
 
 
@@ -290,23 +465,33 @@ def ask_for_missing_slot_fields(missing: List[str]) -> str:
     if not missing:
         return ""
 
-    # Keep it human and short.
-    if set(missing) >= {"location_branch", "appointment_date", "appointment_time"}:
+    missing_set = set(missing)
+
+    if missing_set >= {"location_branch", "appointment_date", "appointment_time", "recommended_section"}:
+        return (
+            "تمام، أظبطهولك. بس محتاج أفهم المشكلة باختصار عشان أحددلك القسم الصح، "
+            "وكمان تحب أنهي فرع ويوم ووقت مناسبين ليك؟"
+        )
+
+    if missing_set >= {"location_branch", "appointment_date", "appointment_time"}:
         return "تمام، أظبطهولك. تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
 
+    if "recommended_section" in missing_set and len(missing_set) == 1:
+        return "تمام، أظبطهولك. بس محتاج أفهم المشكلة باختصار عشان أحددلك القسم الصح للكشف."
+
     parts = []
-    if "location_branch" in missing:
+
+    if "location_branch" in missing_set:
         parts.append("الفرع")
-    if "appointment_date" in missing:
+
+    if "appointment_date" in missing_set:
         parts.append("اليوم")
-    if "appointment_time" in missing:
+
+    if "appointment_time" in missing_set:
         parts.append("الوقت")
 
     if parts:
         return "تمام، محتاج بس أعرف " + " و".join(parts) + " المناسبين ليك."
-
-    if "recommended_section" in missing:
-        return "تمام، محتاج أحدد نوع الكشف الأول. ممكن تقولي المشكلة باختصار؟"
 
     return "تمام، محتاج كام تفصيلة بسيطة عشان أظبطهولك."
 
@@ -352,11 +537,13 @@ def handle_availability_result(
     available = bool(tool_result.get("available"))
 
     requested = tool_result.get("requested") or {}
+
     if requested:
         variables["location_branch"] = requested.get("branch") or variables.get("location_branch")
         variables["appointment_date"] = requested.get("date") or variables.get("appointment_date")
         variables["appointment_time"] = requested.get("time") or variables.get("appointment_time")
         variables["recommended_section"] = requested.get("section") or variables.get("recommended_section")
+        variables["service_needed"] = variables.get("recommended_section") or variables.get("service_needed")
 
     variables["active_subagent"] = BOOKING_AGENT_NAME
 
@@ -435,7 +622,8 @@ def run_booking_subagent(
 
     First version:
     - handles booking intent
-    - collects branch/date/time/section
+    - collects branch/date/time
+    - requires main brain to provide recommended_section/service_needed
     - requests availability check
     - handles availability_result tool output
     """
@@ -453,6 +641,11 @@ def run_booking_subagent(
     variables["active_subagent"] = BOOKING_AGENT_NAME
     variables["intent"] = "booking_request"
     variables["workflow"] = variables.get("workflow") or "service_booking"
+
+    # Capture phone from WhatsApp user_id if available.
+    if user_id and not variables.get("phone_number"):
+        variables["phone_number"] = _clean_phone_from_user_id(user_id)
+        variables["phone_source"] = "whatsapp_user_id"
 
     variables = collect_slot_variables(message, variables)
     missing = missing_slot_fields(variables)
