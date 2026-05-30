@@ -95,7 +95,9 @@ from app.assistant_brain import (
     build_brain_deterministic_response,
     build_brain_advisor_hint,
 )
+
 from app.premium_sales_orchestrator import run_adaptive_premium_turn
+from app.booking_subagent import run_booking_subagent
 
 
 app = FastAPI(title="Agentic RAG API")
