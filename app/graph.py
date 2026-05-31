@@ -14,9 +14,10 @@ from app.config import KNOWLEDGE_TOP_K, MODEL_ROUTER, MODEL_NORMAL, MODEL_STRONG
 from app.rag import search_knowledge, compress_knowledge
 from app.variables import apply_variable_patch
 
-# --- New Structural Logic Imports ---
+# --- Intelligence & Strategy Imports ---
 from app.domain_playbooks import build_playbook_prompt
 from app.datetime_location_extractor import extract_datetime_location_patch
+from app.booking_subagent import extract_user_area, recommend_nearest_branches_for_area
 
 # ==========================================
 # 1. DEFINE STATE ARCHITECTURE
@@ -112,22 +113,31 @@ generator_llm = ChatOpenAI(
 
 def ultimate_brain_node(state: AgentState):
     """
-    Combines zero-token deterministic regex parsing, secondary LLM extraction,
-    and business playbook enforcement to create highly natural conversation.
+    Combines zero-token deterministic extraction, geographical math, secondary LLM extraction,
+    and business playbook enforcement to create a highly natural, genius-level conversation.
     """
     last_message = state["messages"][-1].content
-    current_variables = state["variables"] or {}
+    current_variables = state.get("variables", {}) or {}
     
-    # Infer workflow type from existing keys or defaults to load correct playbook
     workflow_type = current_variables.get("workflow", "general")
     
-    # --- Step A: Zero-Token Stealth Extraction ---
-    # Instantly patches physical locations, Arabic relative dates/times safely
+    # --- Step A: Zero-Token Stealth Date/Time Extraction ---
     stealth_updates = extract_datetime_location_patch(last_message, current_variables, workflow_type)
     if stealth_updates:
         current_variables.update(stealth_updates)
 
-    # --- Step B: Secondary LLM Extraction (For arbitrary slot filling) ---
+    # --- Step B: Zero-Token Geographical Intelligence ---
+    # Automatically calculate the nearest branch if they mention a neighborhood!
+    user_area = extract_user_area(last_message)
+    if user_area:
+        current_variables["user_area"] = user_area
+        if not current_variables.get("location_branch"):
+            nearest_branches = recommend_nearest_branches_for_area(user_area, limit=1)
+            if nearest_branches:
+                current_variables["location_branch"] = nearest_branches[0]["branch"]
+                current_variables["_nearest_branch_ar_hint"] = nearest_branches[0]["branch_ar"]
+
+    # --- Step C: Secondary LLM Extraction (For arbitrary slot filling) ---
     extraction_prompt = ChatPromptTemplate.from_messages([
         ("system", "Extract any profile context or variables relevant to this business interaction from the user's latest text. "
                    "Update tracking metrics when users state clear preferences, item matches, constraints, or updates."),
@@ -142,21 +152,20 @@ def ultimate_brain_node(state: AgentState):
     except Exception:
         updated_vars = current_variables # Safe fallback
 
-    # --- Step C: Build Playbook Strategy Prompt ---
-    # Automatically pulls instructions, CTA goals, and missing fields from domain_playbooks.py
+    # --- Step D: Build Playbook Strategy Prompt ---
     tone_profile = state.get("tone", "helpful_operator")
     playbook_strategy = build_playbook_prompt(workflow_type, tone_profile)
 
-    # --- Step D: Conversational Synthesis ---
+    # --- Step E: Conversational Synthesis ---
     system_instruction = f"""
-{state['system_prompt']}
+{state.get('system_prompt', '')}
 
 {playbook_strategy}
 
-{state['language_instruction']}
+{state.get('language_instruction', '')}
 
 Operational Real-Time Context:
-- Summary of events so far: {state['summary']}
+- Summary of events so far: {state.get('summary', '')}
 - Active Profile Metadata: {updated_vars}
 
 Retrieved Knowledge Base Entries:
@@ -166,8 +175,9 @@ Retrieved Knowledge Base Entries:
 
 CRITICAL EXECUTION POLICIES:
 1. Speak beautifully, empathetically, and naturally. If replying in Egyptian Arabic, sound fully colloquial (عامية مصرية), warm, professional, and authentic—never sound like a rigid textbook translation.
-2. Use retrieved factual database properties seamlessly. Weave prices, car names, or doctor names into organic sentences instead of repeating text chunks mechanically.
-3. If essential context details are missing from the Profile Metadata to complete the playbook's Primary CTA, gently guide the user to share them one specific thing at a time as part of an elegant conversation loop.
+2. If '_nearest_branch_ar_hint' is in the metadata, naturally suggest this branch to the user since we mathematically determined it is closest to them.
+3. Use retrieved factual database properties seamlessly. Weave prices, car names, or doctor names into organic sentences instead of repeating text chunks mechanically.
+4. If essential context details are missing from the Profile Metadata to complete the playbook's Primary CTA, gently guide the user to share them one specific thing at a time as part of an elegant conversation loop.
 """
 
     prompt = ChatPromptTemplate.from_messages([
@@ -177,9 +187,14 @@ CRITICAL EXECUTION POLICIES:
     
     # Pass historical window context (Last 6 messages) to optimize attention and cost
     chat_chain = prompt | generator_llm
+    
+    # Strip internal hints before saving back to the DB to keep state clean
+    vars_to_save = dict(updated_vars)
+    vars_to_save.pop("_nearest_branch_ar_hint", None)
+    
     response = chat_chain.invoke({"messages": state["messages"][-6:]})
     
-    return {"messages": [response], "variables": updated_vars}
+    return {"messages": [response], "variables": vars_to_save}
 
 # ==========================================
 # 5. COMPILE AND EXPOSE THE WORKFLOW GRAPH
