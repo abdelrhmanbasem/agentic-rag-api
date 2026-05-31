@@ -1,8 +1,9 @@
 # app/booking_subagent.py
 
+import math
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.llm import chat_text, model_for_tier
@@ -10,6 +11,256 @@ from app.llm import chat_text, model_for_tier
 
 BOOKING_AGENT_NAME = "booking_agent"
 DEFAULT_TZ = "Africa/Cairo"
+
+
+BRANCH_COORDINATES = {
+    "New Cairo": (30.0074, 31.4913),
+    "Nasr City": (30.0561, 31.3300),
+    "Sheikh Zayed": (30.0131, 30.9769),
+    "Maadi": (29.9602, 31.2569),
+    "Alexandria": (31.2001, 29.9187),
+}
+
+
+BRANCH_DISPLAY_NAMES = {
+    "New Cairo": "التجمع",
+    "Nasr City": "مدينة نصر",
+    "Sheikh Zayed": "الشيخ زايد",
+    "Maadi": "المعادي",
+    "Alexandria": "إسكندرية",
+}
+
+
+AREA_COORDINATES = {
+    # East / New Cairo side
+    "Obour": (30.2285, 31.4799),
+    "Shorouk": (30.1417, 31.6167),
+    "Madinaty": (30.0934, 31.6385),
+    "Rehab": (30.0637, 31.4880),
+    "Badr City": (30.1360, 31.7060),
+    "Mostakbal City": (30.0606, 31.5862),
+    "10th of Ramadan": (30.3065, 31.7415),
+    "New Cairo Area": (30.0074, 31.4913),
+    "Tagamoa": (30.0074, 31.4913),
+    "Fifth Settlement": (30.0085, 31.4815),
+    "First Settlement": (30.0610, 31.4430),
+
+    # Cairo center / east
+    "Nasr City Area": (30.0561, 31.3300),
+    "Heliopolis": (30.0912, 31.3220),
+    "Nozha": (30.1114, 31.3490),
+    "Sheraton": (30.1069, 31.3767),
+    "Gesr Suez": (30.1242, 31.3319),
+    "Ain Shams": (30.1290, 31.3310),
+    "Matariya": (30.1237, 31.3136),
+    "Salam City": (30.1706, 31.4215),
+    "Marg": (30.1521, 31.3359),
+    "Mokattam": (30.0217, 31.3034),
+    "Downtown Cairo": (30.0444, 31.2357),
+    "Zamalek": (30.0617, 31.2195),
+    "Garden City": (30.0375, 31.2313),
+    "Abbasiya": (30.0728, 31.2806),
+    "Ramses": (30.0626, 31.2477),
+
+    # South Cairo
+    "Maadi Area": (29.9602, 31.2569),
+    "Zahraa Maadi": (29.9689, 31.3147),
+    "Katameya": (29.9953, 31.4314),
+    "Helwan": (29.8414, 31.3008),
+    "Tora": (29.9368, 31.2704),
+
+    # Giza / west
+    "Giza": (30.0131, 31.2089),
+    "Dokki": (30.0384, 31.2122),
+    "Mohandessin": (30.0566, 31.2006),
+    "Agouza": (30.0522, 31.2108),
+    "Haram": (29.9911, 31.1607),
+    "Faisal": (30.0020, 31.1693),
+    "Moneeb": (29.9816, 31.2129),
+    "October": (29.9285, 30.9188),
+    "6 October": (29.9285, 30.9188),
+    "Sheikh Zayed Area": (30.0131, 30.9769),
+    "Hadayek October": (29.9140, 30.8655),
+    "Hadayek Ahram": (29.9544, 31.0965),
+
+    # Alexandria
+    "Alexandria Area": (31.2001, 29.9187),
+    "Smouha": (31.2089, 29.9447),
+    "Sidi Gaber": (31.2183, 29.9422),
+    "Gleem": (31.2361, 29.9604),
+    "Miami Alexandria": (31.2647, 29.9990),
+    "Stanley": (31.2372, 29.9567),
+    "Mandara": (31.2809, 30.0144),
+    "Agami": (31.0957, 29.7604),
+}
+
+
+AREA_ALIASES = {
+    # Obour
+    "el obour": "Obour",
+    "el-obour": "Obour",
+    "al obour": "Obour",
+    "al-obour": "Obour",
+    "el 3obour": "Obour",
+    "3obour": "Obour",
+    "obour": "Obour",
+    "العبور": "Obour",
+    "عبور": "Obour",
+
+    # East Cairo / new cities
+    "الشروق": "Shorouk",
+    "شروق": "Shorouk",
+    "shorouk": "Shorouk",
+    "el shorouk": "Shorouk",
+    "مدينتي": "Madinaty",
+    "madinaty": "Madinaty",
+    "الرحاب": "Rehab",
+    "رحاب": "Rehab",
+    "rehab": "Rehab",
+    "بدر": "Badr City",
+    "badr": "Badr City",
+    "مدينة بدر": "Badr City",
+    "مدينه بدر": "Badr City",
+    "المستقبل": "Mostakbal City",
+    "mostakbal": "Mostakbal City",
+    "مستقبل سيتي": "Mostakbal City",
+    "العاشر": "10th of Ramadan",
+    "العاشر من رمضان": "10th of Ramadan",
+    "10th ramadan": "10th of Ramadan",
+    "10th of ramadan": "10th of Ramadan",
+    "التجمع": "New Cairo Area",
+    "tagamoa": "Tagamoa",
+    "tagamo3": "Tagamoa",
+    "new cairo": "New Cairo Area",
+    "القاهرة الجديدة": "New Cairo Area",
+    "القاهره الجديده": "New Cairo Area",
+    "التجمع الخامس": "Fifth Settlement",
+    "fifth settlement": "Fifth Settlement",
+    "5th settlement": "Fifth Settlement",
+    "التجمع الاول": "First Settlement",
+    "التجمع الأول": "First Settlement",
+    "first settlement": "First Settlement",
+
+    # Cairo center/east
+    "مدينة نصر": "Nasr City Area",
+    "مدينه نصر": "Nasr City Area",
+    "nasr city": "Nasr City Area",
+    "مصر الجديدة": "Heliopolis",
+    "مصر الجديده": "Heliopolis",
+    "heliopolis": "Heliopolis",
+    "النزهة": "Nozha",
+    "النزهه": "Nozha",
+    "nozha": "Nozha",
+    "sheraton": "Sheraton",
+    "شيراتون": "Sheraton",
+    "جسر السويس": "Gesr Suez",
+    "gesr suez": "Gesr Suez",
+    "عين شمس": "Ain Shams",
+    "ain shams": "Ain Shams",
+    "المطرية": "Matariya",
+    "المطريه": "Matariya",
+    "matariya": "Matariya",
+    "السلام": "Salam City",
+    "مدينة السلام": "Salam City",
+    "مدينه السلام": "Salam City",
+    "el salam": "Salam City",
+    "المرج": "Marg",
+    "marg": "Marg",
+    "المقطم": "Mokattam",
+    "mokattam": "Mokattam",
+    "وسط البلد": "Downtown Cairo",
+    "downtown": "Downtown Cairo",
+    "زمالك": "Zamalek",
+    "الزمالك": "Zamalek",
+    "zamalek": "Zamalek",
+    "جاردن سيتي": "Garden City",
+    "garden city": "Garden City",
+    "العباسية": "Abbasiya",
+    "العباسيه": "Abbasiya",
+    "abbasiya": "Abbasiya",
+    "رمسيس": "Ramses",
+    "ramses": "Ramses",
+
+    # South Cairo
+    "المعادي": "Maadi Area",
+    "معادي": "Maadi Area",
+    "maadi": "Maadi Area",
+    "زهراء المعادي": "Zahraa Maadi",
+    "zahraa maadi": "Zahraa Maadi",
+    "القطامية": "Katameya",
+    "القطاميه": "Katameya",
+    "katameya": "Katameya",
+    "helwan": "Helwan",
+    "حلوان": "Helwan",
+    "طرة": "Tora",
+    "طره": "Tora",
+    "tora": "Tora",
+
+    # Giza / west
+    "giza": "Giza",
+    "الجيزة": "Giza",
+    "الجيزه": "Giza",
+    "جيزة": "Giza",
+    "جيزه": "Giza",
+    "الدقي": "Dokki",
+    "الدقى": "Dokki",
+    "dokki": "Dokki",
+    "المهندسين": "Mohandessin",
+    "mohandessin": "Mohandessin",
+    "العجوزة": "Agouza",
+    "العجوزه": "Agouza",
+    "agouza": "Agouza",
+    "الهرم": "Haram",
+    "هرم": "Haram",
+    "haram": "Haram",
+    "فيصل": "Faisal",
+    "faisal": "Faisal",
+    "المنيب": "Moneeb",
+    "moneeb": "Moneeb",
+    "اكتوبر": "6 October",
+    "أكتوبر": "6 October",
+    "6 اكتوبر": "6 October",
+    "٦ اكتوبر": "6 October",
+    "six october": "6 October",
+    "6 october": "6 October",
+    "october": "October",
+    "الشيخ زايد": "Sheikh Zayed Area",
+    "زايد": "Sheikh Zayed Area",
+    "zayed": "Sheikh Zayed Area",
+    "sheikh zayed": "Sheikh Zayed Area",
+    "حدائق اكتوبر": "Hadayek October",
+    "حدائق أكتوبر": "Hadayek October",
+    "hadayek october": "Hadayek October",
+    "حدائق الاهرام": "Hadayek Ahram",
+    "حدائق الأهرام": "Hadayek Ahram",
+    "hadayek ahram": "Hadayek Ahram",
+
+    # Alexandria
+    "اسكندرية": "Alexandria Area",
+    "إسكندرية": "Alexandria Area",
+    "الاسكندرية": "Alexandria Area",
+    "الإسكندرية": "Alexandria Area",
+    "alex": "Alexandria Area",
+    "alexandria": "Alexandria Area",
+    "سموحة": "Smouha",
+    "سموحه": "Smouha",
+    "smouha": "Smouha",
+    "سيدي جابر": "Sidi Gaber",
+    "سيدى جابر": "Sidi Gaber",
+    "sidi gaber": "Sidi Gaber",
+    "جليم": "Gleem",
+    "gleem": "Gleem",
+    "ميامي": "Miami Alexandria",
+    "miami": "Miami Alexandria",
+    "ستانلي": "Stanley",
+    "stanley": "Stanley",
+    "المندرة": "Mandara",
+    "المندره": "Mandara",
+    "mandara": "Mandara",
+    "العجمي": "Agami",
+    "العجمى": "Agami",
+    "agami": "Agami",
+}
 
 
 def _norm(value: Any) -> str:
@@ -75,18 +326,39 @@ def _arabic_digits_to_latin(text: str) -> str:
     return result
 
 
+def _clean_location_text(text: str) -> str:
+    text = _lower(_arabic_digits_to_latin(text))
+    text = text.replace("-", " ")
+    text = text.replace("_", " ")
+    text = re.sub(r"[،,.;:()\[\]{}!?؟]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _distance_km(coord_a: Tuple[float, float], coord_b: Tuple[float, float]) -> float:
+    lat1, lon1 = coord_a
+    lat2, lon2 = coord_b
+
+    radius = 6371.0
+
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return radius * c
+
+
 def branch_display_name(branch: str) -> str:
     branch = _norm(branch)
-
-    mapping = {
-        "New Cairo": "التجمع",
-        "Nasr City": "مدينة نصر",
-        "Sheikh Zayed": "الشيخ زايد",
-        "Maadi": "المعادي",
-        "Alexandria": "إسكندرية",
-    }
-
-    return mapping.get(branch, branch or "الفرع")
+    return BRANCH_DISPLAY_NAMES.get(branch, branch or "الفرع")
 
 
 def compose_booking_reply(
@@ -166,12 +438,14 @@ Write the customer-facing reply only.
     if stage == "availability_unavailable_waiting_new_slot":
         reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
         nearest = _norm(variables.get("nearest_slots_text"))
+
         if nearest:
             return (
                 f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
                 f"بس لقيتلك أقرب اختيارات متاحة:\n\n{nearest}\n\n"
                 "تحب أثبتلك واحد منهم؟"
             )
+
         return (
             f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
             "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
@@ -253,18 +527,7 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
     if _has_any(text, booking_words):
         return True
 
-    nearest_branch_words = [
-        "اقرب فرع",
-        "أقرب فرع",
-        "في فرع هنا",
-        "فرع هنا",
-        "قريب مني",
-        "nearest branch",
-        "closest branch",
-        "near branch",
-    ]
-
-    if _has_any(text, nearest_branch_words):
+    if detect_nearest_branch_question(message):
         return True
 
     agreement_words = [
@@ -320,50 +583,65 @@ def detect_confirmation(message: str) -> bool:
 
 
 def detect_nearest_branch_question(message: str) -> bool:
-    text = _lower(message)
+    text = _clean_location_text(message)
 
-    return _has_any(
-        text,
-        [
-            "اقرب فرع",
-            "أقرب فرع",
-            "في فرع هنا",
-            "فرع هنا",
-            "قريب مني",
-            "قريب ليا",
-            "قريب مني",
-            "انا في",
-            "أنا في",
-            "nearest branch",
-            "closest branch",
-            "near branch",
-        ],
-    )
+    question_markers = [
+        "اقرب فرع",
+        "أقرب فرع",
+        "اقرب مركز",
+        "أقرب مركز",
+        "في فرع هنا",
+        "في مركز هنا",
+        "فرع هنا",
+        "مركز هنا",
+        "قريب مني",
+        "قريب ليا",
+        "قريبة مني",
+        "قريبه مني",
+        "nearest branch",
+        "closest branch",
+        "near branch",
+        "nearest center",
+        "closest center",
+    ]
+
+    if any(marker.lower() in text for marker in question_markers):
+        return True
+
+    location_intro_markers = [
+        "انا في",
+        "أنا في",
+        "انا ساكن في",
+        "انا قريب من",
+        "أنا قريب من",
+        "i am in",
+        "i'm in",
+        "im in",
+        "near",
+        "close to",
+    ]
+
+    if any(marker.lower() in text for marker in location_intro_markers):
+        area = extract_user_area(message)
+        return bool(area)
+
+    return False
 
 
 def extract_user_area(message: str) -> Optional[str]:
-    text = _lower(message)
+    text = _clean_location_text(message)
 
-    area_map = {
-        "العبور": "Obour",
-        "عبور": "Obour",
-        "obour": "Obour",
-        "el obour": "Obour",
-        "الشروق": "Shorouk",
-        "shorouk": "Shorouk",
-        "مدينتي": "Madinaty",
-        "madinaty": "Madinaty",
-        "الرحاب": "Rehab",
-        "rehab": "Rehab",
-        "مدينة نصر": "Nasr City Area",
-        "مدينه نصر": "Nasr City Area",
-        "التجمع": "New Cairo Area",
-        "القاهرة الجديدة": "New Cairo Area",
-        "القاهره الجديده": "New Cairo Area",
-    }
+    sorted_aliases = sorted(AREA_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
 
-    for key, area in area_map.items():
-        if key in text:
+    for alias, area in sorted_aliases:
+        alias_clean = _clean_location_text(alias)
+
+        if not alias_clean:
+            continue
+
+        pattern = r"(?<!\w)" + re.escape(alias_clean) + r"(?!\w)"
+
+        if re.search(pattern, text):
             return area
 
     return None
@@ -372,13 +650,46 @@ def extract_user_area(message: str) -> Optional[str]:
 def recommend_branch_for_area(area: str) -> Optional[str]:
     area = _norm(area)
 
-    if area in ["Obour", "Shorouk", "Madinaty", "Rehab", "New Cairo Area"]:
-        return "New Cairo"
+    area_coord = AREA_COORDINATES.get(area)
 
-    if area == "Nasr City Area":
-        return "Nasr City"
+    if not area_coord:
+        return None
 
-    return None
+    nearest_branch = None
+    nearest_distance = None
+
+    for branch, branch_coord in BRANCH_COORDINATES.items():
+        distance = _distance_km(area_coord, branch_coord)
+
+        if nearest_distance is None or distance < nearest_distance:
+            nearest_branch = branch
+            nearest_distance = distance
+
+    return nearest_branch
+
+
+def recommend_nearest_branches_for_area(area: str, limit: int = 2) -> List[Dict[str, Any]]:
+    area = _norm(area)
+    area_coord = AREA_COORDINATES.get(area)
+
+    if not area_coord:
+        return []
+
+    ranked = []
+
+    for branch, branch_coord in BRANCH_COORDINATES.items():
+        distance = _distance_km(area_coord, branch_coord)
+        ranked.append(
+            {
+                "branch": branch,
+                "branch_ar": branch_display_name(branch),
+                "distance_km_estimate": round(distance, 1),
+            }
+        )
+
+    ranked.sort(key=lambda item: item["distance_km_estimate"])
+
+    return ranked[:limit]
 
 
 def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
@@ -386,13 +697,15 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
     if existing:
         return existing
 
-    text = _lower(message)
+    text = _clean_location_text(message)
 
     branch_map = {
         "new cairo": "New Cairo",
         "القاهرة الجديدة": "New Cairo",
         "القاهره الجديده": "New Cairo",
         "التجمع": "New Cairo",
+        "tagamoa": "New Cairo",
+        "tagamo3": "New Cairo",
         "nasr city": "Nasr City",
         "مدينة نصر": "Nasr City",
         "مدينه نصر": "Nasr City",
@@ -402,6 +715,7 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
         "الشيخ زايد": "Sheikh Zayed",
         "maadi": "Maadi",
         "المعادي": "Maadi",
+        "معادي": "Maadi",
         "alexandria": "Alexandria",
         "alex": "Alexandria",
         "اسكندرية": "Alexandria",
@@ -410,8 +724,12 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
         "الاسكندرية": "Alexandria",
     }
 
-    for key, branch in branch_map.items():
-        if key in text:
+    sorted_branches = sorted(branch_map.items(), key=lambda item: len(item[0]), reverse=True)
+
+    for key, branch in sorted_branches:
+        key_clean = _clean_location_text(key)
+
+        if key_clean in text:
             return branch
 
     return None
@@ -590,10 +908,13 @@ def collect_slot_variables(
 
     if not branch and user_area:
         recommended_branch = recommend_branch_for_area(user_area)
+        nearest_branches = recommend_nearest_branches_for_area(user_area, limit=2)
+
         if recommended_branch:
             branch = recommended_branch
             variables["location_branch"] = recommended_branch
             variables["branch_recommendation_reason"] = f"nearest_known_branch_for_{user_area}"
+            variables["nearest_branch_options"] = nearest_branches
 
     if detect_nearest_branch_question(message):
         variables["nearest_branch_question"] = True
@@ -661,15 +982,32 @@ def ask_for_missing_slot_fields(missing: List[str], variables: Optional[Dict[str
     missing_set = set(missing)
     branch = variables.get("location_branch")
     branch_ar = branch_display_name(branch) if branch else ""
+    user_area = variables.get("user_area")
+    nearest_options = variables.get("nearest_branch_options") or []
 
     if branch and "appointment_date" in missing_set and "appointment_time" in missing_set:
-        if variables.get("nearest_branch_question") or variables.get("user_area"):
+        if variables.get("nearest_branch_question") or user_area:
+            if nearest_options and len(nearest_options) >= 2:
+                first = nearest_options[0]
+                second = nearest_options[1]
+                return (
+                    f"تمام، أقرب فرع مناسب ليك غالبًا فرع {first['branch_ar']} "
+                    f"وبعده فرع {second['branch_ar']}. "
+                    f"نبدأ بفرع {first['branch_ar']}؟ قولّي اليوم والوقت اللي يناسبك."
+                )
+
             return (
                 f"تمام، أقرب فرع مناسب ليك غالبًا فرع {branch_ar}. "
                 "تحب أظبطلك الكشف هناك؟ قولّي اليوم والوقت اللي يناسبك."
             )
 
         return f"تمام، نقدر نبدأ بفرع {branch_ar}. قولّي اليوم والوقت اللي يناسبك."
+
+    if branch and "appointment_date" in missing_set:
+        return f"تمام، نبدأ بفرع {branch_ar}. تحب أنهي يوم؟"
+
+    if branch and "appointment_time" in missing_set:
+        return f"تمام، نبدأ بفرع {branch_ar}. تحب الساعة كام؟"
 
     if missing_set >= {"location_branch", "appointment_date", "appointment_time", "recommended_section"}:
         return (
@@ -678,6 +1016,8 @@ def ask_for_missing_slot_fields(missing: List[str], variables: Optional[Dict[str
         )
 
     if missing_set >= {"location_branch", "appointment_date", "appointment_time"}:
+        if user_area and not branch:
+            return "تمام، قولّي منطقتك أو أقرب مكان معروف ليك، واليوم والوقت المناسبين، وأنا أظبطلك أقرب فرع."
         return "تمام، تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
 
     if "recommended_section" in missing_set and len(missing_set) == 1:
