@@ -102,6 +102,28 @@ def clip_text(value: Any, max_chars: int = 1200) -> str:
     return text[:max_chars].rstrip() + "\n...[trimmed]"
 
 
+def clip_text_head_tail(value: Any, max_chars: int = 900, head_ratio: float = 0.55) -> str:
+    """
+    Generic compaction that preserves both the beginning and the end of long text.
+
+    Useful for assistant/subagent instructions because important style rules may be
+    appended at the end. This is not domain hardcoding.
+    """
+    text = "" if value is None else str(value)
+
+    if len(text) <= max_chars:
+        return text
+
+    head_chars = int(max_chars * head_ratio)
+    tail_chars = max_chars - head_chars - 24
+
+    return (
+        text[:head_chars].rstrip()
+        + "\n...[middle trimmed]...\n"
+        + text[-tail_chars:].lstrip()
+    )
+
+
 def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
     text = json.dumps(value, ensure_ascii=False)
     if max_chars:
@@ -412,12 +434,12 @@ def unified_manifest_card(
     if profile == "full":
         return {
             "profile": "full",
-            "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
-            "conversation_style": clip_text(agent_config.get("conversation_style", ""), 420),
-            "language_policy": clip_text(agent_config.get("language_policy", ""), 320),
-            "routing_policy": clip_text(agent_config.get("routing_policy", ""), 900),
-            "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 650),
-            "response_rules": (agent_config.get("response_rules") or [])[:14],
+            "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 650),
+            "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 550),
+            "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 420),
+            "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 950),
+            "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 720),
+            "response_rules": (agent_config.get("response_rules") or [])[:16],
             "subagents": compact_subagents_for_manifest(agent_config),
             "tools": compact_tool_catalog(agent_config),
             "variable_schema": summarize_schema_fields(schema, max_fields=70, profile="full"),
@@ -425,12 +447,12 @@ def unified_manifest_card(
 
     return {
         "profile": "short",
-        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 260),
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 220),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 180),
-        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 420),
-        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 260),
-        "response_rules": (agent_config.get("response_rules") or [])[:8],
+        "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 320),
+        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 300),
+        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 240),
+        "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 500),
+        "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 340),
+        "response_rules": (agent_config.get("response_rules") or [])[:12],
         "subagents": compact_subagents_for_manifest(agent_config),
         "tools": compact_tool_catalog(agent_config),
         "variable_schema": summarize_schema_fields(schema, max_fields=32, profile="short"),
@@ -439,16 +461,16 @@ def unified_manifest_card(
 
 def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 400),
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 320),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 220),
-        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 500),
-        "response_rules": (agent_config.get("response_rules") or [])[:10],
+        "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 550),
+        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 450),
+        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 320),
+        "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 650),
+        "response_rules": (agent_config.get("response_rules") or [])[:12],
         "selected_subagent": {
             "id": selected_subagent.get("id", ""),
             "name": selected_subagent.get("name", ""),
-            "goal": clip_text(selected_subagent.get("goal", ""), 280),
-            "instructions": clip_text(selected_subagent.get("instructions", ""), 650),
+            "goal": clip_text_head_tail(selected_subagent.get("goal", ""), 380),
+            "instructions": clip_text_head_tail(selected_subagent.get("instructions", ""), 850),
             "allowed_actions": selected_subagent.get("allowed_actions", []),
         },
     }
@@ -662,7 +684,7 @@ def unified_manifest_node(state: AgentState):
     ])
 
     def invoke_manifest(profile: str) -> Dict[str, Any]:
-        manifest_card_max = 4200 if profile == "short" else 7200
+        manifest_card_max = 4600 if profile == "short" else 7600
 
         decision = (prompt | manifest_llm).invoke({
             "manifest_card": safe_json(
@@ -909,12 +931,12 @@ def subagent_reasoning_node(state: AgentState):
             "subagent": safe_json({
                 "id": subagent.get("id", ""),
                 "name": subagent.get("name", ""),
-                "goal": clip_text(subagent.get("goal", ""), 260),
-                "instructions": clip_text(subagent.get("instructions", ""), 520),
+                "goal": clip_text_head_tail(subagent.get("goal", ""), 380),
+                "instructions": clip_text_head_tail(subagent.get("instructions", ""), 850),
                 "allowed_actions": subagent.get("allowed_actions", []),
             }),
             "manifest": safe_json(compact_manifest(manifest), max_chars=2200),
-            "context": safe_json(compact_agent_context(state.get("agent_config", {}) or {}, subagent), max_chars=2200),
+            "context": safe_json(compact_agent_context(state.get("agent_config", {}) or {}, subagent), max_chars=2600),
             "summary": clip_text(state.get("summary", ""), 520),
             "variables": safe_json(compact_variables(state.get("variables", {}) or {}, schema), max_chars=1800),
             "memories": compact_memories_for_final(state.get("memories", "")),
@@ -946,13 +968,13 @@ def simple_response_node(state: AgentState):
     schema = state.get("schema", {}) or {}
 
     simple_context = {
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 240),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 160),
+        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 300),
+        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 240),
         "selected_subagent": {
             "id": subagent.get("id", ""),
             "name": subagent.get("name", ""),
-            "goal": clip_text(subagent.get("goal", ""), 220),
-            "instructions": clip_text(subagent.get("instructions", ""), 420),
+            "goal": clip_text_head_tail(subagent.get("goal", ""), 380),
+            "instructions": clip_text_head_tail(subagent.get("instructions", ""), 850),
         },
         "manifest": compact_manifest(manifest),
         "response_brief": manifest.get("response_brief", {}),
@@ -972,12 +994,12 @@ def simple_response_node(state: AgentState):
     ]
 
     system_instruction = f"""
-{clip_text(state.get('system_prompt', ''), 550)}
+{clip_text_head_tail(state.get('system_prompt', ''), 850)}
 
 You are generating a simple low-risk user-facing reply for a configurable assistant.
 Use only this compact config-driven context:
 
-{safe_json(simple_context, max_chars=3300)}
+{safe_json(simple_context, max_chars=4300)}
 
 Rules:
 {safe_json(response_rules)}
@@ -1040,12 +1062,12 @@ def response_node(state: AgentState):
     ]
 
     system_instruction = f"""
-{clip_text(state.get('system_prompt', ''), 950)}
+{clip_text_head_tail(state.get('system_prompt', ''), 1100)}
 
 You are the final user-facing response generator for a configurable multi-tenant assistant.
 
 Context:
-{safe_json(response_context, max_chars=7000)}
+{safe_json(response_context, max_chars=7600)}
 
 Rules:
 {safe_json(response_rules)}
@@ -1101,7 +1123,7 @@ def quality_guard_node(state: AgentState):
             "context": safe_json(compact_agent_context(
                 state.get("agent_config", {}) or {},
                 state.get("selected_subagent", {}) or {},
-            ), max_chars=2200),
+            ), max_chars=2600),
             "analysis": safe_json(compact_analysis(state.get("subagent_analysis", {}) or {}), max_chars=1800),
             "knowledge": clip_text(knowledge, 1000),
             "answer": answer,
