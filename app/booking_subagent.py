@@ -37,9 +37,6 @@ def _today_egypt() -> datetime:
 
 
 def _next_weekday(target_weekday: int, include_today: bool = False) -> str:
-    """
-    target_weekday: Monday=0, Sunday=6
-    """
     today = _today_egypt().date()
     days_ahead = target_weekday - today.weekday()
 
@@ -50,9 +47,6 @@ def _next_weekday(target_weekday: int, include_today: bool = False) -> str:
 
 
 def _parse_day_month(day: int, month: int) -> str:
-    """
-    Converts day/month without year into the next valid upcoming date.
-    """
     today = _today_egypt().date()
     year = today.year
 
@@ -90,13 +84,7 @@ def compose_booking_reply(
     tool_result: Optional[Dict[str, Any]] = None,
     missing_variables: Optional[List[str]] = None,
 ) -> str:
-    """
-    LLM composer for customer-facing booking replies.
-
-    The booking sub-agent controls state and actions.
-    The LLM only writes the natural WhatsApp message.
-    """
-    model = model_for_tier("cheap")
+    model = model_for_tier("normal")
 
     system_prompt = """
 You are the booking reply composer for Apex AutoCare in Egypt.
@@ -155,7 +143,6 @@ Write the customer-facing reply only.
     if answer:
         return answer
 
-    # Safe fallback if the LLM composer fails.
     if stage == "availability_available_waiting_confirmation":
         branch = variables.get("location_branch", "الفرع")
         date = variables.get("appointment_date", "اليوم")
@@ -201,10 +188,6 @@ Write the customer-facing reply only.
 
 
 def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
-    """
-    Generic-ish booking intent detector.
-    Works for Arabic/English appointment/booking language.
-    """
     text = _lower(message)
     variables = variables or {}
 
@@ -212,6 +195,15 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
         return True
 
     if variables.get("booking_stage"):
+        return True
+
+    if variables.get("customer_agreed_to_visit") is True:
+        return True
+
+    if variables.get("intent") == "booking_request":
+        return True
+
+    if variables.get("workflow_stage") == "booking_requested":
         return True
 
     booking_words = [
@@ -226,9 +218,16 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
         "عايز أكشف",
         "اظبط",
         "أظبط",
+        "ظبطلي",
+        "أظبطلي",
+        "حددلي",
         "ميعاد",
         "معاد",
         "موعد",
+        "ياريت",
+        "اه ياريت",
+        "أه ياريت",
+        "لو سمحت",
         "appointment",
         "book",
         "booking",
@@ -237,7 +236,29 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
         "visit",
     ]
 
-    return _has_any(text, booking_words)
+    if _has_any(text, booking_words):
+        return True
+
+    agreement_words = [
+        "اه",
+        "أه",
+        "ايوه",
+        "أيوه",
+        "ايوا",
+        "تمام",
+        "ماشي",
+        "ok",
+        "okay",
+        "yes",
+    ]
+
+    if (
+        variables.get("next_service_action") == "offer_booking"
+        or variables.get("recommended_next_action") == "offer_booking"
+    ) and _has_any(text, agreement_words):
+        return True
+
+    return False
 
 
 def detect_confirmation(message: str) -> bool:
@@ -271,10 +292,6 @@ def detect_confirmation(message: str) -> bool:
 
 
 def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    """
-    First version: branch aliases for the service assistant.
-    Later this can load branches from assistant playbook/schema.
-    """
     existing = variables.get("location_branch") or variables.get("branch")
     if existing:
         return existing
@@ -374,13 +391,6 @@ def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
 
 
 def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    """
-    Handles:
-    - ISO dates: 2026-06-01
-    - relative Arabic: النهارده، بكرة، بعد بكرة
-    - weekdays Arabic/English: الأحد، Monday, next Tuesday
-    - simple June examples: 1 يونيو, June 1
-    """
     existing = variables.get("appointment_date") or variables.get("date")
     if existing:
         return existing
@@ -473,52 +483,6 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def infer_section_fallback(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    """
-    Fallback only.
-
-    Preferred behavior:
-    - Main brain / diagnostic advisor sets recommended_section.
-    - Booking sub-agent uses that section and does not diagnose.
-    """
-    existing = (
-        variables.get("recommended_section")
-        or variables.get("service_needed")
-        or variables.get("section")
-    )
-    if existing:
-        return existing
-
-    text = _lower(message)
-    symptoms = variables.get("symptoms") or []
-
-    if isinstance(symptoms, str):
-        symptoms = [symptoms]
-
-    if "overheating" in symptoms or _has_any(text, ["بتسخن", "سخونة", "حرارة", "المؤشر", "ريداتير", "ردياتير"]):
-        return "Engine Diagnostics"
-
-    if _has_any(text, ["تكييف", "مش بيبرد", "فريون", "ac"]):
-        return "AC Cooling"
-
-    if _has_any(text, ["فرامل", "تيل", "طنابير", "بتصفر"]):
-        return "Brakes & Safety"
-
-    if _has_any(text, ["بطارية", "دينامو", "مارش", "مش بتدور", "تك تك"]):
-        return "Electrical & Battery"
-
-    if _has_any(text, ["عفشة", "دركسيون", "رعشة", "اهتزاز"]):
-        return "Suspension & Steering"
-
-    if _has_any(text, ["زوايا", "كاوتش", "بتحدف", "ترصيص"]):
-        return "Tires & Alignment"
-
-    if _has_any(text, ["فتيس", "نتشة", "نقلات", "غيار"]):
-        return "Transmission"
-
-    return None
-
-
 def collect_slot_variables(
     message: str,
     variables: Dict[str, Any],
@@ -535,9 +499,6 @@ def collect_slot_variables(
         or variables.get("section")
     )
 
-    # Safety fallback:
-    # If the main brain already stored overheating symptoms but section is missing,
-    # use the expected structured service decision to avoid asking the same issue again.
     symptoms = variables.get("symptoms") or []
     issue_description = _lower(variables.get("issue_description", ""))
 
@@ -600,7 +561,7 @@ def ask_for_missing_slot_fields(missing: List[str]) -> str:
         )
 
     if missing_set >= {"location_branch", "appointment_date", "appointment_time"}:
-        return "تمام، أظبطهولك. تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
+        return "تمام، تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
 
     if "recommended_section" in missing_set and len(missing_set) == 1:
         return "تمام، أظبطهولك. بس محتاج أعرف المشكلة أو نوع الكشف المطلوب عشان أحدد القسم الصح."
@@ -748,15 +709,6 @@ def _extract_plate_digits(message: str) -> Optional[str]:
 
 
 def _extract_customer_name(message: str) -> Optional[str]:
-    """
-    Extracts customer name from explicit patterns and simple free-form replies.
-
-    Handles:
-    - اسمي أحمد علي
-    - الاسم أحمد علي
-    - أنا أحمد علي
-    - أحمد علي ٣٤٥٦ نفس الرقم
-    """
     raw_text = _norm(message)
     text = _arabic_digits_to_latin(raw_text)
 
@@ -779,8 +731,6 @@ def _extract_customer_name(message: str) -> Optional[str]:
             if 2 <= len(name) <= 60:
                 return name
 
-    # Free-form fallback:
-    # Remove digits and common confirmation phrases, then keep name-like words.
     cleaned = re.sub(r"\b\d{3,6}\b", " ", text)
     cleaned = re.sub(
         r"(ونفس الرقم|نفس الرقم|اه نفس الرقم|أه نفس الرقم|ايوه نفس الرقم|أيوه نفس الرقم|same number|yes same|this number|use this number)",
@@ -988,20 +938,6 @@ def run_booking_subagent(
     schema: Dict[str, Any],
     tool_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Internal booking sub-agent.
-
-    Handles:
-    - booking intent
-    - branch/date/time collection
-    - check_availability action
-    - availability_result tool output
-    - available-slot confirmation
-    - customer name / plate / phone confirmation
-    - create_booking action
-    - booking_result tool output
-    """
-
     variables = dict(variables or {})
 
     if tool_result and tool_result.get("type") == "availability_result":
@@ -1186,7 +1122,7 @@ def run_booking_subagent(
 
     return {
         "handled": True,
-        "answer": "تمام، هراجعلك الميعاد ده لحظة.",
+        "answer": "",
         "variables": variables,
         "active_subagent": BOOKING_AGENT_NAME,
         "booking_stage": variables["booking_stage"],
