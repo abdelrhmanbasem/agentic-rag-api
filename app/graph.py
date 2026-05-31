@@ -79,7 +79,10 @@ class QualityDecision(BaseModel):
 
 
 # JSON mode is more robust for a generic multi-tenant manifest than strict Pydantic structured output.
-manifest_llm = llm(MODEL_PLANNER, temperature=0).bind(response_format={"type": "json_object"})
+# Capping max_tokens keeps the manifest compact and reduces output waste.
+manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=700).bind(
+    response_format={"type": "json_object"}
+)
 subagent_llm = llm(MODEL_SUBAGENT, temperature=0.2).with_structured_output(SubagentAnalysis)
 response_llm = llm(MODEL_RESPONSE, temperature=0.55, max_tokens=MAX_OUTPUT_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0).with_structured_output(QualityDecision)
@@ -106,20 +109,6 @@ def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
     if max_chars:
         return clip_text(text, max_chars)
     return text
-
-
-def parse_json_object(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-
-    if not isinstance(value, str):
-        return {}
-
-    try:
-        parsed = json.loads(value or "{}")
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
 
 
 def parse_manifest_response(content: Any) -> Dict[str, Any]:
@@ -229,6 +218,8 @@ def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
     Supports both shapes:
     1. {"field_name": {...}}
     2. {"schema": {"field_name": {...}}}
+
+    This keeps the engine generic. Assistant-specific variables come from schema.json.
     """
     if not isinstance(schema, dict):
         return {}
@@ -244,7 +235,6 @@ def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 50) -> Dic
     """
     Generic schema compaction.
     No assistant-specific fields are hardcoded.
-    The engine trusts whatever schema was uploaded for this assistant.
     """
     fields = get_schema_fields(schema)
     if not fields:
@@ -455,10 +445,13 @@ def manifest_confidence(manifest: Dict[str, Any]) -> float:
 
 
 def should_use_simple_response(state: AgentState) -> bool:
-    manifest = state.get("manifest", {}) or {}
+    """
+    Generic express-lane logic.
 
-    if not manifest.get("simple_response_mode"):
-        return False
+    This is not domain hardcoding. It only checks whether the manifest already decided
+    no resources/tools/subagent/guard are needed, risk is low, and confidence is acceptable.
+    """
+    manifest = state.get("manifest", {}) or {}
 
     if manifest.get("needs_tool"):
         return False
@@ -472,10 +465,15 @@ def should_use_simple_response(state: AgentState) -> bool:
     if manifest.get("needs_subagent_reasoning"):
         return False
 
+    if manifest.get("needs_quality_guard"):
+        return False
+
+    if manifest.get("needs_style_repair"):
+        return False
+
     if manifest.get("risk_level") in ["high", "medium"]:
         return False
 
-    # Safe lower threshold: other gates already block risky, tool, KB, memory, and complex cases.
     if manifest_confidence(manifest) < 0.7:
         return False
 
@@ -840,17 +838,17 @@ def simple_response_node(state: AgentState):
     schema = state.get("schema", {}) or {}
 
     simple_context = {
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 260),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 180),
+        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 240),
+        "language_policy": clip_text(agent_config.get("language_policy", ""), 160),
         "selected_subagent": {
             "id": subagent.get("id", ""),
             "name": subagent.get("name", ""),
-            "goal": clip_text(subagent.get("goal", ""), 260),
-            "instructions": clip_text(subagent.get("instructions", ""), 520),
+            "goal": clip_text(subagent.get("goal", ""), 220),
+            "instructions": clip_text(subagent.get("instructions", ""), 420),
         },
         "manifest": compact_manifest(manifest),
         "response_brief": manifest.get("response_brief", {}),
-        "variables": compact_variables(state.get("variables", {}) or {}, schema),
+        "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=16),
     }
 
     response_rules = [
@@ -866,12 +864,12 @@ def simple_response_node(state: AgentState):
     ]
 
     system_instruction = f"""
-{clip_text(state.get('system_prompt', ''), 750)}
+{clip_text(state.get('system_prompt', ''), 550)}
 
 You are generating a simple low-risk user-facing reply for a configurable assistant.
 Use only this compact config-driven context:
 
-{safe_json(simple_context, max_chars=4500)}
+{safe_json(simple_context, max_chars=3300)}
 
 Rules:
 {safe_json(response_rules)}
