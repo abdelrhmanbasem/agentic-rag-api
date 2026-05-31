@@ -62,60 +62,6 @@ def llm(model: str, temperature: float = 0.0, max_tokens: Optional[int] = None):
     return ChatOpenAI(**kwargs)
 
 
-class ResponseBrief(BaseModel):
-    tone: str = ""
-    language: str = ""
-    reply_length: str = ""
-    must_do: List[str] = Field(default_factory=list)
-    must_not_do: List[str] = Field(default_factory=list)
-    next_move: str = ""
-
-
-class UnifiedManifest(BaseModel):
-    user_intent: str = ""
-    selected_subagent_id: str = ""
-
-    conversation_stage: str = ""
-    workflow_stage: str = ""
-    customer_emotion: str = ""
-    user_expectation: str = ""
-
-    risk_level: str = Field(default="low", description="low|medium|high")
-    confidence: float = 0.7
-
-    simple_response_mode: bool = False
-    simple_response_reason: str = ""
-
-    needs_knowledge: bool = False
-    needs_memory: bool = False
-
-    needs_tool: bool = False
-    requested_tool_name: str = ""
-
-    # Structured output works more reliably with JSON strings than arbitrary Dict[str, Any].
-    tool_request_payload_json: str = "{}"
-    missing_tool_inputs: List[str] = Field(default_factory=list)
-
-    needs_subagent_reasoning: bool = False
-    needs_quality_guard: bool = False
-    needs_style_repair: bool = False
-
-    # Structured output works more reliably with JSON strings than arbitrary Dict[str, Any].
-    extracted_updates_json: str = "{}"
-    extracted_deletions: List[str] = Field(default_factory=list)
-
-    response_style: str = ""
-    reply_length: str = ""
-    should_ask_question: bool = False
-    question_goal: str = ""
-    should_offer_next_action: bool = False
-
-    response_brief: ResponseBrief = Field(default_factory=ResponseBrief)
-
-    response_strategy: str = ""
-    reasoning_summary: str = ""
-
-
 class SubagentAnalysis(BaseModel):
     understanding: str = ""
     user_goal: str = ""
@@ -132,7 +78,8 @@ class QualityDecision(BaseModel):
     issues: List[str] = Field(default_factory=list)
 
 
-manifest_llm = llm(MODEL_PLANNER, temperature=0).with_structured_output(UnifiedManifest)
+# JSON mode is more robust for a generic multi-tenant manifest than strict Pydantic structured output.
+manifest_llm = llm(MODEL_PLANNER, temperature=0).bind(response_format={"type": "json_object"})
 subagent_llm = llm(MODEL_SUBAGENT, temperature=0.2).with_structured_output(SubagentAnalysis)
 response_llm = llm(MODEL_RESPONSE, temperature=0.55, max_tokens=MAX_OUTPUT_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0).with_structured_output(QualityDecision)
@@ -173,6 +120,108 @@ def parse_json_object(value: Any) -> Dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def parse_manifest_response(content: Any) -> Dict[str, Any]:
+    text = content.content if hasattr(content, "content") else str(content)
+
+    try:
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Manifest JSON root must be an object.")
+        return parsed
+    except Exception as exc:
+        raise ValueError(
+            f"Could not parse manifest JSON: {exc}. Raw content: {clip_text(text, 1000)}"
+        )
+
+
+def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = {
+        "user_intent": "",
+        "selected_subagent_id": "",
+        "conversation_stage": "",
+        "workflow_stage": "",
+        "customer_emotion": "",
+        "user_expectation": "",
+        "risk_level": "low",
+        "confidence": 0.7,
+
+        "simple_response_mode": False,
+        "simple_response_reason": "",
+
+        "needs_knowledge": False,
+        "needs_memory": False,
+
+        "needs_tool": False,
+        "requested_tool_name": "",
+        "tool_request_payload": {},
+        "missing_tool_inputs": [],
+
+        "needs_subagent_reasoning": False,
+        "needs_quality_guard": False,
+        "needs_style_repair": False,
+
+        "extracted_updates": {},
+        "extracted_deletions": [],
+
+        "response_style": "",
+        "reply_length": "",
+        "should_ask_question": False,
+        "question_goal": "",
+        "should_offer_next_action": False,
+
+        "response_brief": {
+            "tone": "",
+            "language": "",
+            "reply_length": "",
+            "must_do": [],
+            "must_not_do": [],
+            "next_move": "",
+        },
+
+        "response_strategy": "",
+        "reasoning_summary": "",
+    }
+
+    out = dict(defaults)
+    out.update(manifest or {})
+
+    if not isinstance(out.get("tool_request_payload"), dict):
+        out["tool_request_payload"] = {}
+
+    if not isinstance(out.get("extracted_updates"), dict):
+        out["extracted_updates"] = {}
+
+    if not isinstance(out.get("missing_tool_inputs"), list):
+        out["missing_tool_inputs"] = []
+
+    if not isinstance(out.get("extracted_deletions"), list):
+        out["extracted_deletions"] = []
+
+    if not isinstance(out.get("response_brief"), dict):
+        out["response_brief"] = defaults["response_brief"]
+
+    brief = dict(defaults["response_brief"])
+    brief.update(out["response_brief"])
+
+    if not isinstance(brief.get("must_do"), list):
+        brief["must_do"] = []
+
+    if not isinstance(brief.get("must_not_do"), list):
+        brief["must_not_do"] = []
+
+    out["response_brief"] = brief
+
+    try:
+        out["confidence"] = float(out.get("confidence", 0.7) or 0.7)
+    except Exception:
+        out["confidence"] = 0.7
+
+    if out.get("risk_level") not in ["low", "medium", "high"]:
+        out["risk_level"] = "low"
+
+    return out
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,31 +544,6 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def normalize_manifest(raw_manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Converts structured-output-safe JSON string fields back into dictionaries.
-    """
-    manifest = dict(raw_manifest)
-
-    manifest["tool_request_payload"] = parse_json_object(
-        manifest.pop("tool_request_payload_json", "{}")
-    )
-
-    manifest["extracted_updates"] = parse_json_object(
-        manifest.pop("extracted_updates_json", "{}")
-    )
-
-    brief = manifest.get("response_brief", {})
-    if isinstance(brief, BaseModel):
-        brief = brief.model_dump()
-    elif not isinstance(brief, dict):
-        brief = {}
-
-    manifest["response_brief"] = brief
-
-    return manifest
-
-
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -531,18 +555,22 @@ def unified_manifest_node(state: AgentState):
         (
             "system",
             "You are the Unified Manifest brain of a configurable multi-tenant agentic assistant engine. "
-            "In one structured JSON decision, decide routing, variable updates, memory/knowledge/tool needs, risk, conversation stage, response brief, and whether simple response mode is appropriate. "
+            "Return ONLY a valid JSON object. No markdown. No prose. "
             "Do not write the final user-facing answer. "
-            "Do not use hidden business rules. Use only the assistant manifest card, current variables, summary, recent messages, tool result, and latest user message. "
+            "Decide routing, variable updates, memory/knowledge/tool needs, risk, conversation stage, response brief, and whether simple response mode is appropriate. "
+            "Do not use hidden business rules. Use only the assistant manifest card, current variables, summary, tool result, and latest user message. "
             "All domain behavior must come from the assistant config, subagents, tool catalog, variable schema, retrieved knowledge if requested, and conversation context. "
             "Extract only clear durable variable updates from the latest message using the provided variable schema. Do not infer aggressively. "
-            "For extracted_updates_json and tool_request_payload_json, return valid compact JSON object strings. Use '{}' when empty. "
-            "If no durable variables changed, extracted_updates_json must be '{}', and extracted_deletions must be empty. "
             "Use simple_response_mode only for low-risk messages that can be answered well from config/context without memory, knowledge, tools, subagent reasoning, or quality guard. "
             "Do not use simple_response_mode when the message requires business facts, policy facts, tool results, external actions, high/medium risk handling, uncertain facts, or multi-step reasoning. "
-            "If a tool is needed, set needs_tool=true, requested_tool_name, tool_request_payload_json if known, and missing_tool_inputs if any. "
             "Never claim tool results, availability, prices, policies, IDs, or external facts unless they are present in tool_result, variables, conversation context, or retrieved knowledge. "
-            "Create a response_brief that guides the response LLM: tone, language, reply_length, must_do, must_not_do, and next_move.",
+            "The JSON object must use exactly these top-level keys: "
+            "user_intent, selected_subagent_id, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
+            "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
+            "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, extracted_updates, extracted_deletions, response_style, reply_length, "
+            "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
+            "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move. "
+            "extracted_updates and tool_request_payload must be JSON objects. extracted_deletions and missing_tool_inputs must be arrays.",
         ),
         (
             "user",
@@ -551,7 +579,7 @@ def unified_manifest_node(state: AgentState):
             "Current variables:\n{variables}\n\n"
             "Tool result if any:\n{tool_result}\n\n"
             "Latest user message:\n{message}\n\n"
-            "Return the UnifiedManifest JSON. selected_subagent_id must be one of the configured subagent ids.",
+            "Return the manifest JSON. selected_subagent_id must be one of the configured subagent ids.",
         ),
     ])
 
@@ -563,10 +591,13 @@ def unified_manifest_node(state: AgentState):
             "tool_result": safe_json(tool_result, max_chars=2200),
             "message": message,
         })
-        manifest = normalize_manifest(decision.model_dump())
+        manifest = parse_manifest_response(decision)
+        manifest = normalize_json_manifest(manifest)
+
     except Exception as exc:
         subagents = agent_config.get("subagents") or [{"id": "general"}]
         error_text = f"{type(exc).__name__}: {exc}"
+
         manifest = {
             "user_intent": "unknown",
             "selected_subagent_id": subagents[0].get("id", "general"),
