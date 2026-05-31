@@ -33,6 +33,7 @@ BRANCH_DISPLAY_NAMES = {
 
 
 AREA_COORDINATES = {
+    # East / New Cairo side
     "Obour": (30.2285, 31.4799),
     "Shorouk": (30.1417, 31.6167),
     "Madinaty": (30.0934, 31.6385),
@@ -45,6 +46,7 @@ AREA_COORDINATES = {
     "Fifth Settlement": (30.0085, 31.4815),
     "First Settlement": (30.0610, 31.4430),
 
+    # Cairo center / east
     "Nasr City Area": (30.0561, 31.3300),
     "Heliopolis": (30.0912, 31.3220),
     "Nozha": (30.1114, 31.3490),
@@ -54,6 +56,7 @@ AREA_COORDINATES = {
     "Matariya": (30.1237, 31.3136),
     "Salam City": (30.1706, 31.4215),
     "Marg": (30.1521, 31.3359),
+    "Shubra": (30.1056, 31.2459),
     "Mokattam": (30.0217, 31.3034),
     "Downtown Cairo": (30.0444, 31.2357),
     "Zamalek": (30.0617, 31.2195),
@@ -61,12 +64,14 @@ AREA_COORDINATES = {
     "Abbasiya": (30.0728, 31.2806),
     "Ramses": (30.0626, 31.2477),
 
+    # South Cairo
     "Maadi Area": (29.9602, 31.2569),
     "Zahraa Maadi": (29.9689, 31.3147),
     "Katameya": (29.9953, 31.4314),
     "Helwan": (29.8414, 31.3008),
     "Tora": (29.9368, 31.2704),
 
+    # Giza / west
     "Giza": (30.0131, 31.2089),
     "Dokki": (30.0384, 31.2122),
     "Mohandessin": (30.0566, 31.2006),
@@ -80,6 +85,7 @@ AREA_COORDINATES = {
     "Hadayek October": (29.9140, 30.8655),
     "Hadayek Ahram": (29.9544, 31.0965),
 
+    # Alexandria
     "Alexandria Area": (31.2001, 29.9187),
     "Smouha": (31.2089, 29.9447),
     "Sidi Gaber": (31.2183, 29.9422),
@@ -92,6 +98,7 @@ AREA_COORDINATES = {
 
 
 AREA_ALIASES = {
+    # Obour
     "el obour": "Obour",
     "el-obour": "Obour",
     "al obour": "Obour",
@@ -102,6 +109,7 @@ AREA_ALIASES = {
     "العبور": "Obour",
     "عبور": "Obour",
 
+    # East / New Cairo side
     "الشروق": "Shorouk",
     "شروق": "Shorouk",
     "shorouk": "Shorouk",
@@ -135,6 +143,7 @@ AREA_ALIASES = {
     "التجمع الأول": "First Settlement",
     "first settlement": "First Settlement",
 
+    # Cairo center / east
     "مدينة نصر": "Nasr City Area",
     "مدينه نصر": "Nasr City Area",
     "nasr city": "Nasr City Area",
@@ -159,6 +168,15 @@ AREA_ALIASES = {
     "el salam": "Salam City",
     "المرج": "Marg",
     "marg": "Marg",
+    "شبرا": "Shubra",
+    "شبرا مصر": "Shubra",
+    "shubra": "Shubra",
+    "shobra": "Shubra",
+    "shubra masr": "Shubra",
+    "روض الفرج": "Shubra",
+    "rod el farag": "Shubra",
+    "الساحل": "Shubra",
+    "el sahel": "Shubra",
     "المقطم": "Mokattam",
     "mokattam": "Mokattam",
     "وسط البلد": "Downtown Cairo",
@@ -174,6 +192,7 @@ AREA_ALIASES = {
     "رمسيس": "Ramses",
     "ramses": "Ramses",
 
+    # South Cairo
     "المعادي": "Maadi Area",
     "معادي": "Maadi Area",
     "maadi": "Maadi Area",
@@ -188,6 +207,7 @@ AREA_ALIASES = {
     "طره": "Tora",
     "tora": "Tora",
 
+    # Giza / west
     "giza": "Giza",
     "الجيزة": "Giza",
     "الجيزه": "Giza",
@@ -226,6 +246,7 @@ AREA_ALIASES = {
     "حدائق الأهرام": "Hadayek Ahram",
     "hadayek ahram": "Hadayek Ahram",
 
+    # Alexandria
     "اسكندرية": "Alexandria Area",
     "إسكندرية": "Alexandria Area",
     "الاسكندرية": "Alexandria Area",
@@ -263,6 +284,11 @@ def _lower(value: Any) -> str:
     return _norm(value).lower()
 
 
+def _has_any(text: str, words: List[str]) -> bool:
+    text = _lower(text)
+    return any(word.lower() in text for word in words)
+
+
 def parse_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -278,15 +304,10 @@ def parse_bool(value: Any) -> bool:
     if text in {"true", "1", "yes", "y", "available", "متاح"}:
         return True
 
-    if text in {"false", "0", "no", "n", "unavailable", "not_available", "غير متاح"}:
+    if text in {"false", "0", "no", "n", "unavailable", "not_available", "not available", "غير متاح"}:
         return False
 
     return False
-
-
-def _has_any(text: str, words: List[str]) -> bool:
-    text = _lower(text)
-    return any(w.lower() in text for w in words)
 
 
 def _clean_phone_from_user_id(user_id: str) -> str:
@@ -324,14 +345,12 @@ def _parse_day_month(day: int, month: int) -> str:
 
 
 def _arabic_digits_to_latin(text: str) -> str:
-    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
-    eastern_digits = "۰۱۲۳۴۵۶۷۸۹"
     result = str(text)
 
-    for i, digit in enumerate(arabic_digits):
+    for i, digit in enumerate("٠١٢٣٤٥٦٧٨٩"):
         result = result.replace(digit, str(i))
 
-    for i, digit in enumerate(eastern_digits):
+    for i, digit in enumerate("۰۱۲۳۴۵۶۷۸۹"):
         result = result.replace(digit, str(i))
 
     return result
@@ -351,7 +370,6 @@ def _distance_km(coord_a: Tuple[float, float], coord_b: Tuple[float, float]) -> 
     lat2, lon2 = coord_b
 
     radius = 6371.0
-
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
@@ -372,111 +390,27 @@ def branch_display_name(branch: str) -> str:
     return BRANCH_DISPLAY_NAMES.get(branch, branch or "الفرع")
 
 
-def get_tool_reply_templates(assistant: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(assistant, dict):
-        return {}
-
-    templates = assistant.get("tool_reply_templates") or {}
-
-    if isinstance(templates, dict):
-        return templates
-
-    if isinstance(templates, str):
-        try:
-            parsed = json.loads(templates)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-
-    return {}
-
-
-def map_tool_reason(reason: str, reason_map: Dict[str, str]) -> str:
-    raw_reason = _norm(reason)
-    reason_l = _lower(raw_reason)
+def normalize_reason_for_customer(reason: str) -> str:
+    reason_l = _lower(reason)
 
     if not reason_l:
-        return "غير متاح حاليًا"
+        return "المعاد ده مش متاح حاليًا"
 
-    if isinstance(reason_map, dict):
-        for key, mapped_reason in reason_map.items():
-            if _lower(key) in reason_l:
-                return _norm(mapped_reason)
+    if "exact slot not listed" in reason_l:
+        return "الوقت ده مش مفتوح في جدول المواعيد"
 
-    return raw_reason
+    if "slot is full" in reason_l or "fully booked" in reason_l or "full" in reason_l:
+        return "المعاد ده اتحجز بالكامل"
 
+    if (
+        "equipment" in reason_l
+        or "maintenance" in reason_l
+        or "manager blocked" in reason_l
+        or "blocked" in reason_l
+    ):
+        return "القسم مقفول في الوقت ده بسبب صيانة/تجهيزات"
 
-def render_reply_template(template: str, values: Dict[str, Any]) -> str:
-    safe_values = {}
-
-    for key, value in (values or {}).items():
-        safe_values[key] = "" if value is None else value
-
-    try:
-        return str(template).format(**safe_values)
-    except Exception:
-        return str(template)
-
-
-def build_tool_template_values(
-    *,
-    variables: Dict[str, Any],
-    tool_result: Dict[str, Any],
-    reason_text: str = "",
-) -> Dict[str, Any]:
-    requested = tool_result.get("requested") or {}
-
-    branch = variables.get("location_branch") or requested.get("branch")
-    date = variables.get("appointment_date") or requested.get("date")
-    time = variables.get("appointment_time") or requested.get("time")
-    section = (
-        variables.get("customer_facing_section")
-        or variables.get("recommended_section")
-        or variables.get("service_needed")
-        or requested.get("section")
-    )
-
-    return {
-        "branch": branch_display_name(branch),
-        "branch_internal": branch or "",
-        "date": date or "",
-        "time": time or "",
-        "section": section or "",
-        "reason": reason_text or "",
-        "nearest_slots_text": (
-            variables.get("nearest_slots_text")
-            or tool_result.get("nearest_slots_text")
-            or ""
-        ),
-    }
-
-
-def compose_tool_reply_from_template(
-    *,
-    assistant: Dict[str, Any],
-    tool_type: str,
-    status: str,
-    template_key: str,
-    variables: Dict[str, Any],
-    tool_result: Dict[str, Any],
-    reason_text: str = "",
-) -> str:
-    templates = get_tool_reply_templates(assistant)
-    tool_templates = templates.get(tool_type, {}) if isinstance(templates, dict) else {}
-    status_templates = tool_templates.get(status, {}) if isinstance(tool_templates, dict) else {}
-
-    template = status_templates.get(template_key)
-
-    if not template:
-        return ""
-
-    values = build_tool_template_values(
-        variables=variables,
-        tool_result=tool_result,
-        reason_text=reason_text,
-    )
-
-    return render_reply_template(template, values).strip()
+    return reason
 
 
 def parse_availability_tool_result(tool_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -494,15 +428,12 @@ def parse_availability_tool_result(tool_result: Dict[str, Any]) -> Dict[str, Any
 
     exact_slot_found = parse_bool(read.get("exact_slot_found"))
 
-    available = (
-        exact_available is True
-        or slot_status == "available"
-    )
+    available = exact_available is True or slot_status == "available"
 
     if slot_status in {"unavailable", "not_available", "not available"}:
         available = False
 
-    unavailable_reason = (
+    raw_reason = (
         read.get("unavailable_reason")
         or read.get("reason")
         or read.get("unavailableReason")
@@ -517,7 +448,8 @@ def parse_availability_tool_result(tool_result: Dict[str, Any]) -> Dict[str, Any
         "slot_status": slot_status,
         "exact_slot_found": exact_slot_found,
         "exact_slot_available": exact_available,
-        "unavailable_reason": unavailable_reason,
+        "unavailable_reason": normalize_reason_for_customer(raw_reason),
+        "raw_unavailable_reason": raw_reason,
         "nearest_slots": nearest_slots,
         "nearest_slots_text": nearest_slots_text,
         "requested": requested,
@@ -525,115 +457,434 @@ def parse_availability_tool_result(tool_result: Dict[str, Any]) -> Dict[str, Any
     }
 
 
-def compose_booking_reply(
-    *,
-    user_message: str,
-    variables: Dict[str, Any],
-    stage: str,
-    instruction: str,
-    tool_result: Optional[Dict[str, Any]] = None,
-    missing_variables: Optional[List[str]] = None,
-) -> str:
-    model = model_for_tier("normal")
-    tool_result = tool_result or {}
+def extract_user_area(message: str) -> Optional[str]:
+    text = _clean_location_text(message)
+    sorted_aliases = sorted(AREA_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
 
-    system_prompt = """
-You are the booking reply composer.
+    for alias, area in sorted_aliases:
+        alias_clean = _clean_location_text(alias)
 
-You receive tool results from the availability system.
-The tool result is the source of truth.
-You must read all fields carefully before answering.
+        if not alias_clean:
+            continue
 
-Critical rules:
-- If tool_result.available is false, never say the slot is available.
-- If tool_result.available is true, never say the slot is unavailable.
-- If unavailable_reason exists, explain it naturally to the customer.
-- If nearest_slots_text exists, offer those nearest slots.
-- If no nearest slots exist and the slot is unavailable, ask whether to try another time in the same branch or another nearby branch.
-- Use natural Egyptian Arabic unless the customer wrote in English.
-- Do not mention JSON, tools, backend, variables, or internal logic.
-- Keep it short and helpful.
-"""
+        pattern = r"(?<!\w)" + re.escape(alias_clean) + r"(?!\w)"
 
-    prompt = f"""
-Latest user message:
-{user_message}
+        if re.search(pattern, text):
+            return area
 
-Current booking stage:
-{stage}
+    return None
 
-Instruction:
-{instruction}
 
-Known variables:
-{variables}
+def recommend_nearest_branches_for_area(area: str, limit: int = 2) -> List[Dict[str, Any]]:
+    area_coord = AREA_COORDINATES.get(_norm(area))
 
-Tool result:
-{tool_result}
+    if not area_coord:
+        return []
 
-Missing variables:
-{missing_variables or []}
+    ranked = []
 
-Write the customer-facing reply only.
-"""
-
-    try:
-        answer = chat_text(
-            model,
-            [
-                {"role": "system", "content": system_prompt.strip()},
-                {"role": "user", "content": prompt.strip()},
-            ],
-            max_tokens=260,
-        ).strip()
-    except Exception:
-        answer = ""
-
-    if answer:
-        return answer
-
-    if stage == "availability_available_waiting_confirmation":
-        branch = branch_display_name(variables.get("location_branch", "الفرع"))
-        date = variables.get("appointment_date", "اليوم")
-        time = variables.get("appointment_time", "الوقت")
-        return f"تمام، الميعاد متاح في فرع {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
-
-    if stage == "availability_unavailable_waiting_new_slot":
-        reason = variables.get("unavailable_reason") or "المعاد ده مش متاح حاليًا"
-        nearest = _norm(variables.get("nearest_slots_text"))
-        if nearest:
-            return (
-                f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
-                f"بس لقيتلك أقرب مواعيد متاحة:\n\n{nearest}\n\n"
-                "تحب أثبتلك واحد منهم؟"
-            )
-        return (
-            f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
-            "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
+    for branch, branch_coord in BRANCH_COORDINATES.items():
+        distance = _distance_km(area_coord, branch_coord)
+        ranked.append(
+            {
+                "branch": branch,
+                "branch_ar": branch_display_name(branch),
+                "distance_km_estimate": round(distance, 1),
+            }
         )
 
-    if stage == "booking_collecting_customer_details":
-        return ask_for_missing_confirmation_fields(missing_variables or [])
+    ranked.sort(key=lambda item: item["distance_km_estimate"])
 
-    if stage == "booking_create_ready":
-        return "تمام، هثبتلك الحجز دلوقتي."
+    return ranked[:limit]
 
-    if stage == "booking_confirmed":
-        visit_id = variables.get("visit_id", "")
-        branch = branch_display_name(variables.get("location_branch", "الفرع"))
-        date = variables.get("appointment_date", "اليوم")
-        time = variables.get("appointment_time", "الوقت")
-        section = variables.get("customer_facing_section") or variables.get("recommended_section") or "القسم"
 
-        if visit_id:
-            return (
-                f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. "
-                f"ميعادك في فرع {branch} يوم {date} الساعة {time} في {section}."
-            )
+def recommend_branch_for_area(area: str) -> Optional[str]:
+    ranked = recommend_nearest_branches_for_area(area, limit=1)
 
-        return f"تمام، كده الحجز اتأكد. ميعادك في فرع {branch} يوم {date} الساعة {time} في {section}."
+    if not ranked:
+        return None
 
-    return "تمام، معاك."
+    return ranked[0]["branch"]
+
+
+def detect_nearest_branch_question(message: str) -> bool:
+    text = _clean_location_text(message)
+
+    question_markers = [
+        "اقرب فرع",
+        "أقرب فرع",
+        "ايه اقرب فرع",
+        "إيه أقرب فرع",
+        "اقرب فرع ليا",
+        "أقرب فرع ليا",
+        "اقرب مركز",
+        "أقرب مركز",
+        "في فرع هنا",
+        "لو في فرع هنا",
+        "في مركز هنا",
+        "فرع هنا",
+        "مركز هنا",
+        "قريب مني",
+        "قريب ليا",
+        "قريبة مني",
+        "قريبه مني",
+        "nearest branch",
+        "closest branch",
+        "near branch",
+        "nearest center",
+        "closest center",
+    ]
+
+    if any(marker.lower() in text for marker in question_markers):
+        return True
+
+    location_intro_markers = [
+        "انا في",
+        "أنا في",
+        "انا ساكن في",
+        "انا قريب من",
+        "أنا قريب من",
+        "i am in",
+        "i'm in",
+        "im in",
+        "near",
+        "close to",
+    ]
+
+    if any(marker.lower() in text for marker in location_intro_markers):
+        return bool(extract_user_area(message))
+
+    return False
+
+
+def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
+    existing = variables.get("location_branch") or variables.get("branch")
+
+    if existing:
+        return existing
+
+    text = _clean_location_text(message)
+
+    branch_map = {
+        "new cairo": "New Cairo",
+        "القاهرة الجديدة": "New Cairo",
+        "القاهره الجديده": "New Cairo",
+        "التجمع": "New Cairo",
+        "tagamoa": "New Cairo",
+        "tagamo3": "New Cairo",
+        "nasr city": "Nasr City",
+        "مدينة نصر": "Nasr City",
+        "مدينه نصر": "Nasr City",
+        "sheikh zayed": "Sheikh Zayed",
+        "zayed": "Sheikh Zayed",
+        "زايد": "Sheikh Zayed",
+        "الشيخ زايد": "Sheikh Zayed",
+        "maadi": "Maadi",
+        "المعادي": "Maadi",
+        "معادي": "Maadi",
+        "alexandria": "Alexandria",
+        "alex": "Alexandria",
+        "اسكندرية": "Alexandria",
+        "إسكندرية": "Alexandria",
+        "الإسكندرية": "Alexandria",
+        "الاسكندرية": "Alexandria",
+    }
+
+    sorted_branches = sorted(branch_map.items(), key=lambda item: len(item[0]), reverse=True)
+
+    for key, branch in sorted_branches:
+        key_clean = _clean_location_text(key)
+
+        if key_clean in text:
+            return branch
+
+    return None
+
+
+def _normalize_time(hour: int, minute: int = 0, pm_hint: bool = False, am_hint: bool = False) -> str:
+    if pm_hint and hour < 12:
+        hour += 12
+
+    if am_hint and hour == 12:
+        hour = 0
+
+    return f"{hour:02d}:{minute:02d}"
+
+
+def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
+    existing = variables.get("appointment_time") or variables.get("time")
+
+    if existing:
+        return existing
+
+    text = _lower(_arabic_digits_to_latin(message))
+
+    phrase_map = {
+        "2 الظهر": "14:00",
+        "2 ظهر": "14:00",
+        "2 العصر": "14:00",
+        "10 الصبح": "10:00",
+        "10 صباح": "10:00",
+        "12 الظهر": "12:00",
+        "12 ظهر": "12:00",
+        "4 العصر": "16:00",
+        "4 مساء": "16:00",
+        "6 المغرب": "18:00",
+        "6 مساء": "18:00",
+    }
+
+    for phrase, value in phrase_map.items():
+        if phrase in text:
+            return value
+
+    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+
+    if match:
+        return _normalize_time(int(match.group(1)), int(match.group(2)))
+
+    match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
+
+    if match:
+        hour = int(match.group(1))
+        suffix = match.group(2)
+        return _normalize_time(hour, 0, pm_hint=suffix == "pm", am_hint=suffix == "am")
+
+    match = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
+
+    if match:
+        hour = int(match.group(1))
+        pm_hint = any(x in text for x in ["مساء", "بالليل", "الظهر", "العصر", "المغرب", "pm"])
+        am_hint = any(x in text for x in ["صباح", "الصبح", "am"])
+        return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
+
+    match = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
+
+    if match:
+        hour = int(match.group(1))
+        hint = match.group(2)
+        pm_hint = hint in ["الظهر", "ظهر", "العصر", "مساء", "المغرب", "بالليل"]
+        am_hint = hint in ["الصبح", "صباح"]
+        return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
+
+    return None
+
+
+def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
+    existing = variables.get("appointment_date") or variables.get("date")
+
+    if existing:
+        return existing
+
+    text = _lower(_arabic_digits_to_latin(message))
+    today = _today_egypt().date()
+
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+
+    if match:
+        return match.group(1)
+
+    if any(x in text for x in ["بعد بكرة", "بعد بكره", "day after tomorrow"]):
+        return (today + timedelta(days=2)).isoformat()
+
+    if any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"]):
+        return today.isoformat()
+
+    if any(x in text for x in ["بكرة", "بكره", "tomorrow"]):
+        return (today + timedelta(days=1)).isoformat()
+
+    weekday_map = {
+        "الاثنين": 0,
+        "الإثنين": 0,
+        "الاتنين": 0,
+        "اتنين": 0,
+        "التلات": 1,
+        "الثلاثاء": 1,
+        "الثلاثا": 1,
+        "تلات": 1,
+        "الأربعاء": 2,
+        "الاربعاء": 2,
+        "اربع": 2,
+        "الخميس": 3,
+        "خميس": 3,
+        "الجمعة": 4,
+        "الجمعه": 4,
+        "جمعه": 4,
+        "جمعة": 4,
+        "السبت": 5,
+        "سبت": 5,
+        "الأحد": 6,
+        "الاحد": 6,
+        "حد": 6,
+    }
+
+    for word, weekday in weekday_map.items():
+        if word in text:
+            include_today = any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"])
+            return _next_weekday(weekday, include_today=include_today)
+
+    english_weekday_map = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+
+    for word, weekday in english_weekday_map.items():
+        if word in text:
+            include_today = "today" in text
+            return _next_weekday(weekday, include_today=include_today)
+
+    june_map = {
+        "1 يونيو": 1,
+        "واحد يونيو": 1,
+        "اول يونيو": 1,
+        "أول يونيو": 1,
+        "2 يونيو": 2,
+        "اتنين يونيو": 2,
+        "تاني يونيو": 2,
+        "3 يونيو": 3,
+        "تلاتة يونيو": 3,
+    }
+
+    for phrase, day in june_map.items():
+        if phrase in text:
+            return _parse_day_month(day, 6)
+
+    match = re.search(r"\b(?:june)\s+(\d{1,2})\b", text)
+
+    if match:
+        return _parse_day_month(int(match.group(1)), 6)
+
+    match = re.search(r"\b(\d{1,2})\s+(?:june)\b", text)
+
+    if match:
+        return _parse_day_month(int(match.group(1)), 6)
+
+    return None
+
+
+def collect_slot_variables(message: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+    variables = dict(variables or {})
+
+    branch = extract_branch(message, variables)
+    date = extract_date(message, variables)
+    time = extract_time(message, variables)
+    user_area = extract_user_area(message)
+
+    if user_area:
+        variables["user_area"] = user_area
+
+    if not branch and user_area:
+        recommended_branch = recommend_branch_for_area(user_area)
+        nearest_branches = recommend_nearest_branches_for_area(user_area, limit=2)
+
+        if recommended_branch:
+            branch = recommended_branch
+            variables["location_branch"] = recommended_branch
+            variables["branch_recommendation_reason"] = f"nearest_known_branch_for_{user_area}"
+            variables["nearest_branch_options"] = nearest_branches
+
+    if detect_nearest_branch_question(message):
+        variables["nearest_branch_question"] = True
+
+    section = (
+        variables.get("recommended_section")
+        or variables.get("service_needed")
+        or variables.get("section")
+    )
+
+    symptoms = variables.get("symptoms") or []
+    issue_description = _lower(variables.get("issue_description", ""))
+
+    if not section:
+        if (
+            (isinstance(symptoms, list) and any("overheating" in str(s).lower() for s in symptoms))
+            or "سخونة" in issue_description
+            or "بتسخن" in issue_description
+            or "المؤشر بيعلى" in issue_description
+        ):
+            section = "Engine Diagnostics"
+            variables["recommended_section"] = section
+            variables["service_needed"] = section
+            variables.setdefault("customer_facing_section", "قسم كشف الموتور")
+
+    if branch:
+        variables["location_branch"] = branch
+
+    if date:
+        variables["appointment_date"] = date
+
+    if time:
+        variables["appointment_time"] = time
+
+    if section:
+        variables["recommended_section"] = section
+        variables["service_needed"] = section
+
+    return variables
+
+
+def missing_slot_fields(variables: Dict[str, Any]) -> List[str]:
+    missing = []
+
+    if not variables.get("location_branch"):
+        missing.append("location_branch")
+
+    if not variables.get("appointment_date"):
+        missing.append("appointment_date")
+
+    if not variables.get("appointment_time"):
+        missing.append("appointment_time")
+
+    if not variables.get("recommended_section") and not variables.get("service_needed"):
+        missing.append("recommended_section")
+
+    return missing
+
+
+def missing_confirmation_fields(variables: Dict[str, Any]) -> List[str]:
+    missing = []
+
+    if not variables.get("customer_full_name"):
+        missing.append("customer_full_name")
+
+    if not variables.get("plate_digits"):
+        missing.append("plate_digits")
+
+    if not variables.get("phone_confirmed"):
+        missing.append("phone_confirmed")
+
+    return missing
+
+
+def action_check_availability(variables: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "check_availability",
+        "payload": {
+            "branch": variables.get("location_branch"),
+            "date": variables.get("appointment_date"),
+            "time": variables.get("appointment_time"),
+            "section": variables.get("recommended_section") or variables.get("service_needed"),
+        },
+    }
+
+
+def action_create_booking(variables: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "create_booking",
+        "payload": {
+            "branch": variables.get("location_branch"),
+            "date": variables.get("appointment_date"),
+            "time": variables.get("appointment_time"),
+            "section": variables.get("recommended_section") or variables.get("service_needed"),
+            "customer_full_name": variables.get("customer_full_name"),
+            "plate_digits": variables.get("plate_digits"),
+            "phone_number": variables.get("phone_number"),
+        },
+    }
 
 
 def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
@@ -739,609 +990,8 @@ def detect_confirmation(message: str) -> bool:
         "احجزه",
         "احجزلي",
     ]
+
     return _has_any(message, confirmation_words)
-
-
-def detect_nearest_branch_question(message: str) -> bool:
-    text = _clean_location_text(message)
-
-    question_markers = [
-        "اقرب فرع",
-        "أقرب فرع",
-        "اقرب مركز",
-        "أقرب مركز",
-        "في فرع هنا",
-        "في مركز هنا",
-        "فرع هنا",
-        "مركز هنا",
-        "قريب مني",
-        "قريب ليا",
-        "قريبة مني",
-        "قريبه مني",
-        "nearest branch",
-        "closest branch",
-        "near branch",
-        "nearest center",
-        "closest center",
-    ]
-
-    if any(marker.lower() in text for marker in question_markers):
-        return True
-
-    location_intro_markers = [
-        "انا في",
-        "أنا في",
-        "انا ساكن في",
-        "انا قريب من",
-        "أنا قريب من",
-        "i am in",
-        "i'm in",
-        "im in",
-        "near",
-        "close to",
-    ]
-
-    if any(marker.lower() in text for marker in location_intro_markers):
-        area = extract_user_area(message)
-        return bool(area)
-
-    return False
-
-
-def extract_user_area(message: str) -> Optional[str]:
-    text = _clean_location_text(message)
-    sorted_aliases = sorted(AREA_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
-
-    for alias, area in sorted_aliases:
-        alias_clean = _clean_location_text(alias)
-        if not alias_clean:
-            continue
-
-        pattern = r"(?<!\w)" + re.escape(alias_clean) + r"(?!\w)"
-        if re.search(pattern, text):
-            return area
-
-    return None
-
-
-def recommend_branch_for_area(area: str) -> Optional[str]:
-    area_coord = AREA_COORDINATES.get(_norm(area))
-
-    if not area_coord:
-        return None
-
-    nearest_branch = None
-    nearest_distance = None
-
-    for branch, branch_coord in BRANCH_COORDINATES.items():
-        distance = _distance_km(area_coord, branch_coord)
-        if nearest_distance is None or distance < nearest_distance:
-            nearest_branch = branch
-            nearest_distance = distance
-
-    return nearest_branch
-
-
-def recommend_nearest_branches_for_area(area: str, limit: int = 2) -> List[Dict[str, Any]]:
-    area_coord = AREA_COORDINATES.get(_norm(area))
-
-    if not area_coord:
-        return []
-
-    ranked = []
-
-    for branch, branch_coord in BRANCH_COORDINATES.items():
-        distance = _distance_km(area_coord, branch_coord)
-        ranked.append(
-            {
-                "branch": branch,
-                "branch_ar": branch_display_name(branch),
-                "distance_km_estimate": round(distance, 1),
-            }
-        )
-
-    ranked.sort(key=lambda item: item["distance_km_estimate"])
-    return ranked[:limit]
-
-
-def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    existing = variables.get("location_branch") or variables.get("branch")
-    if existing:
-        return existing
-
-    text = _clean_location_text(message)
-
-    branch_map = {
-        "new cairo": "New Cairo",
-        "القاهرة الجديدة": "New Cairo",
-        "القاهره الجديده": "New Cairo",
-        "التجمع": "New Cairo",
-        "tagamoa": "New Cairo",
-        "tagamo3": "New Cairo",
-        "nasr city": "Nasr City",
-        "مدينة نصر": "Nasr City",
-        "مدينه نصر": "Nasr City",
-        "sheikh zayed": "Sheikh Zayed",
-        "zayed": "Sheikh Zayed",
-        "زايد": "Sheikh Zayed",
-        "الشيخ زايد": "Sheikh Zayed",
-        "maadi": "Maadi",
-        "المعادي": "Maadi",
-        "معادي": "Maadi",
-        "alexandria": "Alexandria",
-        "alex": "Alexandria",
-        "اسكندرية": "Alexandria",
-        "إسكندرية": "Alexandria",
-        "الإسكندرية": "Alexandria",
-        "الاسكندرية": "Alexandria",
-    }
-
-    sorted_branches = sorted(branch_map.items(), key=lambda item: len(item[0]), reverse=True)
-
-    for key, branch in sorted_branches:
-        key_clean = _clean_location_text(key)
-        if key_clean in text:
-            return branch
-
-    return None
-
-
-def _normalize_time(hour: int, minute: int = 0, pm_hint: bool = False, am_hint: bool = False) -> str:
-    if pm_hint and hour < 12:
-        hour += 12
-
-    if am_hint and hour == 12:
-        hour = 0
-
-    return f"{hour:02d}:{minute:02d}"
-
-
-def extract_time(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    existing = variables.get("appointment_time") or variables.get("time")
-    if existing:
-        return existing
-
-    text = _lower(_arabic_digits_to_latin(message))
-
-    phrase_map = {
-        "2 الظهر": "14:00",
-        "2 ظهر": "14:00",
-        "2 العصر": "14:00",
-        "10 الصبح": "10:00",
-        "10 صباح": "10:00",
-        "12 الظهر": "12:00",
-        "12 ظهر": "12:00",
-        "4 العصر": "16:00",
-        "4 مساء": "16:00",
-        "6 المغرب": "18:00",
-        "6 مساء": "18:00",
-    }
-
-    for phrase, value in phrase_map.items():
-        if phrase in text:
-            return value
-
-    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
-    if match:
-        return _normalize_time(int(match.group(1)), int(match.group(2)))
-
-    match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
-    if match:
-        hour = int(match.group(1))
-        suffix = match.group(2)
-        return _normalize_time(hour, 0, pm_hint=suffix == "pm", am_hint=suffix == "am")
-
-    match = re.search(r"(?:الساعة|الساعه|at)\s*(\d{1,2})", text)
-    if match:
-        hour = int(match.group(1))
-        pm_hint = any(x in text for x in ["مساء", "بالليل", "الظهر", "العصر", "المغرب", "pm"])
-        am_hint = any(x in text for x in ["صباح", "الصبح", "am"])
-        return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
-
-    match = re.search(r"\b(\d{1,2})\s*(الصبح|صباح|الظهر|ظهر|العصر|مساء|المغرب|بالليل)\b", text)
-    if match:
-        hour = int(match.group(1))
-        hint = match.group(2)
-        pm_hint = hint in ["الظهر", "ظهر", "العصر", "مساء", "المغرب", "بالليل"]
-        am_hint = hint in ["الصبح", "صباح"]
-        return _normalize_time(hour, 0, pm_hint=pm_hint, am_hint=am_hint)
-
-    return None
-
-
-def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
-    existing = variables.get("appointment_date") or variables.get("date")
-    if existing:
-        return existing
-
-    text = _lower(_arabic_digits_to_latin(message))
-    today = _today_egypt().date()
-
-    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
-    if match:
-        return match.group(1)
-
-    if any(x in text for x in ["بعد بكرة", "بعد بكره", "day after tomorrow"]):
-        return (today + timedelta(days=2)).isoformat()
-
-    if any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"]):
-        return today.isoformat()
-
-    if any(x in text for x in ["بكرة", "بكره", "tomorrow"]):
-        return (today + timedelta(days=1)).isoformat()
-
-    weekday_map = {
-        "الاثنين": 0,
-        "الإثنين": 0,
-        "الاتنين": 0,
-        "اتنين": 0,
-        "التلات": 1,
-        "الثلاثاء": 1,
-        "الثلاثا": 1,
-        "تلات": 1,
-        "الأربعاء": 2,
-        "الاربعاء": 2,
-        "اربع": 2,
-        "الخميس": 3,
-        "خميس": 3,
-        "الجمعة": 4,
-        "الجمعه": 4,
-        "جمعه": 4,
-        "جمعة": 4,
-        "السبت": 5,
-        "سبت": 5,
-        "الأحد": 6,
-        "الاحد": 6,
-        "حد": 6,
-    }
-
-    for word, weekday in weekday_map.items():
-        if word in text:
-            include_today = any(x in text for x in ["النهارده", "النهاردة", "اليوم", "today"])
-            return _next_weekday(weekday, include_today=include_today)
-
-    english_weekday_map = {
-        "monday": 0,
-        "tuesday": 1,
-        "wednesday": 2,
-        "thursday": 3,
-        "friday": 4,
-        "saturday": 5,
-        "sunday": 6,
-    }
-
-    for word, weekday in english_weekday_map.items():
-        if word in text:
-            include_today = "today" in text
-            return _next_weekday(weekday, include_today=include_today)
-
-    june_map = {
-        "1 يونيو": 1,
-        "واحد يونيو": 1,
-        "اول يونيو": 1,
-        "أول يونيو": 1,
-        "2 يونيو": 2,
-        "اتنين يونيو": 2,
-        "تاني يونيو": 2,
-        "3 يونيو": 3,
-        "تلاتة يونيو": 3,
-    }
-
-    for phrase, day in june_map.items():
-        if phrase in text:
-            return _parse_day_month(day, 6)
-
-    match = re.search(r"\b(?:june)\s+(\d{1,2})\b", text)
-    if match:
-        return _parse_day_month(int(match.group(1)), 6)
-
-    match = re.search(r"\b(\d{1,2})\s+(?:june)\b", text)
-    if match:
-        return _parse_day_month(int(match.group(1)), 6)
-
-    return None
-
-
-def collect_slot_variables(message: str, variables: Dict[str, Any]) -> Dict[str, Any]:
-    variables = dict(variables or {})
-
-    branch = extract_branch(message, variables)
-    date = extract_date(message, variables)
-    time = extract_time(message, variables)
-
-    user_area = extract_user_area(message)
-
-    if user_area:
-        variables["user_area"] = user_area
-
-    if not branch and user_area:
-        recommended_branch = recommend_branch_for_area(user_area)
-        nearest_branches = recommend_nearest_branches_for_area(user_area, limit=2)
-
-        if recommended_branch:
-            branch = recommended_branch
-            variables["location_branch"] = recommended_branch
-            variables["branch_recommendation_reason"] = f"nearest_known_branch_for_{user_area}"
-            variables["nearest_branch_options"] = nearest_branches
-
-    if detect_nearest_branch_question(message):
-        variables["nearest_branch_question"] = True
-
-    section = (
-        variables.get("recommended_section")
-        or variables.get("service_needed")
-        or variables.get("section")
-    )
-
-    symptoms = variables.get("symptoms") or []
-    issue_description = _lower(variables.get("issue_description", ""))
-
-    if not section:
-        if (
-            (isinstance(symptoms, list) and any("overheating" in str(s).lower() for s in symptoms))
-            or "سخونة" in issue_description
-            or "بتسخن" in issue_description
-            or "المؤشر بيعلى" in issue_description
-        ):
-            section = "Engine Diagnostics"
-            variables["recommended_section"] = section
-            variables["service_needed"] = section
-            variables.setdefault("customer_facing_section", "قسم كشف الموتور")
-
-    if branch:
-        variables["location_branch"] = branch
-
-    if date:
-        variables["appointment_date"] = date
-
-    if time:
-        variables["appointment_time"] = time
-
-    if section:
-        variables["recommended_section"] = section
-        variables["service_needed"] = section
-
-    return variables
-
-
-def missing_slot_fields(variables: Dict[str, Any]) -> List[str]:
-    missing = []
-
-    if not variables.get("location_branch"):
-        missing.append("location_branch")
-
-    if not variables.get("appointment_date"):
-        missing.append("appointment_date")
-
-    if not variables.get("appointment_time"):
-        missing.append("appointment_time")
-
-    if not variables.get("recommended_section") and not variables.get("service_needed"):
-        missing.append("recommended_section")
-
-    return missing
-
-
-def ask_for_missing_slot_fields(missing: List[str], variables: Optional[Dict[str, Any]] = None) -> str:
-    if not missing:
-        return ""
-
-    variables = variables or {}
-    missing_set = set(missing)
-    branch = variables.get("location_branch")
-    branch_ar = branch_display_name(branch) if branch else ""
-    user_area = variables.get("user_area")
-    nearest_options = variables.get("nearest_branch_options") or []
-
-    if branch and "appointment_date" in missing_set and "appointment_time" in missing_set:
-        if variables.get("nearest_branch_question") or user_area:
-            if nearest_options and len(nearest_options) >= 2:
-                first = nearest_options[0]
-                second = nearest_options[1]
-                return (
-                    f"تمام، أقرب فرع مناسب ليك غالبًا فرع {first['branch_ar']} "
-                    f"وبعده فرع {second['branch_ar']}. "
-                    f"نبدأ بفرع {first['branch_ar']}؟ قولّي اليوم والوقت اللي يناسبك."
-                )
-
-            return (
-                f"تمام، أقرب فرع مناسب ليك غالبًا فرع {branch_ar}. "
-                "تحب أظبطلك الكشف هناك؟ قولّي اليوم والوقت اللي يناسبك."
-            )
-
-        return f"تمام، نقدر نبدأ بفرع {branch_ar}. قولّي اليوم والوقت اللي يناسبك."
-
-    if branch and "appointment_date" in missing_set:
-        return f"تمام، نبدأ بفرع {branch_ar}. تحب أنهي يوم؟"
-
-    if branch and "appointment_time" in missing_set:
-        return f"تمام، نبدأ بفرع {branch_ar}. تحب الساعة كام؟"
-
-    if missing_set >= {"location_branch", "appointment_date", "appointment_time", "recommended_section"}:
-        return (
-            "تمام، أظبطهولك. بس محتاج أفهم المشكلة باختصار عشان أحددلك القسم الصح، "
-            "وكمان تحب أنهي فرع ويوم ووقت مناسبين ليك؟"
-        )
-
-    if missing_set >= {"location_branch", "appointment_date", "appointment_time"}:
-        if user_area and not branch:
-            return "تمام، قولّي منطقتك أو أقرب مكان معروف ليك، واليوم والوقت المناسبين، وأنا أظبطلك أقرب فرع."
-        return "تمام، تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
-
-    if "recommended_section" in missing_set and len(missing_set) == 1:
-        return "تمام، أظبطهولك. بس محتاج أعرف المشكلة أو نوع الكشف المطلوب عشان أحدد القسم الصح."
-
-    parts = []
-
-    if "location_branch" in missing_set:
-        parts.append("الفرع")
-
-    if "appointment_date" in missing_set:
-        parts.append("اليوم")
-
-    if "appointment_time" in missing_set:
-        parts.append("الوقت")
-
-    if parts:
-        return "تمام، محتاج بس أعرف " + " و".join(parts) + " المناسبين ليك."
-
-    return "تمام، محتاج كام تفصيلة بسيطة عشان أظبطهولك."
-
-
-def action_check_availability(variables: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "type": "check_availability",
-        "payload": {
-            "branch": variables.get("location_branch"),
-            "date": variables.get("appointment_date"),
-            "time": variables.get("appointment_time"),
-            "section": variables.get("recommended_section") or variables.get("service_needed"),
-        },
-    }
-
-
-def normalize_unavailable_reason(reason: str, reason_map: Optional[Dict[str, str]] = None) -> str:
-    if reason_map:
-        mapped = map_tool_reason(reason, reason_map)
-        if mapped and mapped != reason:
-            return mapped
-
-    reason_l = _lower(reason)
-
-    if not reason_l:
-        return "المعاد ده مش متاح حاليًا"
-
-    if "exact slot not listed" in reason_l:
-        return "الوقت ده مش مفتوح في جدول المواعيد"
-
-    if "slot is full" in reason_l or "full" in reason_l:
-        return "المعاد ده اتحجز بالكامل"
-
-    return reason
-
-
-def handle_availability_result(
-    tool_result: Dict[str, Any],
-    variables: Dict[str, Any],
-    assistant: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    variables = dict(variables or {})
-    assistant = assistant or {}
-
-    availability = parse_availability_tool_result(tool_result)
-    available = availability["available"]
-    requested = availability.get("requested") or {}
-
-    if requested:
-        variables["location_branch"] = requested.get("branch") or variables.get("location_branch")
-        variables["appointment_date"] = requested.get("date") or variables.get("appointment_date")
-        variables["appointment_time"] = requested.get("time") or variables.get("appointment_time")
-        variables["recommended_section"] = requested.get("section") or variables.get("recommended_section")
-        variables["service_needed"] = variables.get("recommended_section") or variables.get("service_needed")
-
-    variables["active_subagent"] = BOOKING_AGENT_NAME
-    variables["raw_read_availability"] = availability.get("raw_read_availability") or {}
-    variables["slot_status"] = availability.get("slot_status") or ""
-
-    templates = get_tool_reply_templates(assistant)
-    availability_templates = templates.get("availability_result", {}) if isinstance(templates, dict) else {}
-    reason_map = availability_templates.get("reason_map", {}) if isinstance(availability_templates, dict) else {}
-
-    if available:
-        variables["slot_status"] = "available"
-        variables["booking_status"] = "slot_available"
-        variables["booking_stage"] = "availability_available_waiting_confirmation"
-        variables["booking_confirmation_requested"] = True
-
-        answer = compose_tool_reply_from_template(
-            assistant=assistant,
-            tool_type="availability_result",
-            status="available",
-            template_key="default",
-            variables=variables,
-            tool_result=availability,
-            reason_text="",
-        )
-
-        if not answer:
-            answer = compose_booking_reply(
-                user_message="__availability_result__",
-                variables=variables,
-                stage=variables["booking_stage"],
-                tool_result=availability,
-                missing_variables=[],
-                instruction=(
-                    "Read the availability result carefully. "
-                    "The requested slot IS available. "
-                    "Tell the customer the slot is available and ask if they want to confirm the booking. "
-                    "Use natural Egyptian Arabic."
-                ),
-            )
-
-        return {
-            "handled": True,
-            "answer": answer,
-            "variables": variables,
-            "active_subagent": BOOKING_AGENT_NAME,
-            "booking_stage": variables["booking_stage"],
-            "action_required": None,
-            "missing_variables": [],
-            "recommended_next_action": "await_slot_confirmation",
-            "reason": "Handled availability result: available.",
-        }
-
-    variables["slot_status"] = "unavailable"
-    variables["booking_status"] = "slot_unavailable"
-    variables["booking_stage"] = "availability_unavailable_waiting_new_slot"
-
-    raw_reason = availability.get("unavailable_reason") or ""
-    reason_text = normalize_unavailable_reason(raw_reason, reason_map)
-
-    variables["unavailable_reason"] = reason_text
-    variables["nearest_slots"] = availability.get("nearest_slots") or []
-    variables["nearest_slots_text"] = availability.get("nearest_slots_text") or ""
-
-    nearest = _norm(variables.get("nearest_slots_text"))
-    template_key = "with_nearest_slots" if nearest else "default"
-
-    answer = compose_tool_reply_from_template(
-        assistant=assistant,
-        tool_type="availability_result",
-        status="unavailable",
-        template_key=template_key,
-        variables=variables,
-        tool_result=availability,
-        reason_text=reason_text,
-    )
-
-    if not answer:
-        answer = compose_booking_reply(
-            user_message="__availability_result__",
-            variables=variables,
-            stage=variables["booking_stage"],
-            tool_result=availability,
-            missing_variables=[],
-            instruction=(
-                "Read the availability result carefully. "
-                "The requested slot is NOT available. "
-                "Explain clearly why it is unavailable using unavailable_reason. "
-                "If nearest_slots_text exists, offer those slots. "
-                "If no nearest slots exist, ask whether to try another time in the same branch or another nearby branch. "
-                "Use natural Egyptian Arabic. Do not say the slot is available."
-            ),
-        )
-
-    return {
-        "handled": True,
-        "answer": answer,
-        "variables": variables,
-        "active_subagent": BOOKING_AGENT_NAME,
-        "booking_stage": variables["booking_stage"],
-        "action_required": None,
-        "missing_variables": [],
-        "recommended_next_action": "choose_new_slot",
-        "reason": "Handled availability result: unavailable.",
-    }
 
 
 def _extract_plate_digits(message: str) -> Optional[str]:
@@ -1365,6 +1015,7 @@ def _extract_customer_name(message: str) -> Optional[str]:
 
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
+
         if match:
             name = match.group(1).strip()
             name = re.sub(
@@ -1429,17 +1080,16 @@ def _detect_phone_confirmed(message: str) -> bool:
     )
 
 
-def collect_booking_confirmation_details(
-    message: str,
-    variables: Dict[str, Any],
-) -> Dict[str, Any]:
+def collect_booking_confirmation_details(message: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     variables = dict(variables or {})
 
     name = _extract_customer_name(message)
+
     if name and not variables.get("customer_full_name"):
         variables["customer_full_name"] = name
 
     plate = _extract_plate_digits(message)
+
     if plate and not variables.get("plate_digits"):
         variables["plate_digits"] = plate
 
@@ -1449,85 +1099,421 @@ def collect_booking_confirmation_details(
     return variables
 
 
-def missing_confirmation_fields(variables: Dict[str, Any]) -> List[str]:
-    missing = []
+def build_booking_facts(
+    *,
+    message: str,
+    variables: Dict[str, Any],
+    stage: str,
+    missing_variables: Optional[List[str]] = None,
+    action_required: Optional[Dict[str, Any]] = None,
+    availability: Optional[Dict[str, Any]] = None,
+    booking_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    nearest_options = variables.get("nearest_branch_options") or []
 
-    if not variables.get("customer_full_name"):
-        missing.append("customer_full_name")
-
-    if not variables.get("plate_digits"):
-        missing.append("plate_digits")
-
-    if not variables.get("phone_confirmed"):
-        missing.append("phone_confirmed")
-
-    return missing
-
-
-def ask_for_missing_confirmation_fields(missing: List[str]) -> str:
-    missing_set = set(missing)
-
-    if missing_set == {"customer_full_name", "plate_digits", "phone_confirmed"}:
-        return (
-            "تمام، عشان أثبت الحجز محتاج اسم حضرتك بالكامل، "
-            "ونمر العربية، وتأكيد إننا نستخدم نفس رقم الواتساب للتواصل."
-        )
-
-    parts = []
-
-    if "customer_full_name" in missing_set:
-        parts.append("اسم حضرتك بالكامل")
-
-    if "plate_digits" in missing_set:
-        parts.append("نمر العربية")
-
-    if "phone_confirmed" in missing_set:
-        parts.append("تأكيد نستخدم نفس رقم الواتساب للتواصل")
-
-    return "تمام، باقي بس " + " و".join(parts) + "."
-
-
-def action_create_booking(variables: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "type": "create_booking",
-        "payload": {
-            "branch": variables.get("location_branch"),
-            "date": variables.get("appointment_date"),
-            "time": variables.get("appointment_time"),
-            "section": variables.get("recommended_section") or variables.get("service_needed"),
+    facts = {
+        "latest_customer_message": message,
+        "stage": stage,
+        "missing_variables": missing_variables or [],
+        "action_required": action_required,
+        "availability": availability,
+        "booking_result": booking_result,
+        "known": {
+            "intent": variables.get("intent"),
+            "workflow": variables.get("workflow"),
+            "booking_stage": variables.get("booking_stage"),
+            "location_branch": variables.get("location_branch"),
+            "location_branch_ar": branch_display_name(variables.get("location_branch")),
+            "user_area": variables.get("user_area"),
+            "appointment_date": variables.get("appointment_date"),
+            "appointment_time": variables.get("appointment_time"),
+            "recommended_section": variables.get("recommended_section") or variables.get("service_needed"),
+            "customer_facing_section": variables.get("customer_facing_section"),
             "customer_full_name": variables.get("customer_full_name"),
             "plate_digits": variables.get("plate_digits"),
+            "phone_confirmed": variables.get("phone_confirmed"),
             "phone_number": variables.get("phone_number"),
+            "nearest_branch_question": bool(variables.get("nearest_branch_question")),
+            "nearest_branch_options": nearest_options,
         },
+    }
+
+    return facts
+
+
+def fallback_booking_reply(facts: Dict[str, Any]) -> str:
+    stage = facts.get("stage", "")
+    known = facts.get("known") or {}
+    availability = facts.get("availability") or {}
+    missing = set(facts.get("missing_variables") or [])
+
+    if availability:
+        if availability.get("available") is True:
+            branch = known.get("location_branch_ar") or "الفرع"
+            date = known.get("appointment_date") or ""
+            time = known.get("appointment_time") or ""
+            return f"تمام، الميعاد متاح في فرع {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
+
+        reason = availability.get("unavailable_reason") or "المعاد ده مش متاح حاليًا"
+        nearest = availability.get("nearest_slots_text") or ""
+
+        if nearest:
+            return (
+                f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
+                f"بس لقيتلك أقرب مواعيد متاحة:\n\n{nearest}\n\n"
+                "تحب أثبتلك واحد منهم؟"
+            )
+
+        return (
+            f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
+            "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
+        )
+
+    if known.get("nearest_branch_question") and not known.get("user_area") and not known.get("location_branch"):
+        return "أكيد، قولّي إنت فين أو أقرب منطقة ليك، وأنا أقولك أنسب فرع. وبعدها نحدد اليوم والوقت المناسبين."
+
+    if known.get("location_branch") and {"appointment_date", "appointment_time"} & missing:
+        branch = known.get("location_branch_ar") or "الفرع"
+        return f"تمام، نبدأ بفرع {branch}. قولّي اليوم والوقت اللي يناسبك."
+
+    if known.get("nearest_branch_options") and {"appointment_date", "appointment_time"} & missing:
+        options = known["nearest_branch_options"]
+        first = options[0]
+        second = options[1] if len(options) > 1 else None
+
+        if second:
+            return (
+                f"تمام، أقرب فرع مناسب ليك غالبًا فرع {first['branch_ar']} "
+                f"وبعده فرع {second['branch_ar']}. "
+                f"نبدأ بفرع {first['branch_ar']}؟ قولّي اليوم والوقت اللي يناسبك."
+            )
+
+        return f"تمام، أقرب فرع مناسب ليك غالبًا فرع {first['branch_ar']}. قولّي اليوم والوقت اللي يناسبك."
+
+    if stage == "booking_collecting_customer_details":
+        parts = []
+
+        if "customer_full_name" in missing:
+            parts.append("اسم حضرتك بالكامل")
+
+        if "plate_digits" in missing:
+            parts.append("نمر العربية")
+
+        if "phone_confirmed" in missing:
+            parts.append("تأكيد نستخدم نفس رقم الواتساب للتواصل")
+
+        if parts:
+            return "تمام، عشان أثبت الحجز محتاج " + " و".join(parts) + "."
+
+    if missing:
+        if {"location_branch", "appointment_date", "appointment_time"} <= missing:
+            return "تمام، تحب أنهي فرع، ويوم ووقت مناسبين ليك؟"
+
+        if "appointment_date" in missing and "appointment_time" in missing:
+            return "تمام، قولّي اليوم والوقت اللي يناسبك."
+
+        if "appointment_date" in missing:
+            return "تمام، تحب أنهي يوم؟"
+
+        if "appointment_time" in missing:
+            return "تمام، تحب الساعة كام؟"
+
+    return "تمام، معاك."
+
+
+def validate_booking_llm_answer(answer: str, facts: Dict[str, Any]) -> bool:
+    if not answer or not answer.strip():
+        return False
+
+    answer_l = answer.lower()
+    availability = facts.get("availability") or {}
+    available = availability.get("available")
+
+    if available is False:
+        says_unavailable = (
+            "مش متاح" in answer
+            or "غير متاح" in answer
+            or "للأسف" in answer
+            or "unavailable" in answer_l
+            or "not available" in answer_l
+        )
+
+        bad_available_phrases = [
+            "المعاد متاح",
+            "الموعد متاح",
+            "ميعاد متاح",
+            "slot is available",
+            "appointment slot is available",
+            "available",
+            "تحب أثبته",
+            "تأكيد الحجز",
+            "confirm this booking",
+        ]
+
+        if any(phrase in answer_l for phrase in bad_available_phrases) and not says_unavailable:
+            return False
+
+    if available is True:
+        bad_unavailable_phrases = [
+            "مش متاح",
+            "غير متاح",
+            "unavailable",
+            "not available",
+            "للأسف الميعاد",
+        ]
+
+        if any(phrase in answer_l for phrase in bad_unavailable_phrases):
+            return False
+
+    known = facts.get("known") or {}
+
+    if known.get("nearest_branch_question") and not known.get("user_area") and not known.get("location_branch"):
+        asks_location = (
+            "فين" in answer
+            or "منطقة" in answer
+            or "منطقتك" in answer
+            or "اقرب مكان" in answer
+            or "أقرب مكان" in answer
+            or "where" in answer_l
+            or "area" in answer_l
+        )
+
+        asks_time_first = (
+            ("اليوم" in answer or "يوم" in answer)
+            and ("الوقت" in answer or "الساعة" in answer)
+            and not asks_location
+        )
+
+        if asks_time_first:
+            return False
+
+    forbidden = [
+        "json",
+        "tool",
+        "backend",
+        "variable",
+        "workflow",
+        "facts",
+        "availability api",
+    ]
+
+    if any(word in answer_l for word in forbidden):
+        return False
+
+    return True
+
+
+def llm_compose_booking_reply(
+    *,
+    assistant: Dict[str, Any],
+    message: str,
+    facts: Dict[str, Any],
+) -> str:
+    model = model_for_tier("normal")
+
+    assistant_name = assistant.get("name") or assistant.get("id") or "the assistant"
+    tone = assistant.get("tone") or "natural, helpful, concise"
+
+    system_prompt = f"""
+You are the booking sub-agent for {assistant_name}.
+
+Your job:
+Write the next customer-facing WhatsApp reply.
+
+You must use the FACTS as the source of truth.
+Do not invent availability, booking status, prices, branch names, dates, times, or visit IDs.
+
+Critical rules:
+- If facts.availability.available is false, never say the slot is available.
+- If facts.availability.available is true, never say the slot is unavailable.
+- If facts.availability.unavailable_reason exists, explain it naturally.
+- If facts.availability.nearest_slots_text exists, offer those slots.
+- If the slot is unavailable and no nearest slots are provided, ask whether to try another time in the same branch or another nearby branch.
+- If customer asks for nearest branch and user_area is unknown, ask for their area/location first.
+- If recommended nearest branch exists, recommend it naturally.
+- If branch is clear but date/time are missing, ask for date/time.
+- If slot is available and confirmation details are missing, ask only for missing details.
+- If action_required exists, do not send filler like "I will check"; either return an empty reply or a very short transition only if explicitly needed.
+- Use natural Egyptian Arabic unless the customer wrote in English.
+- Keep it short: 1 to 3 sentences.
+- Ask at most one grouped question.
+- Do not mention JSON, variables, tools, backend, workflow, or facts.
+- Tone: {tone}
+"""
+
+    user_prompt = f"""
+Latest customer message:
+{message}
+
+FACTS:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+Write the next WhatsApp reply only.
+"""
+
+    try:
+        answer = chat_text(
+            model,
+            [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_prompt.strip()},
+            ],
+            max_tokens=260,
+        ).strip()
+    except Exception:
+        answer = ""
+
+    if validate_booking_llm_answer(answer, facts):
+        return answer
+
+    retry_prompt = f"""
+Your previous answer violated the facts or routing rules.
+
+Rewrite correctly.
+
+Important:
+- If availability.available is false, clearly say the requested slot is not available and why.
+- If nearest branch was asked but user area is unknown, ask where the customer is first.
+- Do not mention internal systems.
+
+FACTS:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+Correct final WhatsApp reply only.
+"""
+
+    try:
+        retry_answer = chat_text(
+            model,
+            [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": retry_prompt.strip()},
+            ],
+            max_tokens=220,
+        ).strip()
+    except Exception:
+        retry_answer = ""
+
+    if validate_booking_llm_answer(retry_answer, facts):
+        return retry_answer
+
+    return fallback_booking_reply(facts)
+
+
+def handle_availability_result(
+    tool_result: Dict[str, Any],
+    variables: Dict[str, Any],
+    assistant: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    variables = dict(variables or {})
+    assistant = assistant or {}
+
+    availability = parse_availability_tool_result(tool_result)
+    requested = availability.get("requested") or {}
+
+    if requested:
+        variables["location_branch"] = requested.get("branch") or variables.get("location_branch")
+        variables["appointment_date"] = requested.get("date") or variables.get("appointment_date")
+        variables["appointment_time"] = requested.get("time") or variables.get("appointment_time")
+        variables["recommended_section"] = requested.get("section") or variables.get("recommended_section")
+        variables["service_needed"] = variables.get("recommended_section") or variables.get("service_needed")
+
+    variables["active_subagent"] = BOOKING_AGENT_NAME
+    variables["raw_read_availability"] = availability.get("raw_read_availability") or {}
+
+    if availability["available"]:
+        variables["slot_status"] = "available"
+        variables["booking_status"] = "slot_available"
+        variables["booking_stage"] = "availability_available_waiting_confirmation"
+        variables["booking_confirmation_requested"] = True
+
+        facts = build_booking_facts(
+            message="__availability_result__",
+            variables=variables,
+            stage=variables["booking_stage"],
+            missing_variables=[],
+            availability=availability,
+        )
+
+        answer = llm_compose_booking_reply(
+            assistant=assistant,
+            message="__availability_result__",
+            facts=facts,
+        )
+
+        return {
+            "handled": True,
+            "answer": answer,
+            "variables": variables,
+            "active_subagent": BOOKING_AGENT_NAME,
+            "booking_stage": variables["booking_stage"],
+            "action_required": None,
+            "missing_variables": [],
+            "recommended_next_action": "await_slot_confirmation",
+            "reason": "Handled availability result: available.",
+        }
+
+    variables["slot_status"] = "unavailable"
+    variables["booking_status"] = "slot_unavailable"
+    variables["booking_stage"] = "availability_unavailable_waiting_new_slot"
+    variables["unavailable_reason"] = availability.get("unavailable_reason") or ""
+    variables["nearest_slots"] = availability.get("nearest_slots") or []
+    variables["nearest_slots_text"] = availability.get("nearest_slots_text") or ""
+
+    facts = build_booking_facts(
+        message="__availability_result__",
+        variables=variables,
+        stage=variables["booking_stage"],
+        missing_variables=[],
+        availability=availability,
+    )
+
+    answer = llm_compose_booking_reply(
+        assistant=assistant,
+        message="__availability_result__",
+        facts=facts,
+    )
+
+    return {
+        "handled": True,
+        "answer": answer,
+        "variables": variables,
+        "active_subagent": BOOKING_AGENT_NAME,
+        "booking_stage": variables["booking_stage"],
+        "action_required": None,
+        "missing_variables": [],
+        "recommended_next_action": "choose_new_slot",
+        "reason": "Handled availability result: unavailable.",
     }
 
 
 def handle_booking_result(
     tool_result: Dict[str, Any],
     variables: Dict[str, Any],
+    assistant: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     variables = dict(variables or {})
+    assistant = assistant or {}
     variables["active_subagent"] = BOOKING_AGENT_NAME
 
     success = parse_bool(tool_result.get("success"))
 
     if success:
-        visit_id = tool_result.get("visit_id") or tool_result.get("booking_id") or ""
-
         variables["booking_status"] = "confirmed"
         variables["booking_stage"] = "booking_confirmed"
-        variables["visit_id"] = visit_id
+        variables["visit_id"] = tool_result.get("visit_id") or tool_result.get("booking_id") or ""
 
-        answer = compose_booking_reply(
-            user_message="__tool_result__",
+        facts = build_booking_facts(
+            message="__booking_result__",
             variables=variables,
             stage=variables["booking_stage"],
-            tool_result=tool_result,
-            missing_variables=[],
-            instruction=(
-                "The booking was created successfully. "
-                "Confirm the booking naturally, include the visit ID if available, and summarize branch, date, time, and section."
-            ),
+            booking_result=tool_result,
+        )
+
+        answer = llm_compose_booking_reply(
+            assistant=assistant,
+            message="__booking_result__",
+            facts=facts,
         )
 
         return {
@@ -1545,16 +1531,17 @@ def handle_booking_result(
     variables["booking_status"] = "failed"
     variables["booking_stage"] = "booking_failed"
 
-    answer = compose_booking_reply(
-        user_message="__tool_result__",
+    facts = build_booking_facts(
+        message="__booking_result__",
         variables=variables,
         stage=variables["booking_stage"],
-        tool_result=tool_result,
-        missing_variables=[],
-        instruction=(
-            "The booking creation failed. "
-            "Apologize naturally, mention the reason if available, and ask whether to retry or choose another appointment."
-        ),
+        booking_result=tool_result,
+    )
+
+    answer = llm_compose_booking_reply(
+        assistant=assistant,
+        message="__booking_result__",
+        facts=facts,
     )
 
     return {
@@ -1588,11 +1575,9 @@ def run_booking_subagent(
         return handle_availability_result(tool_result, variables, assistant=assistant)
 
     if tool_result and tool_result.get("type") == "booking_result":
-        return handle_booking_result(tool_result, variables)
+        return handle_booking_result(tool_result, variables, assistant=assistant)
 
-    is_booking = detect_booking_intent(message, variables)
-
-    if not is_booking:
+    if not detect_booking_intent(message, variables):
         return {"handled": False}
 
     variables["active_subagent"] = BOOKING_AGENT_NAME
@@ -1609,20 +1594,20 @@ def run_booking_subagent(
         if detect_confirmation(message):
             variables["booking_stage"] = "booking_collecting_customer_details"
             variables = collect_booking_confirmation_details(message, variables)
-
             missing_details = missing_confirmation_fields(variables)
 
             if missing_details:
-                answer = compose_booking_reply(
-                    user_message=message,
+                facts = build_booking_facts(
+                    message=message,
                     variables=variables,
                     stage=variables["booking_stage"],
-                    tool_result=None,
                     missing_variables=missing_details,
-                    instruction=(
-                        "The customer wants to confirm the available slot, but booking confirmation details are missing. "
-                        "Ask only for the missing details: full name, car plate digits, and phone confirmation as needed."
-                    ),
+                )
+
+                answer = llm_compose_booking_reply(
+                    assistant=assistant,
+                    message=message,
+                    facts=facts,
                 )
 
                 return {
@@ -1638,17 +1623,19 @@ def run_booking_subagent(
                 }
 
             variables["booking_stage"] = "booking_create_ready"
+            action_required = action_create_booking(variables)
 
-            answer = compose_booking_reply(
-                user_message=message,
+            facts = build_booking_facts(
+                message=message,
                 variables=variables,
                 stage=variables["booking_stage"],
-                tool_result=None,
-                missing_variables=[],
-                instruction=(
-                    "All booking details are complete. "
-                    "Tell the customer briefly that you are confirming the booking now."
-                ),
+                action_required=action_required,
+            )
+
+            answer = llm_compose_booking_reply(
+                assistant=assistant,
+                message=message,
+                facts=facts,
             )
 
             return {
@@ -1657,22 +1644,23 @@ def run_booking_subagent(
                 "variables": variables,
                 "active_subagent": BOOKING_AGENT_NAME,
                 "booking_stage": variables["booking_stage"],
-                "action_required": action_create_booking(variables),
+                "action_required": action_required,
                 "missing_variables": [],
                 "recommended_next_action": "create_booking",
                 "reason": "Booking confirmation details complete; create booking required.",
             }
 
-        answer = compose_booking_reply(
-            user_message=message,
+        facts = build_booking_facts(
+            message=message,
             variables=variables,
             stage=booking_stage,
-            tool_result=None,
             missing_variables=[],
-            instruction=(
-                "The customer has not clearly confirmed the available slot yet. "
-                "Ask naturally whether they want to confirm this appointment or choose another time."
-            ),
+        )
+
+        answer = llm_compose_booking_reply(
+            assistant=assistant,
+            message=message,
+            facts=facts,
         )
 
         return {
@@ -1692,16 +1680,17 @@ def run_booking_subagent(
         missing_details = missing_confirmation_fields(variables)
 
         if missing_details:
-            answer = compose_booking_reply(
-                user_message=message,
+            facts = build_booking_facts(
+                message=message,
                 variables=variables,
                 stage=variables["booking_stage"],
-                tool_result=None,
                 missing_variables=missing_details,
-                instruction=(
-                    "The customer is providing booking details, but some details are still missing. "
-                    "Ask only for the missing details: full name, car plate digits, and phone confirmation as needed."
-                ),
+            )
+
+            answer = llm_compose_booking_reply(
+                assistant=assistant,
+                message=message,
+                facts=facts,
             )
 
             return {
@@ -1717,17 +1706,19 @@ def run_booking_subagent(
             }
 
         variables["booking_stage"] = "booking_create_ready"
+        action_required = action_create_booking(variables)
 
-        answer = compose_booking_reply(
-            user_message=message,
+        facts = build_booking_facts(
+            message=message,
             variables=variables,
             stage=variables["booking_stage"],
-            tool_result=None,
-            missing_variables=[],
-            instruction=(
-                "All booking details are complete. "
-                "Tell the customer briefly that you are confirming the booking now."
-            ),
+            action_required=action_required,
+        )
+
+        answer = llm_compose_booking_reply(
+            assistant=assistant,
+            message=message,
+            facts=facts,
         )
 
         return {
@@ -1736,7 +1727,7 @@ def run_booking_subagent(
             "variables": variables,
             "active_subagent": BOOKING_AGENT_NAME,
             "booking_stage": variables["booking_stage"],
-            "action_required": action_create_booking(variables),
+            "action_required": action_required,
             "missing_variables": [],
             "recommended_next_action": "create_booking",
             "reason": "Booking confirmation details complete; create booking required.",
@@ -1747,7 +1738,19 @@ def run_booking_subagent(
 
     if missing:
         variables["booking_stage"] = "booking_collecting_slot"
-        answer = ask_for_missing_slot_fields(missing, variables)
+
+        facts = build_booking_facts(
+            message=message,
+            variables=variables,
+            stage=variables["booking_stage"],
+            missing_variables=missing,
+        )
+
+        answer = llm_compose_booking_reply(
+            assistant=assistant,
+            message=message,
+            facts=facts,
+        )
 
         return {
             "handled": True,
@@ -1763,6 +1766,7 @@ def run_booking_subagent(
 
     variables["booking_stage"] = "availability_check_ready"
     variables["slot_status"] = "pending_check"
+    action_required = action_check_availability(variables)
 
     return {
         "handled": True,
@@ -1770,7 +1774,7 @@ def run_booking_subagent(
         "variables": variables,
         "active_subagent": BOOKING_AGENT_NAME,
         "booking_stage": variables["booking_stage"],
-        "action_required": action_check_availability(variables),
+        "action_required": action_required,
         "missing_variables": [],
         "recommended_next_action": "check_availability",
         "reason": "Booking slot fields complete; availability check required.",
