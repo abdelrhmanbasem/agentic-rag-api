@@ -1,17 +1,22 @@
 # app/graph.py
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List
 import json
+import operator
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-import operator
+from langgraph.graph import StateGraph, END
 
-# Core utility imports directly from your project architecture
+# --- Core Utility & Configuration Imports ---
 from app.config import KNOWLEDGE_TOP_K, MODEL_ROUTER, MODEL_NORMAL, MODEL_STRONG, OPENAI_API_KEY
 from app.rag import search_knowledge, compress_knowledge
 from app.variables import apply_variable_patch
+
+# --- New Structural Logic Imports ---
+from app.domain_playbooks import build_playbook_prompt
+from app.datetime_location_extractor import extract_datetime_location_patch
 
 # ==========================================
 # 1. DEFINE STATE ARCHITECTURE
@@ -36,7 +41,7 @@ class RouteDecision(BaseModel):
     step: str = Field(description="Must be one of: 'rag_agent', 'chat_agent'")
     reason: str = Field(description="Brief logic explaining why this path was chosen.")
 
-# Run router on cheap/fast model as requested
+# Router runs on your cheap/fast model tier
 router_llm = ChatOpenAI(
     model=MODEL_ROUTER, 
     temperature=0, 
@@ -45,17 +50,17 @@ router_llm = ChatOpenAI(
 
 def adaptive_router_node(state: AgentState):
     """
-    Replaces intelligence_modes.py by using an LLM to evaluate 
-    if RAG knowledge is needed based on real semantic context.
+    Evaluates the semantic context of the conversation to determine if
+    external factual data or catalog matching is necessary.
     """
     last_message = state["messages"][-1].content
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are the advanced pre-router for a premium business virtual assistant. "
                    "Analyze the user's latest input and determine if it requires specific factual records, "
-                   "inventory details, real estate listings, pricing data, or technical information from our Knowledge Base.\n\n"
-                   "- Choose 'rag_agent' if they ask about items, details, specific features, specs, costs, or catalog lookups.\n"
-                   "- Choose 'chat_agent' if they are giving info, greeting you, confirming an appointment, or making casual chat.\n"),
+                   "inventory details, property listings, pricing data, or technical metrics from our Knowledge Base.\n\n"
+                   "- Choose 'rag_agent' if they ask about items, specs, features, specific costs, or database listings.\n"
+                   "- Choose 'chat_agent' if they are providing details, greeting you, confirming an action, or making casual chat.\n"),
         ("user", "Conversation Context Summary: {summary}\nKnown Details: {variables}\nUser Message: {message}")
     ])
     
@@ -71,14 +76,13 @@ def adaptive_router_node(state: AgentState):
 # 3. KNOWLEDGE DISCOVERY (RAG) NODE
 # ==========================================
 def dynamic_rag_node(state: AgentState):
-    """Queries your Qdrant instance smoothly using existing RAG compress routines."""
+    """Queries your Qdrant database using your native semantic compression routines."""
     last_message = state["messages"][-1].content
     
-    # Utilizing your existing robust search + semantic compression pipelines
+    # Run structural knowledge lookup
     raw_knowledge = search_knowledge(state["assistant_id"], last_message, limit=KNOWLEDGE_TOP_K)
     compressed = compress_knowledge(raw_knowledge, last_message)
     
-    knowledge_text = ""
     if compressed:
         knowledge_text = "\n".join([f"- {item.get('text', '')}" for item in compressed])
     else:
@@ -87,11 +91,11 @@ def dynamic_rag_node(state: AgentState):
     return {"knowledge": knowledge_text, "next_step": "chat_agent"}
 
 # ==========================================
-# 4. VARIABLE EXTRACTION & CHAT BRAIN NODE
+# 4. DATA EXTRACTION & MAIN GENERATOR NODE
 # ==========================================
 class VariableExtraction(BaseModel):
-    updates: Dict[str, Any] = Field(default_factory=dict, description="Key-value pairs extracted from user message.")
-    deletions: List[str] = Field(default_factory=list, description="List of variable keys to drop.")
+    updates: Dict[str, Any] = Field(default_factory=dict, description="Key-value profile elements updated from the text.")
+    deletions: List[str] = Field(default_factory=list, description="Profile fields to drop if user changed their mind.")
 
 extractor_llm = ChatOpenAI(
     model=MODEL_NORMAL, 
@@ -99,56 +103,71 @@ extractor_llm = ChatOpenAI(
     api_key=OPENAI_API_KEY
 ).with_structured_output(VariableExtraction)
 
-# The core brain uses your high-tier model for human conversational beauty
+# Main chat brain utilizes your top-tier conversational model
 generator_llm = ChatOpenAI(
     model=MODEL_STRONG, 
-    temperature=0.55, # Tuned for highly natural, non-robotic flow
+    temperature=0.55, # Optimized balance for human warmth without hallucinating facts
     api_key=OPENAI_API_KEY
 )
 
 def ultimate_brain_node(state: AgentState):
     """
-    Extracts slots/variables inline and builds highly tailored, 
-    human-like contextual responses in the correct language.
+    Combines zero-token deterministic regex parsing, secondary LLM extraction,
+    and business playbook enforcement to create highly natural conversation.
     """
     last_message = state["messages"][-1].content
+    current_variables = state["variables"] or {}
     
-    # --- Part A: Variable Extraction (Token Saving Inline step) ---
+    # Infer workflow type from existing keys or defaults to load correct playbook
+    workflow_type = current_variables.get("workflow", "general")
+    
+    # --- Step A: Zero-Token Stealth Extraction ---
+    # Instantly patches physical locations, Arabic relative dates/times safely
+    stealth_updates = extract_datetime_location_patch(last_message, current_variables, workflow_type)
+    if stealth_updates:
+        current_variables.update(stealth_updates)
+
+    # --- Step B: Secondary LLM Extraction (For arbitrary slot filling) ---
     extraction_prompt = ChatPromptTemplate.from_messages([
-        ("system", "Extract any updated values or slots relevant to this business scenario from the user's latest text. "
-                   "Update values if the user clarifies details like budget, preferences, date, or contact details."),
-        ("user", "Current Variables: {variables}\nUser message: {message}")
+        ("system", "Extract any profile context or variables relevant to this business interaction from the user's latest text. "
+                   "Update tracking metrics when users state clear preferences, item matches, constraints, or updates."),
+        ("user", "Current Profile State: {variables}\nUser message: {message}")
     ])
     try:
-        extracted = (extraction_prompt | extractor_llm).invoke({
-            "variables": json.dumps(state["variables"]),
+        llm_extracted = (extraction_prompt | extractor_llm).invoke({
+            "variables": json.dumps(current_variables),
             "message": last_message
         })
-        updated_vars = apply_variable_patch(state["variables"], extracted.updates, extracted.deletions)
+        updated_vars = apply_variable_patch(current_variables, llm_extracted.updates, llm_extracted.deletions)
     except Exception:
-        updated_vars = state["variables"] # Safe fallback
+        updated_vars = current_variables # Safe fallback
 
-    # --- Part B: Fluid Generation ---
+    # --- Step C: Build Playbook Strategy Prompt ---
+    # Automatically pulls instructions, CTA goals, and missing fields from domain_playbooks.py
+    tone_profile = state.get("tone", "helpful_operator")
+    playbook_strategy = build_playbook_prompt(workflow_type, tone_profile)
+
+    # --- Step D: Conversational Synthesis ---
     system_instruction = f"""
 {state['system_prompt']}
 
-Tone & Personality Style: {state['tone']}
+{playbook_strategy}
 
 {state['language_instruction']}
 
-Operational Context:
+Operational Real-Time Context:
 - Summary of events so far: {state['summary']}
-- Tracked Metadata Profiles: {updated_vars}
+- Active Profile Metadata: {updated_vars}
 
-Retrieved System Knowledge base matches:
+Retrieved Knowledge Base Entries:
 <knowledge>
 {state.get('knowledge', 'No external records pulled for this conversation turn.')}
 </knowledge>
 
 CRITICAL EXECUTION POLICIES:
-1. Speak beautifully, empathetically, and natively. If replying in Egyptian Arabic, sound fully colloquial (عامية مصرية), professional, yet lively.
-2. Use retrieved factual database elements natively. Do not quote strings mechanically—weave them into a smooth sentence structure.
-3. If crucial context data is missing from the Profile to take action, gracefully guide the user to share it as part of an organic conversation flow.
+1. Speak beautifully, empathetically, and naturally. If replying in Egyptian Arabic, sound fully colloquial (عامية مصرية), warm, professional, and authentic—never sound like a rigid textbook translation.
+2. Use retrieved factual database properties seamlessly. Weave prices, car names, or doctor names into organic sentences instead of repeating text chunks mechanically.
+3. If essential context details are missing from the Profile Metadata to complete the playbook's Primary CTA, gently guide the user to share them one specific thing at a time as part of an elegant conversation loop.
 """
 
     prompt = ChatPromptTemplate.from_messages([
@@ -156,23 +175,23 @@ CRITICAL EXECUTION POLICIES:
         ("placeholder", "{messages}")
     ])
     
-    # Pass historical window context (Last 6 interactions) to retain conversational fluidity 
+    # Pass historical window context (Last 6 messages) to optimize attention and cost
     chat_chain = prompt | generator_llm
     response = chat_chain.invoke({"messages": state["messages"][-6:]})
     
     return {"messages": [response], "variables": updated_vars}
 
 # ==========================================
-# 5. GRAPH ENGINE COMPILED ARCHITECTURE
+# 5. COMPILE AND EXPOSE THE WORKFLOW GRAPH
 # ==========================================
-from langgraph.graph import StateGraph, END
-
 workflow = StateGraph(AgentState)
 
+# Add Node Processing Units
 workflow.add_node("router", adaptive_router_node)
 workflow.add_node("rag_agent", dynamic_rag_node)
 workflow.add_node("chat_agent", ultimate_brain_node)
 
+# Flow Settings
 workflow.set_entry_point("router")
 
 workflow.add_conditional_edges(
