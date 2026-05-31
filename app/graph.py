@@ -2,7 +2,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 import json
 import operator
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -115,7 +115,11 @@ def format_subagents(agent_config: Dict[str, Any]) -> str:
 def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[str, Any]:
     subagents = agent_config.get("subagents") or []
     if not subagents:
-        return {"id": "general", "name": "General", "instructions": "Help the user naturally and accurately."}
+        return {
+            "id": "general",
+            "name": "General",
+            "instructions": "Help the user naturally and accurately.",
+        }
 
     for subagent in subagents:
         if subagent.get("id") == subagent_id:
@@ -131,17 +135,21 @@ def extract_variables_node(state: AgentState):
     agent_config = state.get("agent_config", {}) or {}
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are the variable extraction brain of a configurable agentic assistant. "
-         "Extract only what the user clearly stated, implied with high confidence, or corrected. "
-         "Use the assistant schema and config. Do not invent. "
-         "If the user changes their mind, update the value. If they remove a value, place the key in deletions. "
-         "Support English and Egyptian Arabic."),
-        ("user",
-         "Assistant config:\n{agent_config}\n\n"
-         "Variable schema:\n{schema}\n\n"
-         "Current variables:\n{variables}\n\n"
-         "Latest user message:\n{message}")
+        (
+            "system",
+            "You are the variable extraction brain of a configurable agentic assistant. "
+            "Extract only what the user clearly stated, implied with high confidence, or corrected. "
+            "Use the assistant schema and config. Do not invent. "
+            "If the user changes their mind, update the value. If they remove a value, place the key in deletions. "
+            "Support English and Egyptian Arabic.",
+        ),
+        (
+            "user",
+            "Assistant config:\n{agent_config}\n\n"
+            "Variable schema:\n{schema}\n\n"
+            "Current variables:\n{variables}\n\n"
+            "Latest user message:\n{message}",
+        ),
     ])
 
     try:
@@ -164,22 +172,27 @@ def planner_node(state: AgentState):
     tool_result = state.get("tool_result", {}) or {}
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are the main reasoning brain of a configurable Agentic RAG system. "
-         "Think internally, analyze the user's goal, deduce what is needed, choose the best subagent from the provided config, "
-         "and decide whether memory, knowledge search, or tool usage is needed. "
-         "Do not use fixed business rules. Use only the assistant config, subagent descriptions, current context, and your reasoning. "
-         "Prefer smooth human conversation over token saving. "
-         "Avoid hallucination by requesting knowledge when factual business info may be needed."),
-        ("user",
-         "System prompt:\n{system_prompt}\n\n"
-         "Assistant config:\n{agent_config}\n\n"
-         "Available subagents:\n{subagents}\n\n"
-         "Conversation summary:\n{summary}\n\n"
-         "Known variables:\n{variables}\n\n"
-         "Latest tool result, if any:\n{tool_result}\n\n"
-         "Latest user message:\n{message}\n\n"
-         "Return a decision. The selected_subagent_id MUST be one of the configured subagent ids.")
+        (
+            "system",
+            "You are the main reasoning brain of a configurable Agentic RAG system. "
+            "Think internally, analyze the user's goal, deduce what is needed, choose the best subagent from the provided config, "
+            "and decide whether memory, knowledge search, or tool usage is needed. "
+            "Do not use fixed business rules. Use only the assistant config, subagent descriptions, current context, and your reasoning. "
+            "Prefer smooth human conversation over token saving. "
+            "Avoid hallucination by requesting knowledge when factual business info may be needed. "
+            "If the latest message is a tool result, select the correct tool-result handler subagent and answer from the tool result.",
+        ),
+        (
+            "user",
+            "System prompt:\n{system_prompt}\n\n"
+            "Assistant config:\n{agent_config}\n\n"
+            "Available subagents:\n{subagents}\n\n"
+            "Conversation summary:\n{summary}\n\n"
+            "Known variables:\n{variables}\n\n"
+            "Latest tool result, if any:\n{tool_result}\n\n"
+            "Latest user message:\n{message}\n\n"
+            "Return a decision. The selected_subagent_id MUST be one of the configured subagent ids.",
+        ),
     ])
 
     try:
@@ -247,6 +260,7 @@ def retrieve_knowledge_node(state: AgentState):
     message = last_user_message(state)
     planner = state.get("planner", {}) or {}
     variables = state.get("variables", {}) or {}
+
     query = " ".join([
         message,
         planner.get("user_intent", ""),
@@ -258,7 +272,10 @@ def retrieve_knowledge_node(state: AgentState):
         raw = search_knowledge(state["assistant_id"], query, limit=KNOWLEDGE_TOP_K)
         compressed = compress_knowledge(raw, query)
     except Exception as exc:
-        return {"knowledge": f"NO_CONFIDENT_KNOWLEDGE_FOUND. Retrieval error: {exc}", "knowledge_items": []}
+        return {
+            "knowledge": f"NO_CONFIDENT_KNOWLEDGE_FOUND. Retrieval error: {exc}",
+            "knowledge_items": [],
+        }
 
     if not compressed:
         return {"knowledge": "NO_CONFIDENT_KNOWLEDGE_FOUND", "knowledge_items": []}
@@ -279,21 +296,26 @@ def subagent_reasoning_node(state: AgentState):
     planner = state.get("planner", {}) or {}
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are the selected subagent's private analysis brain. "
-         "Do not write the final user-facing reply. "
-         "Analyze the situation according to the selected subagent config and prepare structured guidance for the final response LLM. "
-         "Be grounded. Identify missing facts instead of inventing them."),
-        ("user",
-         "Selected subagent:\n{subagent}\n\n"
-         "Planner decision:\n{planner}\n\n"
-         "Assistant config:\n{agent_config}\n\n"
-         "Conversation summary:\n{summary}\n\n"
-         "Known variables:\n{variables}\n\n"
-         "Relevant memories:\n{memories}\n\n"
-         "Retrieved knowledge:\n{knowledge}\n\n"
-         "Tool result:\n{tool_result}\n\n"
-         "Latest user message:\n{message}")
+        (
+            "system",
+            "You are the selected subagent's private analysis brain. "
+            "Do not write the final user-facing reply. "
+            "Analyze the situation according to the selected subagent config and prepare structured guidance for the final response LLM. "
+            "Be grounded. Identify missing facts instead of inventing them. "
+            "If a tool is needed, explain exactly why and which inputs are still missing.",
+        ),
+        (
+            "user",
+            "Selected subagent:\n{subagent}\n\n"
+            "Planner decision:\n{planner}\n\n"
+            "Assistant config:\n{agent_config}\n\n"
+            "Conversation summary:\n{summary}\n\n"
+            "Known variables:\n{variables}\n\n"
+            "Relevant memories:\n{memories}\n\n"
+            "Retrieved knowledge:\n{knowledge}\n\n"
+            "Tool result:\n{tool_result}\n\n"
+            "Latest user message:\n{message}",
+        ),
     ])
 
     try:
@@ -384,14 +406,16 @@ Non-negotiable response rules:
 - If the needed fact is missing, say it naturally and move the conversation forward with one helpful question.
 - Keep it concise enough for chat unless the user asked for detail.
 - If the user used Egyptian Arabic, reply in natural Egyptian Arabic.
+- If planner.needs_tool is true and there is no tool_result yet, do not claim the tool result. Give only a neutral transition if needed.
+- If tool_result exists, treat it as the highest-priority source of truth.
 """
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_instruction),
-        ("placeholder", "{messages}"),
-    ])
+    # Use raw SystemMessage instead of ChatPromptTemplate here.
+    # system_instruction contains JSON/config examples with curly braces,
+    # and ChatPromptTemplate would treat them as template variables.
+    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-10:])
 
-    response = (prompt | response_llm).invoke({"messages": state["messages"][-10:]})
+    response = response_llm.invoke(messages)
     answer = response.content if hasattr(response, "content") else str(response)
     return {"messages": [AIMessage(content=answer)], "final_answer": answer}
 
@@ -405,17 +429,21 @@ def quality_guard_node(state: AgentState):
     latest_user = last_user_message(state)
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are a quality guard. Check whether the answer is natural, grounded, in the right language, "
-         "does not reveal internals, asks at most one question, and does not hallucinate business facts. "
-         "If it fails, rewrite it. Do not add unsupported facts."),
-        ("user",
-         "Latest user message:\n{latest_user}\n\n"
-         "Assistant config:\n{agent_config}\n\n"
-         "Planner:\n{planner}\n\n"
-         "Subagent analysis:\n{analysis}\n\n"
-         "Knowledge:\n{knowledge}\n\n"
-         "Answer:\n{answer}")
+        (
+            "system",
+            "You are a quality guard. Check whether the answer is natural, grounded, in the right language, "
+            "does not reveal internals, asks at most one question, and does not hallucinate business facts. "
+            "If it fails, rewrite it. Do not add unsupported facts.",
+        ),
+        (
+            "user",
+            "Latest user message:\n{latest_user}\n\n"
+            "Assistant config:\n{agent_config}\n\n"
+            "Planner:\n{planner}\n\n"
+            "Subagent analysis:\n{analysis}\n\n"
+            "Knowledge:\n{knowledge}\n\n"
+            "Answer:\n{answer}",
+        ),
     ])
 
     try:
@@ -430,7 +458,11 @@ def quality_guard_node(state: AgentState):
         data = decision.model_dump()
         if not decision.pass_check and decision.revised_answer.strip():
             revised = decision.revised_answer.strip()
-            return {"messages": [AIMessage(content=revised)], "final_answer": revised, "quality": data}
+            return {
+                "messages": [AIMessage(content=revised)],
+                "final_answer": revised,
+                "quality": data,
+            }
         return {"quality": data}
     except Exception as exc:
         return {"quality": {"pass_check": True, "guard_error": str(exc)}}
