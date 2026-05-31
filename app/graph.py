@@ -78,8 +78,6 @@ class QualityDecision(BaseModel):
     issues: List[str] = Field(default_factory=list)
 
 
-# JSON mode is more robust for a generic multi-tenant manifest than strict Pydantic structured output.
-# Capping max_tokens keeps the manifest compact and reduces output waste.
 manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=700).bind(
     response_format={"type": "json_object"}
 )
@@ -135,31 +133,24 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "user_expectation": "",
         "risk_level": "low",
         "confidence": 0.7,
-
         "simple_response_mode": False,
         "simple_response_reason": "",
-
         "needs_knowledge": False,
         "needs_memory": False,
-
         "needs_tool": False,
         "requested_tool_name": "",
         "tool_request_payload": {},
         "missing_tool_inputs": [],
-
         "needs_subagent_reasoning": False,
         "needs_quality_guard": False,
         "needs_style_repair": False,
-
         "extracted_updates": {},
         "extracted_deletions": [],
-
         "response_style": "",
         "reply_length": "",
         "should_ask_question": False,
         "question_goal": "",
         "should_offer_next_action": False,
-
         "response_brief": {
             "tone": "",
             "language": "",
@@ -168,7 +159,6 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
             "must_not_do": [],
             "next_move": "",
         },
-
         "response_strategy": "",
         "reasoning_summary": "",
     }
@@ -214,13 +204,6 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Supports both shapes:
-    1. {"field_name": {...}}
-    2. {"schema": {"field_name": {...}}}
-
-    This keeps the engine generic. Assistant-specific variables come from schema.json.
-    """
     if not isinstance(schema, dict):
         return {}
 
@@ -232,10 +215,6 @@ def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 50) -> Dict[str, Any]:
-    """
-    Generic schema compaction.
-    No assistant-specific fields are hardcoded.
-    """
     fields = get_schema_fields(schema)
     if not fields:
         return {}
@@ -262,11 +241,6 @@ def compact_variables(
     schema: Optional[Dict[str, Any]] = None,
     max_items: int = 40,
 ) -> Dict[str, Any]:
-    """
-    Generic variable compaction.
-    Prioritizes variables defined by the assistant schema, then keeps other non-empty variables.
-    No business-specific keys are hardcoded.
-    """
     if not variables:
         return {}
 
@@ -343,10 +317,6 @@ def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def unified_manifest_card(agent_config: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generic assistant manifest card.
-    Everything assistant-specific comes from /assistants and /schemas.
-    """
     return {
         "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 320),
         "conversation_style": clip_text(agent_config.get("conversation_style", ""), 280),
@@ -448,8 +418,9 @@ def should_use_simple_response(state: AgentState) -> bool:
     """
     Generic express-lane logic.
 
-    This is not domain hardcoding. It only checks whether the manifest already decided
-    no resources/tools/subagent/guard are needed, risk is low, and confidence is acceptable.
+    This is not domain hardcoding. It only checks whether the manifest says no
+    resources/tools/subagent reasoning are needed, risk is low, confidence is acceptable,
+    and there is no tool_result that must be handled.
     """
     manifest = state.get("manifest", {}) or {}
 
@@ -463,12 +434,6 @@ def should_use_simple_response(state: AgentState) -> bool:
         return False
 
     if manifest.get("needs_subagent_reasoning"):
-        return False
-
-    if manifest.get("needs_quality_guard"):
-        return False
-
-    if manifest.get("needs_style_repair"):
         return False
 
     if manifest.get("risk_level") in ["high", "medium"]:
@@ -517,10 +482,6 @@ def should_run_quality_guard(state: AgentState) -> bool:
 
 
 def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Keeps compatibility with existing /chat response code that expects final_state['planner'].
-    Generic fields only.
-    """
     return {
         "user_intent": manifest.get("user_intent", ""),
         "selected_subagent_id": manifest.get("selected_subagent_id", ""),
@@ -536,6 +497,7 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "simple_response_mode": manifest.get("simple_response_mode", False),
         "needs_subagent_reasoning": manifest.get("needs_subagent_reasoning", False),
         "needs_quality_guard": manifest.get("needs_quality_guard", False),
+        "needs_style_repair": manifest.get("needs_style_repair", False),
         "tool_request_payload": manifest.get("tool_request_payload", {}),
         "missing_tool_inputs": manifest.get("missing_tool_inputs", []),
         "manifest_error": manifest.get("manifest_error", ""),
@@ -889,6 +851,7 @@ Rules:
             "pass_check": True,
             "skipped": True,
             "simple_response_mode": True,
+            "node": "simple_response",
         },
     }
 
@@ -952,12 +915,16 @@ Rules:
     return {
         "messages": [AIMessage(content=answer)],
         "final_answer": answer,
+        "quality": {
+            "node": "response",
+            "pre_quality_guard": True,
+        },
     }
 
 
 def quality_guard_node(state: AgentState):
     if not should_run_quality_guard(state):
-        return {"quality": {"pass_check": True, "skipped": True}}
+        return {"quality": {"pass_check": True, "skipped": True, "node": "quality_guard_skipped"}}
 
     answer = state.get("final_answer", "")
     knowledge = state.get("knowledge", "")
@@ -998,12 +965,14 @@ def quality_guard_node(state: AgentState):
 
         if not decision.pass_check and decision.revised_answer.strip():
             revised = decision.revised_answer.strip()
+            data["node"] = "quality_guard_revised"
             return {
                 "messages": [AIMessage(content=revised)],
                 "final_answer": revised,
                 "quality": data,
             }
 
+        data["node"] = "quality_guard_passed"
         return {"quality": data}
 
     except Exception as exc:
@@ -1011,6 +980,7 @@ def quality_guard_node(state: AgentState):
             "quality": {
                 "pass_check": True,
                 "guard_error": str(exc),
+                "node": "quality_guard_error",
             }
         }
 
