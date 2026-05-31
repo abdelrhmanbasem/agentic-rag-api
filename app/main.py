@@ -1,24 +1,22 @@
 # app/main.py
-# Smart stateful Agentic RAG API - LangGraph Upgraded
+# Smart stateful Agentic RAG API - LangGraph Edition
+
 import re
 from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-# --- New LangGraph Imports ---
+# --- LangGraph & Tracking Imports ---
 from app.graph import app_graph 
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_community.callbacks import get_openai_callback
 
-# --- Existing Imports ---
+# --- Core Infrastructure Imports ---
 from app.config import (
     APP_SECRET,
     MOCK_MODE,
     RECENT_MESSAGES_LIMIT,
-    KNOWLEDGE_TOP_K,
-    MEMORY_TOP_K,
-    RAG_CACHE_ENABLED,
-    RAG_CACHE_MAX_AGE_MINUTES,
 )
 from app.db import (
     init_db,
@@ -35,26 +33,24 @@ from app.db import (
     upsert_knowledge_document,
     list_knowledge_documents,
     list_long_term_memories,
-    save_rag_cache,
-    get_rag_cache,
-    log_estimated_usage,
+    log_model_usage,
 )
 from app.rag import (
     ensure_qdrant,
     ingest_document,
     search_knowledge,
-    search_memories,
     compress_knowledge,
 )
 from app.variables import apply_variable_patch
 from app.memory import update_conversation_summary, decide_and_write_long_term_memories
-from app.super_efficiency import compact_chat_response
-from app.structured_inventory import upsert_structured_inventory_from_text
+
 
 app = FastAPI(title="Agentic RAG API - LangGraph Edition")
 
 
-# --- Pydantic Models ---
+# ==========================================
+# 1. PYDANTIC SCHEMAS
+# ==========================================
 class AssistantRequest(BaseModel):
     assistant_id: str
     name: str
@@ -95,7 +91,9 @@ class PatchVariablesRequest(BaseModel):
     deletions: List[str] = []
 
 
-# --- Helpers ---
+# ==========================================
+# 2. HELPER FUNCTIONS
+# ==========================================
 def check_auth(x_api_key: str):
     if x_api_key != APP_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -122,7 +120,9 @@ LANGUAGE RULE:
 """
 
 
-# --- API Endpoints ---
+# ==========================================
+# 3. FASTAPI ENDPOINTS
+# ==========================================
 @app.on_event("startup")
 def startup():
     init_db()
@@ -133,8 +133,7 @@ def health():
     return {
         "status": "ok",
         "mock_mode": MOCK_MODE,
-        "rag_cache_enabled": RAG_CACHE_ENABLED,
-        "architecture": "LangGraph"
+        "architecture": "LangGraph Agentic Engine"
     }
 
 @app.post("/assistants")
@@ -156,6 +155,7 @@ def read_schema(assistant_id: str, x_api_key: str = Header(default="")):
 
 @app.post("/ingest")
 def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
+    """Ingests documents natively into Qdrant vector database."""
     check_auth(x_api_key)
     chunks = ingest_document(
         assistant_id=req.assistant_id,
@@ -171,19 +171,11 @@ def ingest(req: IngestRequest, x_api_key: str = Header(default="")):
         metadata=req.metadata,
         chunk_count=chunks,
     )
-    structured_items = upsert_structured_inventory_from_text(
-        assistant_id=req.assistant_id,
-        document_id=req.document_id,
-        title=req.title,
-        text=req.text,
-        metadata=req.metadata,
-    )
     return {
         "status": "ingested",
         "assistant_id": req.assistant_id,
         "document_id": req.document_id,
         "chunks": chunks,
-        "structured_items": structured_items,
     }
 
 @app.get("/knowledge/{assistant_id}")
@@ -217,9 +209,9 @@ def read_user_memories(assistant_id: str, user_id: str, x_api_key: str = Header(
     return {"assistant_id": assistant_id, "user_id": user_id, "memories": list_long_term_memories(assistant_id, user_id)}
 
 
-# ------------------------------------------------------------
-# The New LangGraph Chat Endpoint
-# ------------------------------------------------------------
+# ==========================================
+# 4. THE LANGGRAPH CHAT ENGINE
+# ==========================================
 @app.post("/chat")
 def chat(req: ChatRequest, x_api_key: str = Header(default="")):
     check_auth(x_api_key)
@@ -259,18 +251,37 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         "language_instruction": detect_reply_language_instruction(req.message)
     }
 
-    # 5. Run the LangGraph orchestration (The Brain takes over here)
-    final_state = app_graph.invoke(initial_state)
+    # 5. Run the LangGraph orchestration wrapped in the Token Tracker
+    with get_openai_callback() as cb:
+        final_state = app_graph.invoke(initial_state)
+        
+        # Capture the exact tokens used during this entire conversation turn
+        exact_input_tokens = cb.prompt_tokens
+        exact_output_tokens = cb.completion_tokens
+        exact_total_cost = cb.total_cost
 
     # 6. Extract the generated human-like answer and any updated variables
     answer = final_state["messages"][-1].content
     updated_variables = final_state.get("variables", existing_variables)
 
-    # 7. Save Assistant Answer
+    # 7. Save Assistant Answer & Variables
     save_message(req.conversation_id, req.assistant_id, req.user_id, "assistant", answer)
     save_variables(req.conversation_id, req.assistant_id, req.user_id, updated_variables)
 
-    # 8. Memory & Summary Management (Your existing smart memory logic!)
+    # 8. Save exact token usage to your database
+    log_model_usage(
+        assistant_id=req.assistant_id,
+        conversation_id=req.conversation_id,
+        user_id=req.user_id,
+        model="langgraph-multi-agent",
+        purpose="chat_turn",
+        input_tokens=exact_input_tokens,
+        output_tokens=exact_output_tokens,
+        estimated_cost_usd=exact_total_cost,
+        metadata={"route_taken": final_state.get("next_step", "unknown")}
+    )
+
+    # 9. Memory & Summary Management (Background process)
     updated_summary = update_conversation_summary(
         conversation_id=req.conversation_id,
         assistant_id=req.assistant_id,
@@ -287,18 +298,20 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         variables=updated_variables,
     )
 
-    # 9. Return the structured payload expected by your frontend/n8n
-    response_payload = {
+    # 10. Return the structured payload to the frontend
+    return {
         "answer": answer,
         "assistant_id": req.assistant_id,
         "conversation_id": req.conversation_id,
         "variables": updated_variables,
-        "missing_variables": [], # Handled naturally in chat now
-        "route": {"answer_mode": "langgraph_agentic"},
+        "route": {"answer_mode": "langgraph_agentic", "route_taken": final_state.get("next_step")},
         "summary": updated_summary,
         "long_term_memories_written": long_term_memories_written,
+        "token_usage": {
+            "input_tokens": exact_input_tokens,
+            "output_tokens": exact_output_tokens,
+            "cost_usd": exact_total_cost
+        },
         "mock_mode": MOCK_MODE,
         "memory_saved": bool(long_term_memories_written),
     }
-
-    return compact_chat_response(response_payload)
