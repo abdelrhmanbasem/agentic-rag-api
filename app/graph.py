@@ -240,7 +240,7 @@ def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
     return schema
 
 
-def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 80) -> Dict[str, Any]:
+def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 50) -> Dict[str, Any]:
     """
     Generic schema compaction.
     No assistant-specific fields are hardcoded.
@@ -257,12 +257,12 @@ def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 80) -> Dic
 
         if isinstance(value, dict):
             compact[key] = {
-                k: clip_text(v, 220) if isinstance(v, str) else v
+                k: clip_text(v, 140) if isinstance(v, str) else v
                 for k, v in value.items()
                 if k in ["type", "description", "enum", "items", "required"]
             }
         else:
-            compact[key] = clip_text(value, 220)
+            compact[key] = clip_text(value, 140)
 
     return compact
 
@@ -366,7 +366,7 @@ def unified_manifest_card(agent_config: Dict[str, Any], schema: Dict[str, Any]) 
         "response_rules": (agent_config.get("response_rules") or [])[:10],
         "subagents": compact_subagents_for_manifest(agent_config),
         "tools": compact_tool_catalog(agent_config),
-        "variable_schema": summarize_schema_fields(schema, max_fields=80),
+        "variable_schema": summarize_schema_fields(schema, max_fields=50),
     }
 
 
@@ -475,7 +475,8 @@ def should_use_simple_response(state: AgentState) -> bool:
     if manifest.get("risk_level") in ["high", "medium"]:
         return False
 
-    if manifest_confidence(manifest) < 0.8:
+    # Safe lower threshold: other gates already block risky, tool, KB, memory, and complex cases.
+    if manifest_confidence(manifest) < 0.7:
         return False
 
     if state.get("tool_result"):
@@ -556,6 +557,7 @@ def unified_manifest_node(state: AgentState):
             "system",
             "You are the Unified Manifest brain of a configurable multi-tenant agentic assistant engine. "
             "Return ONLY a valid JSON object. No markdown. No prose. "
+            "Do not leave confidence at the default value. Use confidence 0.85-0.98 when the route and next step are clear. Use 0.6-0.75 only when uncertain. "
             "Do not write the final user-facing answer. "
             "Decide routing, variable updates, memory/knowledge/tool needs, risk, conversation stage, response brief, and whether simple response mode is appropriate. "
             "Do not use hidden business rules. Use only the assistant manifest card, current variables, summary, tool result, and latest user message. "
@@ -570,7 +572,9 @@ def unified_manifest_node(state: AgentState):
             "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, extracted_updates, extracted_deletions, response_style, reply_length, "
             "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
             "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move. "
-            "extracted_updates and tool_request_payload must be JSON objects. extracted_deletions and missing_tool_inputs must be arrays.",
+            "extracted_updates and tool_request_payload must be JSON objects. extracted_deletions and missing_tool_inputs must be arrays. "
+            "Create a response_brief that guides the response LLM: tone, language, reply_length, must_do, must_not_do, and next_move. "
+            "For simple symptom or problem reports, response_brief.must_do should include: acknowledge the issue naturally, mention likely causes only if supported by assistant config or common diagnostic reasoning, then ask one specific follow-up.",
         ),
         (
             "user",
@@ -585,7 +589,7 @@ def unified_manifest_node(state: AgentState):
 
     try:
         decision = (prompt | manifest_llm).invoke({
-            "manifest_card": safe_json(unified_manifest_card(agent_config, schema), max_chars=7000),
+            "manifest_card": safe_json(unified_manifest_card(agent_config, schema), max_chars=6200),
             "summary": clip_text(state.get("summary", ""), 500),
             "variables": safe_json(compact_variables(variables, schema), max_chars=1800),
             "tool_result": safe_json(tool_result, max_chars=2200),
