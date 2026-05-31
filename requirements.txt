@@ -5,8 +5,8 @@ qdrant-client
 openai
 pydantic
 python-dotenv
-# Added for Agentic Routing and Smart Memory
 langchain
 langchain-openai
 langgraph
 langchain-qdrant
+langchain-community
