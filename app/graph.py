@@ -111,6 +111,7 @@ def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
 
 def parse_manifest_response(content: Any) -> Dict[str, Any]:
     text = content.content if hasattr(content, "content") else str(content)
+
     try:
         parsed = json.loads(text)
         if not isinstance(parsed, dict):
@@ -143,6 +144,7 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "needs_subagent_reasoning": False,
         "needs_quality_guard": False,
         "needs_style_repair": False,
+        "needs_full_manifest": False,
         "extracted_updates": {},
         "extracted_deletions": [],
         "response_style": "",
@@ -160,6 +162,7 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         },
         "response_strategy": "",
         "reasoning_summary": "",
+        "manifest_profile_used": "",
     }
 
     out = dict(defaults)
@@ -203,32 +206,101 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Supports both shapes:
+    1. {"field_name": {...}}
+    2. {"schema": {"field_name": {...}}}
+
+    This keeps the engine generic. Assistant-specific variables come from schema.json.
+    """
     if not isinstance(schema, dict):
         return {}
+
     nested = schema.get("schema")
     if isinstance(nested, dict):
         return nested
+
     return schema
 
 
-def summarize_schema_fields(schema: Dict[str, Any], max_fields: int = 50) -> Dict[str, Any]:
+def schema_priority_rank(value: Dict[str, Any]) -> int:
+    """
+    Generic priority ranking.
+
+    No assistant-specific fields are hardcoded here.
+    The priority comes from schema.json:
+      "priority": "high" | "medium" | "low"
+    """
+    if not isinstance(value, dict):
+        return 99
+
+    priority = str(value.get("priority", "low")).lower().strip()
+
+    if priority == "high":
+        return 0
+
+    if priority == "medium":
+        return 1
+
+    if priority == "low":
+        return 2
+
+    return 3
+
+
+def summarize_schema_fields(
+    schema: Dict[str, Any],
+    max_fields: int = 50,
+    profile: str = "short",
+) -> Dict[str, Any]:
+    """
+    Generic schema compaction.
+
+    No assistant-specific fields are hardcoded here.
+    Field importance comes from schema.json metadata:
+      "priority": "high" | "medium" | "low"
+
+    short profile:
+      - prioritizes high fields first
+      - includes fewer/lighter descriptions
+
+    full profile:
+      - allows more fields and slightly more description
+    """
     fields = get_schema_fields(schema)
     if not fields:
         return {}
 
+    profile = (profile or "short").lower().strip()
+
+    if profile == "short":
+        max_fields = min(max_fields, 32)
+        desc_chars = 95
+        allowed_keys = ["type", "description", "enum", "items", "required", "priority"]
+    else:
+        max_fields = min(max_fields, 70)
+        desc_chars = 160
+        allowed_keys = ["type", "description", "enum", "items", "required", "priority"]
+
+    ordered_items = sorted(
+        fields.items(),
+        key=lambda item: (schema_priority_rank(item[1]), item[0]),
+    )
+
     compact = {}
-    for idx, (key, value) in enumerate(fields.items()):
+
+    for idx, (key, value) in enumerate(ordered_items):
         if idx >= max_fields:
             break
 
         if isinstance(value, dict):
             compact[key] = {
-                k: clip_text(v, 140) if isinstance(v, str) else v
+                k: clip_text(v, desc_chars) if isinstance(v, str) else v
                 for k, v in value.items()
-                if k in ["type", "description", "enum", "items", "required"]
+                if k in allowed_keys
             }
         else:
-            compact[key] = clip_text(value, 140)
+            compact[key] = clip_text(value, desc_chars)
 
     return compact
 
@@ -238,6 +310,11 @@ def compact_variables(
     schema: Optional[Dict[str, Any]] = None,
     max_items: int = 40,
 ) -> Dict[str, Any]:
+    """
+    Generic variable compaction.
+    Prioritizes variables defined by the assistant schema, then keeps other non-empty variables.
+    No business-specific keys are hardcoded.
+    """
     if not variables:
         return {}
 
@@ -284,6 +361,7 @@ def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[s
 
 def compact_subagents_for_manifest(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     compact = []
+
     for subagent in agent_config.get("subagents") or []:
         compact.append({
             "id": subagent.get("id", ""),
@@ -292,11 +370,13 @@ def compact_subagents_for_manifest(agent_config: Dict[str, Any]) -> List[Dict[st
             "goal": clip_text(subagent.get("goal", ""), 220),
             "allowed_actions": subagent.get("allowed_actions", []),
         })
+
     return compact
 
 
 def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     tools = []
+
     for tool in agent_config.get("tool_catalog") or []:
         tools.append({
             "name": tool.get("name", ""),
@@ -306,20 +386,54 @@ def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "source_of_truth": tool.get("source_of_truth", False),
             "result_policy": clip_text(tool.get("result_policy", ""), 260),
         })
+
     return tools
 
 
-def unified_manifest_card(agent_config: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
+def unified_manifest_card(
+    agent_config: Dict[str, Any],
+    schema: Dict[str, Any],
+    profile: str = "short",
+) -> Dict[str, Any]:
+    """
+    Generic assistant manifest profile.
+
+    profile="short":
+      Smaller card for most normal turns.
+      Keeps tone, language, routing, subagents, tools, grounding, and high-priority schema.
+
+    profile="full":
+      Larger card used only when the short card is insufficient or confidence is low.
+
+    No assistant-specific fields or business rules are hardcoded here.
+    """
+    profile = (profile or "short").lower().strip()
+
+    if profile == "full":
+        return {
+            "profile": "full",
+            "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
+            "conversation_style": clip_text(agent_config.get("conversation_style", ""), 420),
+            "language_policy": clip_text(agent_config.get("language_policy", ""), 320),
+            "routing_policy": clip_text(agent_config.get("routing_policy", ""), 900),
+            "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 650),
+            "response_rules": (agent_config.get("response_rules") or [])[:14],
+            "subagents": compact_subagents_for_manifest(agent_config),
+            "tools": compact_tool_catalog(agent_config),
+            "variable_schema": summarize_schema_fields(schema, max_fields=70, profile="full"),
+        }
+
     return {
-        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 320),
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 280),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 220),
-        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 650),
-        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 420),
-        "response_rules": (agent_config.get("response_rules") or [])[:10],
+        "profile": "short",
+        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 260),
+        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 220),
+        "language_policy": clip_text(agent_config.get("language_policy", ""), 180),
+        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 420),
+        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 260),
+        "response_rules": (agent_config.get("response_rules") or [])[:8],
         "subagents": compact_subagents_for_manifest(agent_config),
         "tools": compact_tool_catalog(agent_config),
-        "variable_schema": summarize_schema_fields(schema, max_fields=50),
+        "variable_schema": summarize_schema_fields(schema, max_fields=32, profile="short"),
     }
 
 
@@ -361,6 +475,8 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "needs_subagent_reasoning": manifest.get("needs_subagent_reasoning", False),
         "needs_quality_guard": manifest.get("needs_quality_guard", False),
         "needs_style_repair": manifest.get("needs_style_repair", False),
+        "needs_full_manifest": manifest.get("needs_full_manifest", False),
+        "manifest_profile_used": manifest.get("manifest_profile_used", ""),
         "response_style": manifest.get("response_style", ""),
         "reply_length": manifest.get("reply_length", ""),
         "should_ask_question": manifest.get("should_ask_question", False),
@@ -493,6 +609,8 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "needs_subagent_reasoning": manifest.get("needs_subagent_reasoning", False),
         "needs_quality_guard": manifest.get("needs_quality_guard", False),
         "needs_style_repair": manifest.get("needs_style_repair", False),
+        "needs_full_manifest": manifest.get("needs_full_manifest", False),
+        "manifest_profile_used": manifest.get("manifest_profile_used", ""),
         "tool_request_payload": manifest.get("tool_request_payload", {}),
         "missing_tool_inputs": manifest.get("missing_tool_inputs", []),
         "manifest_error": manifest.get("manifest_error", ""),
@@ -520,11 +638,12 @@ def unified_manifest_node(state: AgentState):
             "Extract only clear durable variable updates from the latest message using the provided variable schema. Do not infer aggressively. "
             "Use simple_response_mode only for low-risk messages that can be answered well from config/context without memory, knowledge, tools, subagent reasoning, or quality guard. "
             "Do not use simple_response_mode when the message requires business facts, policy facts, tool results, external actions, high/medium risk handling, uncertain facts, or multi-step reasoning. "
+            "If the provided assistant manifest card is too compact to make a reliable decision, set needs_full_manifest=true and confidence below 0.7. "
             "Never claim tool results, availability, prices, policies, IDs, or external facts unless they are present in tool_result, variables, conversation context, or retrieved knowledge. "
             "The JSON object must use exactly these top-level keys: "
             "user_intent, selected_subagent_id, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
             "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
-            "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, extracted_updates, extracted_deletions, response_style, reply_length, "
+            "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, "
             "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
             "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move. "
             "extracted_updates and tool_request_payload must be JSON objects. extracted_deletions and missing_tool_inputs must be arrays. "
@@ -542,16 +661,46 @@ def unified_manifest_node(state: AgentState):
         ),
     ])
 
-    try:
+    def invoke_manifest(profile: str) -> Dict[str, Any]:
+        manifest_card_max = 4200 if profile == "short" else 7200
+
         decision = (prompt | manifest_llm).invoke({
-            "manifest_card": safe_json(unified_manifest_card(agent_config, schema), max_chars=6200),
+            "manifest_card": safe_json(
+                unified_manifest_card(agent_config, schema, profile=profile),
+                max_chars=manifest_card_max,
+            ),
             "summary": clip_text(state.get("summary", ""), 500),
             "variables": safe_json(compact_variables(variables, schema), max_chars=1800),
             "tool_result": safe_json(tool_result, max_chars=2200),
             "message": message,
         })
-        manifest = parse_manifest_response(decision)
-        manifest = normalize_json_manifest(manifest)
+
+        parsed = parse_manifest_response(decision)
+        parsed = normalize_json_manifest(parsed)
+        parsed["manifest_profile_used"] = profile
+        return parsed
+
+    try:
+        manifest = invoke_manifest("short")
+
+        subagents = agent_config.get("subagents") or []
+        known_subagent_ids = {
+            s.get("id")
+            for s in subagents
+            if isinstance(s, dict) and s.get("id")
+        }
+
+        selected_id = manifest.get("selected_subagent_id", "")
+        selected_subagent_missing = bool(known_subagent_ids) and selected_id not in known_subagent_ids
+
+        should_retry_full = (
+            bool(manifest.get("needs_full_manifest"))
+            or manifest_confidence(manifest) < 0.65
+            or selected_subagent_missing
+        )
+
+        if should_retry_full:
+            manifest = invoke_manifest("full")
 
     except Exception as exc:
         subagents = agent_config.get("subagents") or [{"id": "general"}]
@@ -577,6 +726,7 @@ def unified_manifest_node(state: AgentState):
             "needs_subagent_reasoning": True,
             "needs_quality_guard": True,
             "needs_style_repair": False,
+            "needs_full_manifest": True,
             "extracted_updates": {},
             "extracted_deletions": [],
             "response_style": "",
@@ -595,6 +745,7 @@ def unified_manifest_node(state: AgentState):
             "response_strategy": "Answer carefully and do not invent facts.",
             "reasoning_summary": f"Fallback manifest due to error: {error_text}",
             "manifest_error": error_text,
+            "manifest_profile_used": "fallback",
         }
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
