@@ -1,19 +1,12 @@
 # app/domain_playbooks.py
-# Domain playbooks for all future assistants.
-#
-# Purpose:
-# - Keep assistant behavior consistent and smart across verticals.
-# - Give the brain a domain-specific strategy without using GPT.
+# Domain playbooks to inject business logic directly into the LangGraph LLM brain.
 
 from typing import Dict, Any, List
 
-
 DOMAIN_PLAYBOOKS: Dict[str, Dict[str, Any]] = {
     "car_sales": {
-        "goal": "qualify buyer, recommend suitable inventory, handle objections, and book a viewing",
-        "primary_cta": "viewing",
-        "tone": "sharp_sales_operator",
-        "preferred_style": "short_persuasive",
+        "goal": "Qualify the buyer, recommend suitable inventory, gracefully handle price objections, and book a physical viewing.",
+        "primary_cta": "Schedule a physical viewing",
         "required_to_confirm": [
             "preferred_viewing_date",
             "preferred_viewing_time",
@@ -21,71 +14,26 @@ DOMAIN_PLAYBOOKS: Dict[str, Dict[str, Any]] = {
             "phone_number",
         ],
         "important_variables": [
-            "car_brand",
-            "car_condition",
-            "budget_max",
-            "transmission",
-            "matched_car_model",
-            "matched_car_year",
-            "matched_car_km",
-            "matched_car_price",
-            "selected_item",
-            "location",
-            "phone_number",
+            "car_brand", "car_condition", "budget_max", "transmission",
+            "matched_car_model", "matched_car_price"
         ],
-        "common_objections": [
-            "price",
-            "mileage",
-            "condition",
-            "financing",
-            "comparison",
-            "trust",
-        ],
-        "next_moves": {
-            "new": "match_inventory",
-            "matched_inventory": "answer_then_soft_close",
-            "budget_confirmed": "book_viewing",
-            "viewing_requested": "collect_viewing_details",
-            "confirmed": "confirm_and_handoff",
-        },
+        "common_objections": ["price", "mileage", "condition", "financing"]
     },
     "service_booking": {
-        "goal": "identify service, collect appointment details, and confirm booking",
-        "primary_cta": "appointment",
-        "tone": "calm_booking_operator",
-        "preferred_style": "short_reassuring",
+        "goal": "Identify the exact service needed, collect appointment details calmly, and confirm the booking.",
+        "primary_cta": "Confirm appointment time and date",
         "required_to_confirm": [
             "service_needed",
             "appointment_date",
             "appointment_time",
             "phone_number",
         ],
-        "important_variables": [
-            "service_needed",
-            "appointment_date",
-            "appointment_time",
-            "doctor_preference",
-            "patient_name",
-            "phone_number",
-        ],
-        "common_objections": [
-            "price",
-            "availability",
-            "urgency",
-            "trust",
-        ],
-        "next_moves": {
-            "new": "identify_service",
-            "service_identified": "collect_date_time",
-            "booking_requested": "collect_booking_details",
-            "confirmed": "confirm_and_handoff",
-        },
+        "important_variables": ["service_needed", "doctor_preference", "patient_name", "phone_number"],
+        "common_objections": ["price", "availability", "urgency", "trust"]
     },
     "real_estate": {
-        "goal": "qualify needs, recommend properties, handle objections, book viewing",
-        "primary_cta": "property_viewing",
-        "tone": "sharp_property_operator",
-        "preferred_style": "short_persuasive",
+        "goal": "Qualify housing needs, recommend properties, handle location/price objections, and book a viewing.",
+        "primary_cta": "Book a property viewing",
         "required_to_confirm": [
             "property_location",
             "budget_max",
@@ -93,117 +41,63 @@ DOMAIN_PLAYBOOKS: Dict[str, Dict[str, Any]] = {
             "viewing_time",
             "phone_number",
         ],
-        "important_variables": [
-            "property_type",
-            "property_location",
-            "bedrooms",
-            "budget_max",
-            "phone_number",
-        ],
-        "common_objections": [
-            "price",
-            "location",
-            "space",
-            "availability",
-        ],
-        "next_moves": {
-            "new": "qualify_location_budget",
-            "matched_inventory": "answer_then_soft_close",
-            "viewing_requested": "collect_viewing_details",
-            "confirmed": "confirm_and_handoff",
-        },
+        "important_variables": ["property_type", "bedrooms", "budget_max"],
+        "common_objections": ["price", "location", "space", "availability"]
     },
     "ecommerce": {
-        "goal": "identify product, answer availability, confirm variant, progress order",
-        "primary_cta": "order",
-        "tone": "helpful_sales_operator",
-        "preferred_style": "short",
+        "goal": "Identify the product, confirm availability/variants (size/color), and finalize the order details.",
+        "primary_cta": "Confirm order and shipping",
         "required_to_confirm": [
             "product_name",
             "phone_number",
             "shipping_address",
         ],
-        "important_variables": [
-            "product_name",
-            "product_category",
-            "size",
-            "color",
-            "phone_number",
-            "shipping_address",
-        ],
-        "common_objections": [
-            "price",
-            "delivery",
-            "quality",
-            "returns",
-        ],
-        "next_moves": {
-            "new": "identify_product",
-            "matched_inventory": "answer_then_soft_close",
-            "order_requested": "collect_order_details",
-            "confirmed": "confirm_order",
-        },
+        "important_variables": ["product_name", "size", "color"],
+        "common_objections": ["price", "delivery time", "quality", "returns"]
     },
     "general": {
-        "goal": "answer clearly and collect one useful next detail",
-        "primary_cta": "continue",
-        "tone": "helpful_operator",
-        "preferred_style": "short",
+        "goal": "Answer clearly, be helpful, and organically collect any missing details to assist the user.",
+        "primary_cta": "Continue the conversation naturally",
         "required_to_confirm": [],
         "important_variables": [],
-        "common_objections": [],
-        "next_moves": {
-            "general": "continue",
-        },
+        "common_objections": []
     },
 }
 
 
 ASSISTANT_STYLE_PROFILES: Dict[str, Dict[str, Any]] = {
     "sharp_sales_operator": {
-        "language": "same_as_user",
-        "verbosity": "short_but_persuasive",
-        "cta_style": "single_next_step",
         "do": [
-            "answer first",
-            "connect answer to user goal",
-            "move conversation forward",
-            "sound confident but not pushy",
+            "Answer the user's immediate question first.",
+            "Connect the answer to their ultimate goal naturally.",
+            "Ask exactly ONE conversational follow-up question to move towards the CTA.",
+            "Sound confident, native, and helpful, not pushy or robotic."
         ],
         "dont": [
-            "overpromise",
-            "ask multiple questions",
-            "sound robotic",
-            "repeat the same CTA",
+            "Do not overpromise facts you don't have.",
+            "Do not ask multiple questions at the same time.",
+            "Do not sound like a scripted bot."
         ],
     },
     "calm_booking_operator": {
-        "language": "same_as_user",
-        "verbosity": "short_reassuring",
-        "cta_style": "collect_one_detail",
         "do": [
-            "confirm what was understood",
-            "ask for one missing detail",
-            "be calm and clear",
+            "Confirm what you just understood calmly.",
+            "Ask for ONE missing detail required for booking at a time.",
+            "Be empathetic if they are asking about medical or sensitive services."
         ],
         "dont": [
-            "overwhelm user",
-            "ask multiple fields at once",
-            "invent availability",
+            "Do not overwhelm the user with a massive form.",
+            "Do not invent availability or doctor names."
         ],
     },
     "helpful_operator": {
-        "language": "same_as_user",
-        "verbosity": "short_clear",
-        "cta_style": "continue",
         "do": [
-            "be direct",
-            "be useful",
-            "ask one natural follow-up",
+            "Be direct, highly useful, and conversational.",
+            "Ask one natural follow-up if context is missing."
         ],
         "dont": [
-            "over-explain",
-            "invent facts",
+            "Do not over-explain.",
+            "Do not invent facts outside of the provided knowledge."
         ],
     },
 }
@@ -212,27 +106,39 @@ ASSISTANT_STYLE_PROFILES: Dict[str, Dict[str, Any]] = {
 def get_domain_playbook(workflow: str) -> Dict[str, Any]:
     return DOMAIN_PLAYBOOKS.get(workflow or "general", DOMAIN_PLAYBOOKS["general"])
 
-
 def get_style_profile(style_name: str) -> Dict[str, Any]:
+    # Default to helpful_operator if not found
     return ASSISTANT_STYLE_PROFILES.get(style_name or "helpful_operator", ASSISTANT_STYLE_PROFILES["helpful_operator"])
 
-
-def infer_style_for_workflow(workflow: str) -> Dict[str, Any]:
+def build_playbook_prompt(workflow: str, tone_profile: str = "helpful_operator") -> str:
+    """
+    Transforms the playbook dictionaries into a strict set of LLM instructions.
+    This replaces thousands of lines of procedural code.
+    """
     playbook = get_domain_playbook(workflow)
-    return get_style_profile(playbook.get("tone", "helpful_operator"))
+    style = get_style_profile(tone_profile)
+    
+    do_rules = "\n".join([f"- {rule}" for rule in style["do"]])
+    dont_rules = "\n".join([f"- {rule}" for rule in style["dont"]])
+    
+    missing_fields_instruction = ""
+    if playbook["required_to_confirm"]:
+        reqs = ", ".join(playbook["required_to_confirm"])
+        missing_fields_instruction = f"CRITICAL: To achieve your goal, you eventually need to collect these fields: [{reqs}]. If any are missing in the 'Known Details', naturally ask the user for ONE of them in your response."
 
+    prompt = f"""
+=== DOMAIN PLAYBOOK & STRATEGY ===
+Your Goal: {playbook['goal']}
+Primary CTA: {playbook['primary_cta']}
 
-def required_fields_for_workflow(workflow: str) -> List[str]:
-    return list(get_domain_playbook(workflow).get("required_to_confirm", []))
+{missing_fields_instruction}
 
+CONVERSATION STYLE RULES ({tone_profile}):
+DO:
+{do_rules}
 
-def missing_required_fields(workflow: str, variables: Dict[str, Any]) -> List[str]:
-    variables = variables or {}
-    missing = []
-
-    for key in required_fields_for_workflow(workflow):
-        value = variables.get(key)
-        if value is None or value == "":
-            missing.append(key)
-
-    return missing
+DO NOT:
+{dont_rules}
+==================================
+"""
+    return prompt
