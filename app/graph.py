@@ -47,7 +47,11 @@ class AgentState(TypedDict, total=False):
 
 
 def llm(model: str, temperature: float = 0.0, max_tokens: Optional[int] = None):
-    kwargs = {"model": model, "temperature": temperature, "api_key": OPENAI_API_KEY}
+    kwargs = {
+        "model": model,
+        "temperature": temperature,
+        "api_key": OPENAI_API_KEY,
+    }
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
     return ChatOpenAI(**kwargs)
@@ -67,6 +71,8 @@ class PlanDecision(BaseModel):
     needs_memory: bool
     needs_tool: bool
     requested_tool_name: str = ""
+    should_extract_variables: bool = False
+    extraction_reason: str = ""
     should_answer_now: bool = True
     missing_or_uncertain_info: List[str] = Field(default_factory=list)
     risk_level: str = Field(description="low|medium|high")
@@ -107,6 +113,13 @@ def last_user_message(state: AgentState) -> str:
     return ""
 
 
+def clip_text(value: Any, max_chars: int = 1200) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n...[trimmed]"
+
+
 def format_subagents(agent_config: Dict[str, Any]) -> str:
     subagents = agent_config.get("subagents") or []
     return json.dumps(subagents, ensure_ascii=False, indent=2)
@@ -126,13 +139,6 @@ def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[s
             return subagent
 
     return subagents[0]
-
-
-def clip_text(value: Any, max_chars: int = 1200) -> str:
-    text = "" if value is None else str(value)
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + "\n...[trimmed]"
 
 
 def compact_subagents_for_planner(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -169,16 +175,16 @@ def compact_config_for_planner(agent_config: Dict[str, Any]) -> Dict[str, Any]:
 
 def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "assistant_goal": agent_config.get("assistant_goal", ""),
-        "conversation_style": agent_config.get("conversation_style", ""),
-        "language_policy": agent_config.get("language_policy", ""),
-        "grounding_policy": agent_config.get("grounding_policy", ""),
+        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
+        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 350),
+        "language_policy": clip_text(agent_config.get("language_policy", ""), 250),
+        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 600),
         "routing_policy": clip_text(agent_config.get("routing_policy", ""), 800),
         "response_rules": (agent_config.get("response_rules") or [])[:10],
         "selected_subagent": {
             "id": selected_subagent.get("id", ""),
             "name": selected_subagent.get("name", ""),
-            "goal": selected_subagent.get("goal", ""),
+            "goal": clip_text(selected_subagent.get("goal", ""), 350),
             "instructions": clip_text(selected_subagent.get("instructions", ""), 900),
             "allowed_actions": selected_subagent.get("allowed_actions", []),
         },
@@ -278,6 +284,8 @@ def compact_planner(planner: Dict[str, Any]) -> Dict[str, Any]:
         "needs_memory": planner.get("needs_memory", False),
         "needs_tool": planner.get("needs_tool", False),
         "requested_tool_name": planner.get("requested_tool_name", ""),
+        "should_extract_variables": planner.get("should_extract_variables", False),
+        "extraction_reason": clip_text(planner.get("extraction_reason", ""), 300),
         "missing_or_uncertain_info": planner.get("missing_or_uncertain_info", []),
         "risk_level": planner.get("risk_level", "low"),
         "response_strategy": clip_text(planner.get("response_strategy", ""), 700),
@@ -309,6 +317,13 @@ def compact_memories_for_final(memories: str, max_chars: int = 700) -> str:
     return clip_text(memories, max_chars)
 
 
+def planner_confidence(planner: Dict[str, Any]) -> float:
+    try:
+        return float(planner.get("confidence", 0) or 0)
+    except Exception:
+        return 0.0
+
+
 def should_skip_subagent_reasoning(state: AgentState) -> bool:
     planner = state.get("planner", {}) or {}
 
@@ -321,12 +336,7 @@ def should_skip_subagent_reasoning(state: AgentState) -> bool:
     if planner.get("risk_level") in ["high", "medium"]:
         return False
 
-    try:
-        confidence = float(planner.get("confidence", 0) or 0)
-    except Exception:
-        confidence = 0
-
-    if confidence < 0.75:
+    if planner_confidence(planner) < 0.75:
         return False
 
     return True
@@ -403,14 +413,17 @@ def planner_node(state: AgentState):
             "system",
             "You are the main reasoning brain of a configurable Agentic RAG system. "
             "Think internally, analyze the user's goal, deduce what is needed, choose the best subagent from the provided config, "
-            "and decide whether memory, knowledge search, or tool usage is needed. "
+            "and decide whether memory, knowledge search, tool usage, or variable extraction is needed. "
             "Do not use fixed business rules. Use only the assistant config, subagent descriptions, current context, and your reasoning. "
-            "Prefer smooth human conversation over token saving. "
+            "Prefer smooth human conversation over token saving, but avoid unnecessary steps. "
             "Avoid hallucination by requesting knowledge when factual business info may be needed. "
             "If the latest message is a tool result, select the correct tool-result handler subagent and answer from the tool result. "
             "Do not over-escalate safety. Normal brake squeak, brake whistle, brake noise, or worn pads should go to diagnosis_advisor, not safety_advisor, unless the user says brakes are weak, failing, car is not stopping, or unsafe. "
             "Use safety_advisor only for clear danger: brake failure, smoke, burning smell, severe overheating with steam, red warning light, steering loss, or explicitly unsafe driving. "
-            "Be selective with knowledge retrieval. Do not request knowledge for simple greetings, acknowledgements, or first-step diagnostic follow-up unless exact business facts are needed.",
+            "Be selective with knowledge retrieval. Do not request knowledge for simple greetings, acknowledgements, or first-step diagnostic follow-up unless exact business facts are needed. "
+            "Decide whether variable extraction is needed. "
+            "Set should_extract_variables=true only when the latest user message likely contains new or changed useful variables, such as booking details, name, phone, date, time, branch, service choice, confirmation, cancellation, preference, or corrected information. "
+            "For simple greetings, thanks, acknowledgements, or first-step symptom descriptions without booking details, set should_extract_variables=false.",
         ),
         (
             "user",
@@ -421,7 +434,8 @@ def planner_node(state: AgentState):
             "Known variables:\n{variables}\n\n"
             "Latest tool result, if any:\n{tool_result}\n\n"
             "Latest user message:\n{message}\n\n"
-            "Return a decision. The selected_subagent_id MUST be one of the configured subagent ids.",
+            "Return a decision. The selected_subagent_id MUST be one of the configured subagent ids. "
+            "Also decide whether variable extraction is needed before continuing.",
         ),
     ])
 
@@ -445,6 +459,8 @@ def planner_node(state: AgentState):
             "needs_memory": True,
             "needs_tool": False,
             "requested_tool_name": "",
+            "should_extract_variables": False,
+            "extraction_reason": "",
             "should_answer_now": True,
             "missing_or_uncertain_info": [],
             "risk_level": "medium",
@@ -455,6 +471,19 @@ def planner_node(state: AgentState):
 
     selected_subagent = get_subagent_by_id(agent_config, planner.get("selected_subagent_id", ""))
     return {"planner": planner, "selected_subagent": selected_subagent}
+
+
+def decide_after_initial_planner(state: AgentState) -> str:
+    planner = state.get("planner", {}) or {}
+
+    if planner.get("should_extract_variables"):
+        return "extract_variables"
+
+    return "retrieve_memory"
+
+
+def planner_refine_node(state: AgentState):
+    return planner_node(state)
 
 
 def retrieve_memory_node(state: AgentState):
@@ -723,17 +752,29 @@ def quality_guard_node(state: AgentState):
 
 workflow = StateGraph(AgentState)
 
-workflow.add_node("extract_variables", extract_variables_node)
 workflow.add_node("planner", planner_node)
+workflow.add_node("extract_variables", extract_variables_node)
+workflow.add_node("planner_refine", planner_refine_node)
 workflow.add_node("retrieve_memory", retrieve_memory_node)
 workflow.add_node("retrieve_knowledge", retrieve_knowledge_node)
 workflow.add_node("subagent_reasoning", subagent_reasoning_node)
 workflow.add_node("response", response_node)
 workflow.add_node("quality_guard", quality_guard_node)
 
-workflow.set_entry_point("extract_variables")
-workflow.add_edge("extract_variables", "planner")
-workflow.add_edge("planner", "retrieve_memory")
+workflow.set_entry_point("planner")
+
+workflow.add_conditional_edges(
+    "planner",
+    decide_after_initial_planner,
+    {
+        "extract_variables": "extract_variables",
+        "retrieve_memory": "retrieve_memory",
+    },
+)
+
+workflow.add_edge("extract_variables", "planner_refine")
+workflow.add_edge("planner_refine", "retrieve_memory")
+
 workflow.add_conditional_edges(
     "retrieve_memory",
     decide_after_memory,
@@ -743,6 +784,7 @@ workflow.add_conditional_edges(
         "response": "response",
     },
 )
+
 workflow.add_conditional_edges(
     "retrieve_knowledge",
     decide_after_knowledge,
@@ -751,6 +793,7 @@ workflow.add_conditional_edges(
         "subagent_reasoning": "subagent_reasoning",
     },
 )
+
 workflow.add_edge("subagent_reasoning", "response")
 workflow.add_edge("response", "quality_guard")
 workflow.add_edge("quality_guard", END)
