@@ -2313,122 +2313,119 @@ def chat(req: ChatRequest, x_api_key: str = Header(default="")):
         },
     )
 
-if premium_handled:
-    updated_variables = premium_result.get("variables") or dict(existing_variables or {})
-    answer = premium_result["answer"]
+    if premium_handled:
+        updated_variables = premium_result.get("variables") or dict(existing_variables or {})
+        answer = premium_result["answer"]
 
-    # ------------------------------------------------------------
-    # Post-premium booking handoff
-    # If premium brain detects that the customer agreed to visit,
-    # hand control to booking sub-agent instead of stopping at a
-    # generic "I will look for appointments" answer.
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Post-premium booking handoff
+        # ------------------------------------------------------------
 
-    booking_handoff_needed = (
-        req.assistant_id == "service_center_agentic_rag"
-        and (
-            updated_variables.get("customer_agreed_to_visit") is True
-            or updated_variables.get("intent") == "booking_request"
-            or updated_variables.get("workflow_stage") == "booking_requested"
-            or updated_variables.get("next_service_action") == "offer_booking"
-        )
-        and not premium_result.get("action_required")
-    )
-
-    if booking_handoff_needed:
-        booking_result = run_booking_subagent(
-            assistant=assistant,
-            assistant_id=req.assistant_id,
-            user_id=req.user_id,
-            conversation_id=req.conversation_id,
-            message=req.message,
-            variables=updated_variables,
-            recent_messages=recent_messages,
-            summary=summary,
-            schema=schema,
-            tool_result=req.tool_result,
+        booking_handoff_needed = (
+            req.assistant_id == "service_center_agentic_rag"
+            and (
+                updated_variables.get("customer_agreed_to_visit") is True
+                or updated_variables.get("intent") == "booking_request"
+                or updated_variables.get("workflow_stage") == "booking_requested"
+                or updated_variables.get("next_service_action") == "offer_booking"
+            )
+            and not premium_result.get("action_required")
         )
 
-        if booking_result.get("handled"):
-            updated_variables = dict(updated_variables or {})
-            updated_variables.update(booking_result.get("variables", {}))
-
-            save_variables(
-                req.conversation_id,
-                req.assistant_id,
-                req.user_id,
-                updated_variables,
+        if booking_handoff_needed:
+            booking_result = run_booking_subagent(
+                assistant=assistant,
+                assistant_id=req.assistant_id,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                message=req.message,
+                variables=updated_variables,
+                recent_messages=recent_messages,
+                summary=summary,
+                schema=schema,
+                tool_result=req.tool_result,
             )
 
-            answer = booking_result.get("answer", "")
+            if booking_result.get("handled"):
+                updated_variables = dict(updated_variables or {})
+                updated_variables.update(booking_result.get("variables", {}))
 
-            save_message(
-                req.conversation_id,
-                req.assistant_id,
-                req.user_id,
-                "user",
-                req.message,
-            )
+                save_variables(
+                    req.conversation_id,
+                    req.assistant_id,
+                    req.user_id,
+                    updated_variables,
+                )
 
-            if answer:
+                answer = booking_result.get("answer", "")
+
                 save_message(
                     req.conversation_id,
                     req.assistant_id,
                     req.user_id,
-                    "assistant",
-                    answer,
+                    "user",
+                    req.message,
                 )
 
-            response_payload = {
-                "answer": answer,
-                "assistant_id": req.assistant_id,
-                "conversation_id": req.conversation_id,
-                "intent": updated_variables.get("intent", "booking_request"),
-                "variables": updated_variables,
-                "variable_updates": booking_result.get("variables", {}),
-                "variable_deletions": [],
-                "missing_variables": booking_result.get("missing_variables", []),
-                "active_subagent": booking_result.get("active_subagent"),
-                "booking_stage": booking_result.get("booking_stage"),
-                "action_required": booking_result.get("action_required"),
-                "recommended_next_action": booking_result.get("recommended_next_action", "booking_flow"),
-                "next_best_action": {
-                    "action": booking_result.get("recommended_next_action", "booking_flow"),
-                    "reason": booking_result.get("reason", "Handled by post-premium booking handoff."),
-                    "confidence": 0.9,
-                },
-                "route": {
-                    "answer_mode": "booking_subagent_after_premium",
+                if answer:
+                    save_message(
+                        req.conversation_id,
+                        req.assistant_id,
+                        req.user_id,
+                        "assistant",
+                        answer,
+                    )
+
+                response_payload = {
+                    "answer": answer,
+                    "assistant_id": req.assistant_id,
+                    "conversation_id": req.conversation_id,
+                    "intent": updated_variables.get("intent", "booking_request"),
+                    "variables": updated_variables,
+                    "variable_updates": booking_result.get("variables", {}),
+                    "variable_deletions": [],
+                    "missing_variables": booking_result.get("missing_variables", []),
                     "active_subagent": booking_result.get("active_subagent"),
                     "booking_stage": booking_result.get("booking_stage"),
-                    "needs_rag": False,
-                    "needs_memory": False,
-                    "rag_cache_hit": False,
-                    "reason": booking_result.get("reason", "Handled by post-premium booking handoff."),
-                },
-                "knowledge_used": premium_result.get("knowledge_used", []),
-                "knowledge_source": premium_result.get("knowledge_source", "premium_then_booking_subagent"),
-                "memories_used": premium_result.get("memories_used", []),
-                "summary": summary,
-                "long_term_memories_written": premium_result.get("long_term_memories_written", []),
-                "model_used": booking_result.get("model_used", "none"),
-                "model_tier": booking_result.get("model_tier", "booking_subagent"),
-                "token_usage": {
+                    "action_required": booking_result.get("action_required"),
+                    "recommended_next_action": booking_result.get("recommended_next_action", "booking_flow"),
+                    "next_best_action": {
+                        "action": booking_result.get("recommended_next_action", "booking_flow"),
+                        "reason": booking_result.get("reason", "Handled by post-premium booking handoff."),
+                        "confidence": 0.9,
+                    },
+                    "route": {
+                        "answer_mode": "booking_subagent_after_premium",
+                        "active_subagent": booking_result.get("active_subagent"),
+                        "booking_stage": booking_result.get("booking_stage"),
+                        "needs_rag": False,
+                        "needs_memory": False,
+                        "rag_cache_hit": False,
+                        "reason": booking_result.get("reason", "Handled by post-premium booking handoff."),
+                    },
+                    "knowledge_used": premium_result.get("knowledge_used", []),
+                    "knowledge_source": premium_result.get("knowledge_source", "premium_then_booking_subagent"),
+                    "memories_used": premium_result.get("memories_used", []),
+                    "summary": summary,
+                    "long_term_memories_written": premium_result.get("long_term_memories_written", []),
                     "model_used": booking_result.get("model_used", "none"),
                     "model_tier": booking_result.get("model_tier", "booking_subagent"),
-                    "answer_mode": "booking_subagent_after_premium",
-                    "input_tokens_estimate": 0,
-                    "output_tokens_estimate": 0,
-                    "total_tokens_estimate": 0,
-                    "estimated_cost_usd": 0.0,
-                    "is_estimate": True,
-                    "notes": "Handled by booking sub-agent after premium detected visit agreement.",
-                },
-                "mock_mode": MOCK_MODE,
-                "memory_saved": bool(premium_result.get("long_term_memories_written", [])),
-            }
+                    "token_usage": {
+                        "model_used": booking_result.get("model_used", "none"),
+                        "model_tier": booking_result.get("model_tier", "booking_subagent"),
+                        "answer_mode": "booking_subagent_after_premium",
+                        "input_tokens_estimate": 0,
+                        "output_tokens_estimate": 0,
+                        "total_tokens_estimate": 0,
+                        "estimated_cost_usd": 0.0,
+                        "is_estimate": True,
+                        "notes": "Handled by booking sub-agent after premium detected visit agreement.",
+                    },
+                    "mock_mode": MOCK_MODE,
+                    "memory_saved": bool(premium_result.get("long_term_memories_written", [])),
+                }
 
-            return compact_chat_response(response_payload)
+                return compact_chat_response(response_payload)
 
     # Temporary fallback disabled.
     # The permanent solution is structured variable output from the main brain.
