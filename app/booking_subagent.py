@@ -75,6 +75,20 @@ def _arabic_digits_to_latin(text: str) -> str:
     return result
 
 
+def branch_display_name(branch: str) -> str:
+    branch = _norm(branch)
+
+    mapping = {
+        "New Cairo": "التجمع",
+        "Nasr City": "مدينة نصر",
+        "Sheikh Zayed": "الشيخ زايد",
+        "Maadi": "المعادي",
+        "Alexandria": "إسكندرية",
+    }
+
+    return mapping.get(branch, branch or "الفرع")
+
+
 def compose_booking_reply(
     *,
     user_message: str,
@@ -144,10 +158,10 @@ Write the customer-facing reply only.
         return answer
 
     if stage == "availability_available_waiting_confirmation":
-        branch = variables.get("location_branch", "الفرع")
+        branch = branch_display_name(variables.get("location_branch", "الفرع"))
         date = variables.get("appointment_date", "اليوم")
         time = variables.get("appointment_time", "الوقت")
-        return f"تمام، الميعاد متاح في {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
+        return f"تمام، الميعاد متاح في فرع {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
 
     if stage == "availability_unavailable_waiting_new_slot":
         reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
@@ -171,7 +185,7 @@ Write the customer-facing reply only.
 
     if stage == "booking_confirmed":
         visit_id = variables.get("visit_id", "")
-        branch = variables.get("location_branch", "الفرع")
+        branch = branch_display_name(variables.get("location_branch", "الفرع"))
         date = variables.get("appointment_date", "اليوم")
         time = variables.get("appointment_time", "الوقت")
         section = variables.get("customer_facing_section") or variables.get("recommended_section") or "القسم"
@@ -179,10 +193,10 @@ Write the customer-facing reply only.
         if visit_id:
             return (
                 f"تمام، كده الحجز اتأكد. رقم الزيارة {visit_id}. "
-                f"ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+                f"ميعادك في فرع {branch} يوم {date} الساعة {time} في {section}."
             )
 
-        return f"تمام، كده الحجز اتأكد. ميعادك في {branch} يوم {date} الساعة {time} في {section}."
+        return f"تمام، كده الحجز اتأكد. ميعادك في فرع {branch} يوم {date} الساعة {time} في {section}."
 
     return "تمام، معاك."
 
@@ -239,6 +253,20 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
     if _has_any(text, booking_words):
         return True
 
+    nearest_branch_words = [
+        "اقرب فرع",
+        "أقرب فرع",
+        "في فرع هنا",
+        "فرع هنا",
+        "قريب مني",
+        "nearest branch",
+        "closest branch",
+        "near branch",
+    ]
+
+    if _has_any(text, nearest_branch_words):
+        return True
+
     agreement_words = [
         "اه",
         "أه",
@@ -289,6 +317,68 @@ def detect_confirmation(message: str) -> bool:
         "احجزلي",
     ]
     return _has_any(text, confirmation_words)
+
+
+def detect_nearest_branch_question(message: str) -> bool:
+    text = _lower(message)
+
+    return _has_any(
+        text,
+        [
+            "اقرب فرع",
+            "أقرب فرع",
+            "في فرع هنا",
+            "فرع هنا",
+            "قريب مني",
+            "قريب ليا",
+            "قريب مني",
+            "انا في",
+            "أنا في",
+            "nearest branch",
+            "closest branch",
+            "near branch",
+        ],
+    )
+
+
+def extract_user_area(message: str) -> Optional[str]:
+    text = _lower(message)
+
+    area_map = {
+        "العبور": "Obour",
+        "عبور": "Obour",
+        "obour": "Obour",
+        "el obour": "Obour",
+        "الشروق": "Shorouk",
+        "shorouk": "Shorouk",
+        "مدينتي": "Madinaty",
+        "madinaty": "Madinaty",
+        "الرحاب": "Rehab",
+        "rehab": "Rehab",
+        "مدينة نصر": "Nasr City Area",
+        "مدينه نصر": "Nasr City Area",
+        "التجمع": "New Cairo Area",
+        "القاهرة الجديدة": "New Cairo Area",
+        "القاهره الجديده": "New Cairo Area",
+    }
+
+    for key, area in area_map.items():
+        if key in text:
+            return area
+
+    return None
+
+
+def recommend_branch_for_area(area: str) -> Optional[str]:
+    area = _norm(area)
+
+    if area in ["Obour", "Shorouk", "Madinaty", "Rehab", "New Cairo Area"]:
+        return "New Cairo"
+
+    if area == "Nasr City Area":
+        return "Nasr City"
+
+    return None
 
 
 def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
@@ -493,6 +583,21 @@ def collect_slot_variables(
     date = extract_date(message, variables)
     time = extract_time(message, variables)
 
+    user_area = extract_user_area(message)
+
+    if user_area:
+        variables["user_area"] = user_area
+
+    if not branch and user_area:
+        recommended_branch = recommend_branch_for_area(user_area)
+        if recommended_branch:
+            branch = recommended_branch
+            variables["location_branch"] = recommended_branch
+            variables["branch_recommendation_reason"] = f"nearest_known_branch_for_{user_area}"
+
+    if detect_nearest_branch_question(message):
+        variables["nearest_branch_question"] = True
+
     section = (
         variables.get("recommended_section")
         or variables.get("service_needed")
@@ -548,11 +653,23 @@ def missing_slot_fields(variables: Dict[str, Any]) -> List[str]:
     return missing
 
 
-def ask_for_missing_slot_fields(missing: List[str]) -> str:
+def ask_for_missing_slot_fields(missing: List[str], variables: Optional[Dict[str, Any]] = None) -> str:
     if not missing:
         return ""
 
+    variables = variables or {}
     missing_set = set(missing)
+    branch = variables.get("location_branch")
+    branch_ar = branch_display_name(branch) if branch else ""
+
+    if branch and "appointment_date" in missing_set and "appointment_time" in missing_set:
+        if variables.get("nearest_branch_question") or variables.get("user_area"):
+            return (
+                f"تمام، أقرب فرع مناسب ليك غالبًا فرع {branch_ar}. "
+                "تحب أظبطلك الكشف هناك؟ قولّي اليوم والوقت اللي يناسبك."
+            )
+
+        return f"تمام، نقدر نبدأ بفرع {branch_ar}. قولّي اليوم والوقت اللي يناسبك."
 
     if missing_set >= {"location_branch", "appointment_date", "appointment_time", "recommended_section"}:
         return (
@@ -1103,7 +1220,7 @@ def run_booking_subagent(
 
     if missing:
         variables["booking_stage"] = "booking_collecting_slot"
-        answer = ask_for_missing_slot_fields(missing)
+        answer = ask_for_missing_slot_fields(missing, variables)
 
         return {
             "handled": True,
