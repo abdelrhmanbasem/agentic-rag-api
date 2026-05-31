@@ -135,6 +135,38 @@ def clip_text(value: Any, max_chars: int = 1200) -> str:
     return text[:max_chars].rstrip() + "\n...[trimmed]"
 
 
+def compact_subagents_for_planner(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    compact = []
+    for subagent in agent_config.get("subagents") or []:
+        compact.append({
+            "id": subagent.get("id", ""),
+            "name": subagent.get("name", ""),
+            "when_to_use": clip_text(subagent.get("when_to_use", ""), 450),
+            "goal": clip_text(subagent.get("goal", ""), 300),
+            "allowed_actions": subagent.get("allowed_actions", []),
+        })
+    return compact
+
+
+def compact_config_for_planner(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
+        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 350),
+        "language_policy": clip_text(agent_config.get("language_policy", ""), 250),
+        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 900),
+        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 600),
+        "subagents": compact_subagents_for_planner(agent_config),
+        "tool_catalog": [
+            {
+                "name": tool.get("name", ""),
+                "description": clip_text(tool.get("description", ""), 250),
+                "required_inputs": tool.get("required_inputs", []),
+            }
+            for tool in (agent_config.get("tool_catalog") or [])
+        ],
+    }
+
+
 def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "assistant_goal": agent_config.get("assistant_goal", ""),
@@ -151,6 +183,42 @@ def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[
             "allowed_actions": selected_subagent.get("allowed_actions", []),
         },
     }
+
+
+def compact_schema_for_extraction(schema: Dict[str, Any]) -> Dict[str, Any]:
+    if not schema:
+        return {}
+
+    important_keys = [
+        "intent",
+        "issue_description",
+        "symptoms",
+        "recommended_section",
+        "service_needed",
+        "customer_facing_section",
+        "customer_agreed_to_visit",
+        "booking_stage",
+        "location_branch",
+        "user_area",
+        "appointment_date",
+        "appointment_time",
+        "slot_status",
+        "booking_status",
+        "unavailable_reason",
+        "nearest_slots_text",
+        "customer_full_name",
+        "plate_digits",
+        "phone_number",
+        "phone_confirmed",
+        "visit_id",
+    ]
+
+    compact = {}
+    for key in important_keys:
+        if key in schema:
+            compact[key] = schema[key]
+
+    return compact or schema
 
 
 def compact_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,6 +309,29 @@ def compact_memories_for_final(memories: str, max_chars: int = 700) -> str:
     return clip_text(memories, max_chars)
 
 
+def should_skip_subagent_reasoning(state: AgentState) -> bool:
+    planner = state.get("planner", {}) or {}
+
+    if planner.get("needs_tool"):
+        return False
+
+    if planner.get("needs_knowledge"):
+        return False
+
+    if planner.get("risk_level") in ["high", "medium"]:
+        return False
+
+    try:
+        confidence = float(planner.get("confidence", 0) or 0)
+    except Exception:
+        confidence = 0
+
+    if confidence < 0.75:
+        return False
+
+    return True
+
+
 def should_run_quality_guard(state: AgentState) -> bool:
     if not QUALITY_GUARD_ENABLED:
         return False
@@ -271,21 +362,18 @@ def should_run_quality_guard(state: AgentState) -> bool:
 def extract_variables_node(state: AgentState):
     message = last_user_message(state)
     variables = state.get("variables", {}) or {}
-    schema = state.get("schema", {}) or {}
-    agent_config = state.get("agent_config", {}) or {}
+    schema = compact_schema_for_extraction(state.get("schema", {}) or {})
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are the variable extraction brain of a configurable agentic assistant. "
-            "Extract only what the user clearly stated, implied with high confidence, or corrected. "
-            "Use the assistant schema and config. Do not invent. "
-            "If the user changes their mind, update the value. If they remove a value, place the key in deletions. "
+            "You extract only clear durable conversation variables. "
+            "Do not infer aggressively. Do not invent. "
+            "If the message is only a simple symptom, greeting, or acknowledgement, extract only obvious facts. "
             "Support English and Egyptian Arabic.",
         ),
         (
             "user",
-            "Assistant config:\n{agent_config}\n\n"
             "Variable schema:\n{schema}\n\n"
             "Current variables:\n{variables}\n\n"
             "Latest user message:\n{message}",
@@ -294,9 +382,8 @@ def extract_variables_node(state: AgentState):
 
     try:
         result = (prompt | extractor_llm).invoke({
-            "agent_config": json.dumps(agent_config, ensure_ascii=False),
             "schema": json.dumps(schema, ensure_ascii=False),
-            "variables": json.dumps(variables, ensure_ascii=False),
+            "variables": json.dumps(compact_variables(variables), ensure_ascii=False),
             "message": message,
         })
         updated = apply_variable_patch(variables, result.updates, result.deletions)
@@ -340,11 +427,11 @@ def planner_node(state: AgentState):
 
     try:
         decision = (prompt | planner_llm).invoke({
-            "system_prompt": state.get("system_prompt", ""),
-            "agent_config": json.dumps(agent_config, ensure_ascii=False),
-            "subagents": format_subagents(agent_config),
-            "summary": state.get("summary", ""),
-            "variables": json.dumps(variables, ensure_ascii=False),
+            "system_prompt": clip_text(state.get("system_prompt", ""), 900),
+            "agent_config": json.dumps(compact_config_for_planner(agent_config), ensure_ascii=False),
+            "subagents": json.dumps(compact_subagents_for_planner(agent_config), ensure_ascii=False),
+            "summary": clip_text(state.get("summary", ""), 700),
+            "variables": json.dumps(compact_variables(variables), ensure_ascii=False),
             "tool_result": json.dumps(tool_result, ensure_ascii=False),
             "message": message,
         })
@@ -394,8 +481,13 @@ def retrieve_memory_node(state: AgentState):
 
 def decide_after_memory(state: AgentState) -> str:
     planner = state.get("planner", {}) or {}
+
     if planner.get("needs_knowledge"):
         return "retrieve_knowledge"
+
+    if should_skip_subagent_reasoning(state):
+        return "response"
+
     return "subagent_reasoning"
 
 
@@ -408,7 +500,7 @@ def retrieve_knowledge_node(state: AgentState):
         message,
         planner.get("user_intent", ""),
         planner.get("response_strategy", ""),
-        json.dumps(variables, ensure_ascii=False),
+        json.dumps(compact_variables(variables), ensure_ascii=False),
     ]).strip()
 
     try:
@@ -431,6 +523,12 @@ def retrieve_knowledge_node(state: AgentState):
         lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {text}")
 
     return {"knowledge": "\n".join(lines), "knowledge_items": compressed}
+
+
+def decide_after_knowledge(state: AgentState) -> str:
+    if should_skip_subagent_reasoning(state):
+        return "response"
+    return "subagent_reasoning"
 
 
 def subagent_reasoning_node(state: AgentState):
@@ -463,13 +561,19 @@ def subagent_reasoning_node(state: AgentState):
 
     try:
         analysis = (prompt | subagent_llm).invoke({
-            "subagent": json.dumps(subagent, ensure_ascii=False),
-            "planner": json.dumps(planner, ensure_ascii=False),
-            "agent_config": json.dumps(state.get("agent_config", {}), ensure_ascii=False),
-            "summary": state.get("summary", ""),
-            "variables": json.dumps(state.get("variables", {}), ensure_ascii=False),
-            "memories": state.get("memories", ""),
-            "knowledge": state.get("knowledge", "No knowledge retrieved."),
+            "subagent": json.dumps({
+                "id": subagent.get("id", ""),
+                "name": subagent.get("name", ""),
+                "goal": subagent.get("goal", ""),
+                "instructions": clip_text(subagent.get("instructions", ""), 800),
+                "allowed_actions": subagent.get("allowed_actions", []),
+            }, ensure_ascii=False),
+            "planner": json.dumps(compact_planner(planner), ensure_ascii=False),
+            "agent_config": json.dumps(compact_agent_context(state.get("agent_config", {}) or {}, subagent), ensure_ascii=False),
+            "summary": clip_text(state.get("summary", ""), 700),
+            "variables": json.dumps(compact_variables(state.get("variables", {}) or {}), ensure_ascii=False),
+            "memories": compact_memories_for_final(state.get("memories", "")),
+            "knowledge": compact_knowledge_for_final(state.get("knowledge", "No knowledge retrieved."), 1200),
             "tool_result": json.dumps(state.get("tool_result", {}) or {}, ensure_ascii=False),
             "message": message,
         })
@@ -636,9 +740,17 @@ workflow.add_conditional_edges(
     {
         "retrieve_knowledge": "retrieve_knowledge",
         "subagent_reasoning": "subagent_reasoning",
+        "response": "response",
     },
 )
-workflow.add_edge("retrieve_knowledge", "subagent_reasoning")
+workflow.add_conditional_edges(
+    "retrieve_knowledge",
+    decide_after_knowledge,
+    {
+        "response": "response",
+        "subagent_reasoning": "subagent_reasoning",
+    },
+)
 workflow.add_edge("subagent_reasoning", "response")
 workflow.add_edge("response", "quality_guard")
 workflow.add_edge("quality_guard", END)
