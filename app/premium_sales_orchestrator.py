@@ -1,20 +1,4 @@
 # app/premium_sales_orchestrator.py
-# Adaptive premium sales reasoning orchestrator.
-#
-# This is the "breathtaking when needed" layer.
-#
-# It does:
-# - mode-aware broad retrieval
-# - evidence judgment
-# - premium memory decision
-# - premium answer generation
-# - critic pass
-# - safe revision if needed
-#
-# Important safety rule:
-# The premium LLM is allowed to extract user-provided facts,
-# but it is NOT allowed to directly write system-computed fields
-# like lead_score, lead_temperature, workflow_stage, workflow, etc.
 
 from typing import Dict, Any, List, Tuple
 
@@ -46,15 +30,6 @@ SYSTEM_COMPUTED_VARIABLES = {
     "token_usage",
     "memory_saved",
     "long_term_memories_written",
-}
-
-
-SERVICE_DECISION_VARIABLES = {
-    "recommended_section",
-    "service_needed",
-    "customer_facing_section",
-    "diagnostic_stage",
-    "next_service_action",
 }
 
 
@@ -114,15 +89,6 @@ def ensure_service_decision_variables(
     answer: str,
     assistant_id: str = "",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    Ensures the service assistant stores structured service decision variables.
-
-    Important:
-    - Prioritizes the latest user issue and answer.
-    - Does not let old symptoms, old summaries, or old bookings override a new issue.
-    - Scoped only to service_center_agentic_rag.
-    """
-
     variables = dict(variables or {})
     assistant_id = str(assistant_id or "")
 
@@ -142,12 +108,6 @@ def ensure_service_decision_variables(
         historical_text = " ".join(str(item) for item in symptoms).lower()
     else:
         historical_text = str(symptoms or "").lower()
-
-    # ------------------------------------------------------------------
-    # Strong latest-issue overrides.
-    # These must run before checking existing recommended_section, because
-    # existing state may belong to a previous issue in the same conversation.
-    # ------------------------------------------------------------------
 
     if any(
         key in latest_text
@@ -312,17 +272,12 @@ def ensure_service_decision_variables(
             customer="قسم الصيانة السريعة",
         )
 
-    # If current variables already contain a complete service decision and
-    # the latest text does not introduce a different issue, keep it.
     existing_recommended = variables.get("recommended_section")
     existing_customer = variables.get("customer_facing_section")
 
     if existing_recommended and existing_customer:
         return variables, {}
 
-    # Weak fallback from historical symptoms only.
-    # This is intentionally after latest_text checks to avoid old context
-    # overriding a new customer issue.
     if "overheating" in historical_text:
         return _set_service_decision(
             variables,
@@ -331,6 +286,78 @@ def ensure_service_decision_variables(
         )
 
     return variables, {}
+
+
+def polish_service_reply(
+    *,
+    model: str,
+    assistant_id: str,
+    user_message: str,
+    answer: str,
+    variables: Dict[str, Any],
+) -> str:
+    if assistant_id != "service_center_agentic_rag":
+        return answer
+
+    if not answer:
+        return answer
+
+    should_polish = (
+        variables.get("recommended_section")
+        or variables.get("customer_facing_section")
+        or variables.get("next_service_action") == "offer_booking"
+        or variables.get("customer_agreed_to_visit") is True
+    )
+
+    if not should_polish:
+        return answer
+
+    system_prompt = """
+You are the final WhatsApp reply polisher for Apex AutoCare in Egypt.
+
+Rewrite the assistant answer into natural Egyptian Arabic.
+Return only the final customer-facing reply.
+
+Rules:
+- Make it sound like a real Egyptian service advisor on WhatsApp.
+- Avoid formal Arabic phrases like: سأقوم، أوافيك، لتحديد موعد، بحاجة للمساعدة، بخصوص.
+- Use natural phrases like: تمام، خلينا، الأفضل نكشف، أظبطلك، تحب.
+- Keep it short: 1 to 3 sentences.
+- Do not mention JSON, variables, tools, backend, sections as internal names, or playbook.
+- If the issue is qualified and next_service_action is offer_booking, end with a clear booking question.
+- Good ending: تحب أظبطلك ميعاد كشف؟
+- Do not invent availability, prices, visit IDs, or booking confirmation.
+"""
+
+    prompt = f"""
+Latest user message:
+{user_message}
+
+Known variables:
+{variables}
+
+Original answer:
+{answer}
+
+Rewrite the answer naturally.
+"""
+
+    try:
+        polished = chat_text(
+            model,
+            [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": prompt.strip()},
+            ],
+            max_tokens=350,
+        ).strip()
+    except Exception:
+        polished = ""
+
+    if not polished:
+        return answer
+
+    return polished
 
 
 def judge_evidence(
@@ -562,13 +589,6 @@ def run_adaptive_premium_turn(
     user_message: str,
     route: Dict[str, Any] | None = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Returns:
-    (handled, result)
-
-    handled=False means caller should continue existing normal pipeline.
-    """
-
     route = route or {}
     variables = dict(variables or {})
 
@@ -650,8 +670,6 @@ def run_adaptive_premium_turn(
         premium_memory_decision=premium_memory_decision,
     )
 
-    service_decision_updates: Dict[str, Any] = {}
-
     updated_variables, service_decision_updates = ensure_service_decision_variables(
         variables=updated_variables,
         answer=answer,
@@ -681,6 +699,14 @@ def run_adaptive_premium_turn(
         )
 
         service_decision_updates.update(revised_service_decision_updates)
+
+    answer = polish_service_reply(
+        model=model,
+        assistant_id=assistant_id,
+        user_message=user_message,
+        answer=answer,
+        variables=updated_variables,
+    )
 
     combined_variable_updates = dict(extraction_updates or {})
     combined_variable_updates.update(service_decision_updates)
