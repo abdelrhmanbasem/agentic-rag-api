@@ -62,6 +62,15 @@ def llm(model: str, temperature: float = 0.0, max_tokens: Optional[int] = None):
     return ChatOpenAI(**kwargs)
 
 
+class ResponseBrief(BaseModel):
+    tone: str = ""
+    language: str = ""
+    reply_length: str = ""
+    must_do: List[str] = Field(default_factory=list)
+    must_not_do: List[str] = Field(default_factory=list)
+    next_move: str = ""
+
+
 class UnifiedManifest(BaseModel):
     user_intent: str = ""
     selected_subagent_id: str = ""
@@ -82,14 +91,17 @@ class UnifiedManifest(BaseModel):
 
     needs_tool: bool = False
     requested_tool_name: str = ""
-    tool_request_payload: Dict[str, Any] = Field(default_factory=dict)
+
+    # Structured output works more reliably with JSON strings than arbitrary Dict[str, Any].
+    tool_request_payload_json: str = "{}"
     missing_tool_inputs: List[str] = Field(default_factory=list)
 
     needs_subagent_reasoning: bool = False
     needs_quality_guard: bool = False
     needs_style_repair: bool = False
 
-    extracted_updates: Dict[str, Any] = Field(default_factory=dict)
+    # Structured output works more reliably with JSON strings than arbitrary Dict[str, Any].
+    extracted_updates_json: str = "{}"
     extracted_deletions: List[str] = Field(default_factory=list)
 
     response_style: str = ""
@@ -98,7 +110,7 @@ class UnifiedManifest(BaseModel):
     question_goal: str = ""
     should_offer_next_action: bool = False
 
-    response_brief: Dict[str, Any] = Field(default_factory=dict)
+    response_brief: ResponseBrief = Field(default_factory=ResponseBrief)
 
     response_strategy: str = ""
     reasoning_summary: str = ""
@@ -147,6 +159,20 @@ def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
     if max_chars:
         return clip_text(text, max_chars)
     return text
+
+
+def parse_json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+
+    if not isinstance(value, str):
+        return {}
+
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -323,6 +349,7 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "risk_level": manifest.get("risk_level", "low"),
         "confidence": manifest.get("confidence", 0.0),
         "simple_response_mode": manifest.get("simple_response_mode", False),
+        "simple_response_reason": manifest.get("simple_response_reason", ""),
         "needs_knowledge": manifest.get("needs_knowledge", False),
         "needs_memory": manifest.get("needs_memory", False),
         "needs_tool": manifest.get("needs_tool", False),
@@ -339,6 +366,8 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "should_offer_next_action": manifest.get("should_offer_next_action", False),
         "response_strategy": clip_text(manifest.get("response_strategy", ""), 480),
         "response_brief": manifest.get("response_brief", {}),
+        "manifest_error": manifest.get("manifest_error", ""),
+        "reasoning_summary": manifest.get("reasoning_summary", ""),
     }
 
 
@@ -461,7 +490,34 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "needs_quality_guard": manifest.get("needs_quality_guard", False),
         "tool_request_payload": manifest.get("tool_request_payload", {}),
         "missing_tool_inputs": manifest.get("missing_tool_inputs", []),
+        "manifest_error": manifest.get("manifest_error", ""),
+        "reasoning_summary": manifest.get("reasoning_summary", ""),
     }
+
+
+def normalize_manifest(raw_manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts structured-output-safe JSON string fields back into dictionaries.
+    """
+    manifest = dict(raw_manifest)
+
+    manifest["tool_request_payload"] = parse_json_object(
+        manifest.pop("tool_request_payload_json", "{}")
+    )
+
+    manifest["extracted_updates"] = parse_json_object(
+        manifest.pop("extracted_updates_json", "{}")
+    )
+
+    brief = manifest.get("response_brief", {})
+    if isinstance(brief, BaseModel):
+        brief = brief.model_dump()
+    elif not isinstance(brief, dict):
+        brief = {}
+
+    manifest["response_brief"] = brief
+
+    return manifest
 
 
 def unified_manifest_node(state: AgentState):
@@ -480,12 +536,13 @@ def unified_manifest_node(state: AgentState):
             "Do not use hidden business rules. Use only the assistant manifest card, current variables, summary, recent messages, tool result, and latest user message. "
             "All domain behavior must come from the assistant config, subagents, tool catalog, variable schema, retrieved knowledge if requested, and conversation context. "
             "Extract only clear durable variable updates from the latest message using the provided variable schema. Do not infer aggressively. "
-            "If no durable variables changed, return empty extracted_updates and extracted_deletions. "
+            "For extracted_updates_json and tool_request_payload_json, return valid compact JSON object strings. Use '{}' when empty. "
+            "If no durable variables changed, extracted_updates_json must be '{}', and extracted_deletions must be empty. "
             "Use simple_response_mode only for low-risk messages that can be answered well from config/context without memory, knowledge, tools, subagent reasoning, or quality guard. "
             "Do not use simple_response_mode when the message requires business facts, policy facts, tool results, external actions, high/medium risk handling, uncertain facts, or multi-step reasoning. "
-            "If a tool is needed, set needs_tool=true, requested_tool_name, tool_request_payload if known, and missing_tool_inputs if any. "
+            "If a tool is needed, set needs_tool=true, requested_tool_name, tool_request_payload_json if known, and missing_tool_inputs if any. "
             "Never claim tool results, availability, prices, policies, IDs, or external facts unless they are present in tool_result, variables, conversation context, or retrieved knowledge. "
-            "Create a response_brief that guides the response LLM: tone, language, reply length, must_do, must_not_do, and next conversational move.",
+            "Create a response_brief that guides the response LLM: tone, language, reply_length, must_do, must_not_do, and next_move.",
         ),
         (
             "user",
@@ -506,9 +563,10 @@ def unified_manifest_node(state: AgentState):
             "tool_result": safe_json(tool_result, max_chars=2200),
             "message": message,
         })
-        manifest = decision.model_dump()
+        manifest = normalize_manifest(decision.model_dump())
     except Exception as exc:
         subagents = agent_config.get("subagents") or [{"id": "general"}]
+        error_text = f"{type(exc).__name__}: {exc}"
         manifest = {
             "user_intent": "unknown",
             "selected_subagent_id": subagents[0].get("id", "general"),
@@ -538,11 +596,15 @@ def unified_manifest_node(state: AgentState):
             "should_offer_next_action": False,
             "response_brief": {
                 "tone": "careful and helpful",
+                "language": "",
+                "reply_length": "",
                 "must_do": ["answer carefully"],
                 "must_not_do": ["do not invent facts"],
+                "next_move": "",
             },
             "response_strategy": "Answer carefully and do not invent facts.",
-            "reasoning_summary": f"Fallback manifest due to error: {exc}",
+            "reasoning_summary": f"Fallback manifest due to error: {error_text}",
+            "manifest_error": error_text,
         }
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
