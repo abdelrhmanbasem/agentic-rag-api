@@ -263,6 +263,27 @@ def _lower(value: Any) -> str:
     return _norm(value).lower()
 
 
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if value is None:
+        return False
+
+    if isinstance(value, (int, float)):
+        return value == 1
+
+    text = str(value).strip().lower()
+
+    if text in {"true", "1", "yes", "y", "available", "متاح"}:
+        return True
+
+    if text in {"false", "0", "no", "n", "unavailable", "not_available", "غير متاح"}:
+        return False
+
+    return False
+
+
 def _has_any(text: str, words: List[str]) -> bool:
     text = _lower(text)
     return any(w.lower() in text for w in words)
@@ -458,6 +479,52 @@ def compose_tool_reply_from_template(
     return render_reply_template(template, values).strip()
 
 
+def parse_availability_tool_result(tool_result: Dict[str, Any]) -> Dict[str, Any]:
+    read = tool_result.get("read_availability") or tool_result or {}
+    requested = tool_result.get("requested") or read.get("requested") or {}
+
+    slot_status = str(read.get("slot_status") or "").strip().lower()
+
+    if "exact_slot_available" in read:
+        exact_available = parse_bool(read.get("exact_slot_available"))
+    elif "available" in read:
+        exact_available = parse_bool(read.get("available"))
+    else:
+        exact_available = False
+
+    exact_slot_found = parse_bool(read.get("exact_slot_found"))
+
+    available = (
+        exact_available is True
+        or slot_status == "available"
+    )
+
+    if slot_status in {"unavailable", "not_available", "not available"}:
+        available = False
+
+    unavailable_reason = (
+        read.get("unavailable_reason")
+        or read.get("reason")
+        or read.get("unavailableReason")
+        or ""
+    )
+
+    nearest_slots = read.get("nearest_slots") or []
+    nearest_slots_text = read.get("nearest_slots_text") or ""
+
+    return {
+        "available": available,
+        "slot_status": slot_status,
+        "exact_slot_found": exact_slot_found,
+        "exact_slot_available": exact_available,
+        "unavailable_reason": unavailable_reason,
+        "nearest_slots": nearest_slots,
+        "nearest_slots_text": nearest_slots_text,
+        "requested": requested,
+        "raw_read_availability": read,
+    }
+
+
 def compose_booking_reply(
     *,
     user_message: str,
@@ -468,25 +535,24 @@ def compose_booking_reply(
     missing_variables: Optional[List[str]] = None,
 ) -> str:
     model = model_for_tier("normal")
+    tool_result = tool_result or {}
 
     system_prompt = """
 You are the booking reply composer.
 
-Write only the final customer-facing WhatsApp reply.
-Use the same language/dialect style as the assistant.
-Sound like a helpful human service advisor, not a system or workflow.
-Do not mention JSON, variables, tools, stages, backend, availability API, or internal logic.
-Keep it short: 1 to 3 natural sentences.
-Be warm, practical, and clear.
+You receive tool results from the availability system.
+The tool result is the source of truth.
+You must read all fields carefully before answering.
 
-Rules:
-- If the slot is unavailable, explain the reason naturally if known.
-- If nearest slots exist, offer them smoothly.
-- If the slot is available, ask if the customer wants to confirm it.
-- If booking details are missing, ask only for the missing details.
-- If booking is confirmed, give the visit ID and appointment summary.
-- Do not invent availability, prices, visit IDs, or customer details.
-- Do not ask repeated questions if the needed value is already present in known variables.
+Critical rules:
+- If tool_result.available is false, never say the slot is available.
+- If tool_result.available is true, never say the slot is unavailable.
+- If unavailable_reason exists, explain it naturally to the customer.
+- If nearest_slots_text exists, offer those nearest slots.
+- If no nearest slots exist and the slot is unavailable, ask whether to try another time in the same branch or another nearby branch.
+- Use natural Egyptian Arabic unless the customer wrote in English.
+- Do not mention JSON, tools, backend, variables, or internal logic.
+- Keep it short and helpful.
 """
 
     prompt = f"""
@@ -503,7 +569,7 @@ Known variables:
 {variables}
 
 Tool result:
-{tool_result or {}}
+{tool_result}
 
 Missing variables:
 {missing_variables or []}
@@ -518,7 +584,7 @@ Write the customer-facing reply only.
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": prompt.strip()},
             ],
-            max_tokens=220,
+            max_tokens=260,
         ).strip()
     except Exception:
         answer = ""
@@ -533,7 +599,7 @@ Write the customer-facing reply only.
         return f"تمام، الميعاد متاح في فرع {branch} يوم {date} الساعة {time}. تحب أثبتهولك؟"
 
     if stage == "availability_unavailable_waiting_new_slot":
-        reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
+        reason = variables.get("unavailable_reason") or "المعاد ده مش متاح حاليًا"
         nearest = _norm(variables.get("nearest_slots_text"))
         if nearest:
             return (
@@ -1162,8 +1228,9 @@ def handle_availability_result(
     variables = dict(variables or {})
     assistant = assistant or {}
 
-    available = bool(tool_result.get("available"))
-    requested = tool_result.get("requested") or {}
+    availability = parse_availability_tool_result(tool_result)
+    available = availability["available"]
+    requested = availability.get("requested") or {}
 
     if requested:
         variables["location_branch"] = requested.get("branch") or variables.get("location_branch")
@@ -1173,6 +1240,12 @@ def handle_availability_result(
         variables["service_needed"] = variables.get("recommended_section") or variables.get("service_needed")
 
     variables["active_subagent"] = BOOKING_AGENT_NAME
+    variables["raw_read_availability"] = availability.get("raw_read_availability") or {}
+    variables["slot_status"] = availability.get("slot_status") or ""
+
+    templates = get_tool_reply_templates(assistant)
+    availability_templates = templates.get("availability_result", {}) if isinstance(templates, dict) else {}
+    reason_map = availability_templates.get("reason_map", {}) if isinstance(availability_templates, dict) else {}
 
     if available:
         variables["slot_status"] = "available"
@@ -1186,20 +1259,22 @@ def handle_availability_result(
             status="available",
             template_key="default",
             variables=variables,
-            tool_result=tool_result,
+            tool_result=availability,
             reason_text="",
         )
 
         if not answer:
             answer = compose_booking_reply(
-                user_message="__tool_result__",
+                user_message="__availability_result__",
                 variables=variables,
                 stage=variables["booking_stage"],
-                tool_result=tool_result,
+                tool_result=availability,
                 missing_variables=[],
                 instruction=(
-                    "The requested appointment slot is available. "
-                    "Tell the customer naturally that the slot is available and ask if they want to confirm it."
+                    "Read the availability result carefully. "
+                    "The requested slot IS available. "
+                    "Tell the customer the slot is available and ask if they want to confirm the booking. "
+                    "Use natural Egyptian Arabic."
                 ),
             )
 
@@ -1218,29 +1293,15 @@ def handle_availability_result(
     variables["slot_status"] = "unavailable"
     variables["booking_status"] = "slot_unavailable"
     variables["booking_stage"] = "availability_unavailable_waiting_new_slot"
-    variables["unavailable_reason"] = tool_result.get("reason") or tool_result.get("unavailable_reason")
-    variables["nearest_slots"] = tool_result.get("nearest_slots") or []
-    variables["nearest_slots_text"] = tool_result.get("nearest_slots_text") or ""
 
-    templates = get_tool_reply_templates(assistant)
-    availability_templates = templates.get("availability_result", {}) if isinstance(templates, dict) else {}
-    reason_map = availability_templates.get("reason_map", {}) if isinstance(availability_templates, dict) else {}
-
-    raw_reason = (
-        variables.get("unavailable_reason")
-        or tool_result.get("unavailable_reason")
-        or tool_result.get("reason")
-        or ""
-    )
-
+    raw_reason = availability.get("unavailable_reason") or ""
     reason_text = normalize_unavailable_reason(raw_reason, reason_map)
 
-    nearest = _norm(
-        variables.get("nearest_slots_text")
-        or tool_result.get("nearest_slots_text")
-        or ""
-    )
+    variables["unavailable_reason"] = reason_text
+    variables["nearest_slots"] = availability.get("nearest_slots") or []
+    variables["nearest_slots_text"] = availability.get("nearest_slots_text") or ""
 
+    nearest = _norm(variables.get("nearest_slots_text"))
     template_key = "with_nearest_slots" if nearest else "default"
 
     answer = compose_tool_reply_from_template(
@@ -1249,22 +1310,24 @@ def handle_availability_result(
         status="unavailable",
         template_key=template_key,
         variables=variables,
-        tool_result=tool_result,
+        tool_result=availability,
         reason_text=reason_text,
     )
 
     if not answer:
         answer = compose_booking_reply(
-            user_message="__tool_result__",
+            user_message="__availability_result__",
             variables=variables,
             stage=variables["booking_stage"],
-            tool_result=tool_result,
+            tool_result=availability,
             missing_variables=[],
             instruction=(
-                "The requested appointment slot is unavailable. "
-                "Explain the reason naturally if available. "
-                "If nearest_slots_text exists, offer those nearest slots. "
-                "If there are no nearest slots, ask whether to try another time in the same branch or another nearby branch."
+                "Read the availability result carefully. "
+                "The requested slot is NOT available. "
+                "Explain clearly why it is unavailable using unavailable_reason. "
+                "If nearest_slots_text exists, offer those slots. "
+                "If no nearest slots exist, ask whether to try another time in the same branch or another nearby branch. "
+                "Use natural Egyptian Arabic. Do not say the slot is available."
             ),
         )
 
@@ -1446,7 +1509,7 @@ def handle_booking_result(
     variables = dict(variables or {})
     variables["active_subagent"] = BOOKING_AGENT_NAME
 
-    success = bool(tool_result.get("success"))
+    success = parse_bool(tool_result.get("success"))
 
     if success:
         visit_id = tool_result.get("visit_id") or tool_result.get("booking_id") or ""
