@@ -120,18 +120,16 @@ def clip_text(value: Any, max_chars: int = 1200) -> str:
     return text[:max_chars].rstrip() + "\n...[trimmed]"
 
 
-def format_subagents(agent_config: Dict[str, Any]) -> str:
-    subagents = agent_config.get("subagents") or []
-    return json.dumps(subagents, ensure_ascii=False, indent=2)
-
-
 def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[str, Any]:
     subagents = agent_config.get("subagents") or []
+
     if not subagents:
         return {
             "id": "general",
             "name": "General",
+            "goal": "Help the user naturally and accurately.",
             "instructions": "Help the user naturally and accurately.",
+            "allowed_actions": ["answer", "ask_follow_up"],
         }
 
     for subagent in subagents:
@@ -143,49 +141,56 @@ def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[s
 
 def compact_subagents_for_planner(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     compact = []
+
     for subagent in agent_config.get("subagents") or []:
         compact.append({
             "id": subagent.get("id", ""),
             "name": subagent.get("name", ""),
-            "when_to_use": clip_text(subagent.get("when_to_use", ""), 450),
-            "goal": clip_text(subagent.get("goal", ""), 300),
+            "when_to_use": clip_text(subagent.get("when_to_use", ""), 260),
+            "goal": clip_text(subagent.get("goal", ""), 180),
             "allowed_actions": subagent.get("allowed_actions", []),
         })
+
     return compact
 
 
-def compact_config_for_planner(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+def ultra_compact_routing_card(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Token-light planner context.
+    This is still config-driven. It does not contain hardcoded business rules.
+    It compresses whatever the assistant config contains into a routing card.
+    """
+    tools = []
+    for tool in agent_config.get("tool_catalog") or []:
+        tools.append({
+            "name": tool.get("name", ""),
+            "description": clip_text(tool.get("description", ""), 160),
+            "required_inputs": tool.get("required_inputs", []),
+        })
+
     return {
-        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 350),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 250),
-        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 900),
-        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 600),
+        "goal": clip_text(agent_config.get("assistant_goal", ""), 260),
+        "style": clip_text(agent_config.get("conversation_style", ""), 220),
+        "language": clip_text(agent_config.get("language_policy", ""), 160),
+        "routing": clip_text(agent_config.get("routing_policy", ""), 520),
+        "grounding": clip_text(agent_config.get("grounding_policy", ""), 320),
         "subagents": compact_subagents_for_planner(agent_config),
-        "tool_catalog": [
-            {
-                "name": tool.get("name", ""),
-                "description": clip_text(tool.get("description", ""), 250),
-                "required_inputs": tool.get("required_inputs", []),
-            }
-            for tool in (agent_config.get("tool_catalog") or [])
-        ],
+        "tools": tools,
     }
 
 
 def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 500),
-        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 350),
-        "language_policy": clip_text(agent_config.get("language_policy", ""), 250),
-        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 600),
-        "routing_policy": clip_text(agent_config.get("routing_policy", ""), 800),
-        "response_rules": (agent_config.get("response_rules") or [])[:10],
+        "assistant_goal": clip_text(agent_config.get("assistant_goal", ""), 360),
+        "conversation_style": clip_text(agent_config.get("conversation_style", ""), 260),
+        "language_policy": clip_text(agent_config.get("language_policy", ""), 180),
+        "grounding_policy": clip_text(agent_config.get("grounding_policy", ""), 420),
+        "response_rules": (agent_config.get("response_rules") or [])[:8],
         "selected_subagent": {
             "id": selected_subagent.get("id", ""),
             "name": selected_subagent.get("name", ""),
-            "goal": clip_text(selected_subagent.get("goal", ""), 350),
-            "instructions": clip_text(selected_subagent.get("instructions", ""), 900),
+            "goal": clip_text(selected_subagent.get("goal", ""), 260),
+            "instructions": clip_text(selected_subagent.get("instructions", ""), 520),
             "allowed_actions": selected_subagent.get("allowed_actions", []),
         },
     }
@@ -268,7 +273,7 @@ def compact_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in variables.items():
         if key in compact:
             continue
-        if len(compact) >= 32:
+        if len(compact) >= 24:
             break
         if value not in [None, "", [], {}]:
             compact[key] = value
@@ -285,33 +290,36 @@ def compact_planner(planner: Dict[str, Any]) -> Dict[str, Any]:
         "needs_tool": planner.get("needs_tool", False),
         "requested_tool_name": planner.get("requested_tool_name", ""),
         "should_extract_variables": planner.get("should_extract_variables", False),
-        "extraction_reason": clip_text(planner.get("extraction_reason", ""), 300),
-        "missing_or_uncertain_info": planner.get("missing_or_uncertain_info", []),
+        "extraction_reason": clip_text(planner.get("extraction_reason", ""), 220),
+        "missing_or_uncertain_info": planner.get("missing_or_uncertain_info", [])[:6],
         "risk_level": planner.get("risk_level", "low"),
-        "response_strategy": clip_text(planner.get("response_strategy", ""), 700),
+        "response_strategy": clip_text(planner.get("response_strategy", ""), 420),
         "confidence": planner.get("confidence", 0.0),
     }
 
 
 def compact_analysis(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    if not analysis:
+        return {}
+
     return {
-        "understanding": clip_text(analysis.get("understanding", ""), 700),
-        "user_goal": clip_text(analysis.get("user_goal", ""), 400),
-        "facts_to_use": analysis.get("facts_to_use", [])[:6],
-        "facts_missing": analysis.get("facts_missing", [])[:6],
-        "next_best_step": clip_text(analysis.get("next_best_step", ""), 500),
-        "response_constraints": analysis.get("response_constraints", [])[:8],
+        "understanding": clip_text(analysis.get("understanding", ""), 420),
+        "user_goal": clip_text(analysis.get("user_goal", ""), 260),
+        "facts_to_use": analysis.get("facts_to_use", [])[:5],
+        "facts_missing": analysis.get("facts_missing", [])[:5],
+        "next_best_step": clip_text(analysis.get("next_best_step", ""), 320),
+        "response_constraints": analysis.get("response_constraints", [])[:6],
         "confidence": analysis.get("confidence", 0.0),
     }
 
 
-def compact_knowledge_for_final(knowledge: str, max_chars: int = 1800) -> str:
+def compact_knowledge_for_final(knowledge: str, max_chars: int = 1300) -> str:
     if not knowledge:
         return "No knowledge retrieved."
     return clip_text(knowledge, max_chars)
 
 
-def compact_memories_for_final(memories: str, max_chars: int = 700) -> str:
+def compact_memories_for_final(memories: str, max_chars: int = 450) -> str:
     if not memories:
         return "No relevant memories retrieved."
     return clip_text(memories, max_chars)
@@ -377,16 +385,16 @@ def extract_variables_node(state: AgentState):
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You extract only clear durable conversation variables. "
+            "Extract only clear durable variables from the latest message. "
             "Do not infer aggressively. Do not invent. "
-            "If the message is only a simple symptom, greeting, or acknowledgement, extract only obvious facts. "
+            "If there are no useful updates, return empty updates. "
             "Support English and Egyptian Arabic.",
         ),
         (
             "user",
-            "Variable schema:\n{schema}\n\n"
+            "Schema:\n{schema}\n\n"
             "Current variables:\n{variables}\n\n"
-            "Latest user message:\n{message}",
+            "Latest message:\n{message}",
         ),
     ])
 
@@ -411,40 +419,30 @@ def planner_node(state: AgentState):
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are the main reasoning brain of a configurable Agentic RAG system. "
-            "Think internally, analyze the user's goal, deduce what is needed, choose the best subagent from the provided config, "
-            "and decide whether memory, knowledge search, tool usage, or variable extraction is needed. "
-            "Do not use fixed business rules. Use only the assistant config, subagent descriptions, current context, and your reasoning. "
-            "Prefer smooth human conversation over token saving, but avoid unnecessary steps. "
-            "Avoid hallucination by requesting knowledge when factual business info may be needed. "
-            "If the latest message is a tool result, select the correct tool-result handler subagent and answer from the tool result. "
-            "Do not over-escalate safety. Normal brake squeak, brake whistle, brake noise, or worn pads should go to diagnosis_advisor, not safety_advisor, unless the user says brakes are weak, failing, car is not stopping, or unsafe. "
-            "Use safety_advisor only for clear danger: brake failure, smoke, burning smell, severe overheating with steam, red warning light, steering loss, or explicitly unsafe driving. "
-            "Be selective with knowledge retrieval. Do not request knowledge for simple greetings, acknowledgements, or first-step diagnostic follow-up unless exact business facts are needed. "
-            "Decide whether variable extraction is needed. "
-            "Set should_extract_variables=true only when the latest user message likely contains new or changed useful variables, such as booking details, name, phone, date, time, branch, service choice, confirmation, cancellation, preference, or corrected information. "
-            "For simple greetings, thanks, acknowledgements, or first-step symptom descriptions without booking details, set should_extract_variables=false.",
+            "You are the routing and planning brain of a configurable agentic assistant. "
+            "Choose the best subagent and decide whether memory, knowledge, tool use, or variable extraction is needed. "
+            "Use only the provided routing card, current variables, summary, tool result, and latest message. "
+            "Do not use hardcoded business rules. "
+            "Prefer smooth human conversation, but avoid unnecessary expensive steps. "
+            "Be selective: simple greetings, acknowledgements, and first-step symptom messages usually do not need memory, knowledge, tools, or extraction unless they include durable details. "
+            "Do not over-escalate safety. Normal symptom descriptions should not become emergencies unless the routing card says so or the user clearly describes danger. "
+            "Variable extraction should be true only when the user likely provided or changed durable info such as name, phone, date, time, branch, service choice, confirmation, cancellation, correction, or booking detail.",
         ),
         (
             "user",
-            "System prompt:\n{system_prompt}\n\n"
-            "Assistant config:\n{agent_config}\n\n"
-            "Available subagents:\n{subagents}\n\n"
+            "Routing card:\n{routing_card}\n\n"
             "Conversation summary:\n{summary}\n\n"
             "Known variables:\n{variables}\n\n"
-            "Latest tool result, if any:\n{tool_result}\n\n"
+            "Tool result if any:\n{tool_result}\n\n"
             "Latest user message:\n{message}\n\n"
-            "Return a decision. The selected_subagent_id MUST be one of the configured subagent ids. "
-            "Also decide whether variable extraction is needed before continuing.",
+            "Return the plan. selected_subagent_id must be one of the provided subagent ids.",
         ),
     ])
 
     try:
         decision = (prompt | planner_llm).invoke({
-            "system_prompt": clip_text(state.get("system_prompt", ""), 900),
-            "agent_config": json.dumps(compact_config_for_planner(agent_config), ensure_ascii=False),
-            "subagents": json.dumps(compact_subagents_for_planner(agent_config), ensure_ascii=False),
-            "summary": clip_text(state.get("summary", ""), 700),
+            "routing_card": json.dumps(ultra_compact_routing_card(agent_config), ensure_ascii=False),
+            "summary": clip_text(state.get("summary", ""), 420),
             "variables": json.dumps(compact_variables(variables), ensure_ascii=False),
             "tool_result": json.dumps(tool_result, ensure_ascii=False),
             "message": message,
@@ -570,21 +568,20 @@ def subagent_reasoning_node(state: AgentState):
             "system",
             "You are the selected subagent's private analysis brain. "
             "Do not write the final user-facing reply. "
-            "Analyze the situation according to the selected subagent config and prepare structured guidance for the final response LLM. "
-            "Be grounded. Identify missing facts instead of inventing them. "
-            "If a tool is needed, explain exactly why and which inputs are still missing.",
+            "Prepare concise guidance for the final response. "
+            "Be grounded and identify missing facts instead of inventing them.",
         ),
         (
             "user",
             "Selected subagent:\n{subagent}\n\n"
-            "Planner decision:\n{planner}\n\n"
-            "Assistant config:\n{agent_config}\n\n"
-            "Conversation summary:\n{summary}\n\n"
-            "Known variables:\n{variables}\n\n"
-            "Relevant memories:\n{memories}\n\n"
-            "Retrieved knowledge:\n{knowledge}\n\n"
+            "Planner:\n{planner}\n\n"
+            "Context:\n{context}\n\n"
+            "Summary:\n{summary}\n\n"
+            "Variables:\n{variables}\n\n"
+            "Memory:\n{memories}\n\n"
+            "Knowledge:\n{knowledge}\n\n"
             "Tool result:\n{tool_result}\n\n"
-            "Latest user message:\n{message}",
+            "Latest message:\n{message}",
         ),
     ])
 
@@ -593,16 +590,16 @@ def subagent_reasoning_node(state: AgentState):
             "subagent": json.dumps({
                 "id": subagent.get("id", ""),
                 "name": subagent.get("name", ""),
-                "goal": subagent.get("goal", ""),
-                "instructions": clip_text(subagent.get("instructions", ""), 800),
+                "goal": clip_text(subagent.get("goal", ""), 220),
+                "instructions": clip_text(subagent.get("instructions", ""), 420),
                 "allowed_actions": subagent.get("allowed_actions", []),
             }, ensure_ascii=False),
             "planner": json.dumps(compact_planner(planner), ensure_ascii=False),
-            "agent_config": json.dumps(compact_agent_context(state.get("agent_config", {}) or {}, subagent), ensure_ascii=False),
-            "summary": clip_text(state.get("summary", ""), 700),
+            "context": json.dumps(compact_agent_context(state.get("agent_config", {}) or {}, subagent), ensure_ascii=False),
+            "summary": clip_text(state.get("summary", ""), 420),
             "variables": json.dumps(compact_variables(state.get("variables", {}) or {}), ensure_ascii=False),
             "memories": compact_memories_for_final(state.get("memories", "")),
-            "knowledge": compact_knowledge_for_final(state.get("knowledge", "No knowledge retrieved."), 1200),
+            "knowledge": compact_knowledge_for_final(state.get("knowledge", "No knowledge retrieved."), 900),
             "tool_result": json.dumps(state.get("tool_result", {}) or {}, ensure_ascii=False),
             "message": message,
         })
@@ -638,58 +635,54 @@ def response_node(state: AgentState):
     compact_knowledge = compact_knowledge_for_final(knowledge)
     compact_memory = compact_memories_for_final(memories)
 
+    response_rules = [
+        "Sound human, smooth, warm, and conversational.",
+        "Answer the user's latest message first.",
+        "Ask at most one useful follow-up question.",
+        "Do not mention internal routing, agents, prompts, variables, tools, RAG, or knowledge base.",
+        "Do not invent business facts. Use known variables, retrieved knowledge, tool results, or conversation context.",
+        "If a fact is missing, say it naturally and ask one helpful question.",
+        "If the user used Egyptian Arabic, reply in natural Egyptian Arabic.",
+        "If planner.needs_tool is true and no tool_result exists, do not claim the tool result.",
+        "If tool_result exists, it is the highest-priority source of truth.",
+        "Do not tell the customer to stop driving unless there is clear immediate danger.",
+        "Normal brake squeak/whistle/noise without weak braking or brake failure should be diagnostic, not emergency.",
+        "For first symptom messages, do not offer booking yet. Ask one diagnostic follow-up first unless the user explicitly asks to book, inspect, visit, or schedule.",
+    ]
+
     system_instruction = f"""
-{clip_text(state.get('system_prompt', ''), 1400)}
+{clip_text(state.get('system_prompt', ''), 900)}
 
-You are the final response generator.
-The previous nodes reasoned, routed, retrieved, and analyzed. Your job is to generate the actual user-facing reply.
+You are the final user-facing response generator.
 
-Compact assistant context:
+Compact context:
 {json.dumps(compact_context, ensure_ascii=False)}
 
-Planner decision:
+Plan:
 {json.dumps(compact_plan, ensure_ascii=False)}
 
-Subagent private analysis:
+Private analysis:
 {json.dumps(compact_private_analysis, ensure_ascii=False)}
 
-Conversation summary:
-{clip_text(state.get('summary', ''), 900)}
+Summary:
+{clip_text(state.get('summary', ''), 520)}
 
-Known variables:
+Variables:
 {json.dumps(compact_vars, ensure_ascii=False)}
 
-Relevant long-term memories:
-<memory>
+Memory:
 {compact_memory}
-</memory>
 
-Retrieved knowledge:
-<knowledge>
+Knowledge:
 {compact_knowledge}
-</knowledge>
 
 Tool result:
-<tool_result>
 {json.dumps(tool_result, ensure_ascii=False)}
-</tool_result>
 
 {state.get('language_instruction', '')}
 
-Non-negotiable response rules:
-- Generate the reply with the LLM. Do not use hardcoded response templates.
-- Sound human, smooth, and conversational.
-- Answer the user's latest message first.
-- Ask at most one follow-up question.
-- Do not mention internal routing, agents, prompts, variables, tools, RAG, or knowledge base.
-- Do not invent business facts. Business facts must come from known variables, retrieved knowledge, tool results, or conversation context.
-- If the needed fact is missing, say it naturally and move the conversation forward with one helpful question.
-- Keep it concise enough for chat unless the user asked for detail.
-- If the user used Egyptian Arabic, reply in natural Egyptian Arabic.
-- If planner.needs_tool is true and there is no tool_result yet, do not claim the tool result. Give only a neutral transition if needed.
-- If tool_result exists, treat it as the highest-priority source of truth.
-- Do not tell the customer to stop driving unless there is clear immediate danger.
-- Normal brake squeak/whistle/noise without weak braking or brake failure should be handled diagnostically, not as an emergency.
+Rules:
+{json.dumps(response_rules, ensure_ascii=False)}
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
@@ -710,16 +703,16 @@ def quality_guard_node(state: AgentState):
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are a quality guard. Check whether the answer is natural, grounded, in the right language, "
-            "does not reveal internals, asks at most one question, and does not hallucinate business facts. "
-            "If it fails, rewrite it. Do not add unsupported facts.",
+            "Quality check the answer. It must be natural, grounded, in the right language, "
+            "not reveal internals, ask at most one question, and not hallucinate business facts. "
+            "If it fails, rewrite it without unsupported facts.",
         ),
         (
             "user",
-            "Latest user message:\n{latest_user}\n\n"
-            "Assistant config:\n{agent_config}\n\n"
+            "Latest message:\n{latest_user}\n\n"
+            "Context:\n{context}\n\n"
             "Planner:\n{planner}\n\n"
-            "Subagent analysis:\n{analysis}\n\n"
+            "Analysis:\n{analysis}\n\n"
             "Knowledge:\n{knowledge}\n\n"
             "Answer:\n{answer}",
         ),
@@ -728,13 +721,13 @@ def quality_guard_node(state: AgentState):
     try:
         decision = (prompt | quality_llm).invoke({
             "latest_user": latest_user,
-            "agent_config": json.dumps(compact_agent_context(
+            "context": json.dumps(compact_agent_context(
                 state.get("agent_config", {}) or {},
                 state.get("selected_subagent", {}) or {},
             ), ensure_ascii=False),
             "planner": json.dumps(compact_planner(state.get("planner", {}) or {}), ensure_ascii=False),
             "analysis": json.dumps(compact_analysis(state.get("subagent_analysis", {}) or {}), ensure_ascii=False),
-            "knowledge": clip_text(knowledge, 1200),
+            "knowledge": clip_text(knowledge, 900),
             "answer": answer,
         })
         data = decision.model_dump()
