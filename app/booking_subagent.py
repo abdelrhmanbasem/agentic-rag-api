@@ -1,5 +1,6 @@
 # app/booking_subagent.py
 
+import json
 import math
 import re
 from datetime import datetime, timedelta
@@ -32,7 +33,6 @@ BRANCH_DISPLAY_NAMES = {
 
 
 AREA_COORDINATES = {
-    # East / New Cairo side
     "Obour": (30.2285, 31.4799),
     "Shorouk": (30.1417, 31.6167),
     "Madinaty": (30.0934, 31.6385),
@@ -45,7 +45,6 @@ AREA_COORDINATES = {
     "Fifth Settlement": (30.0085, 31.4815),
     "First Settlement": (30.0610, 31.4430),
 
-    # Cairo center / east
     "Nasr City Area": (30.0561, 31.3300),
     "Heliopolis": (30.0912, 31.3220),
     "Nozha": (30.1114, 31.3490),
@@ -62,14 +61,12 @@ AREA_COORDINATES = {
     "Abbasiya": (30.0728, 31.2806),
     "Ramses": (30.0626, 31.2477),
 
-    # South Cairo
     "Maadi Area": (29.9602, 31.2569),
     "Zahraa Maadi": (29.9689, 31.3147),
     "Katameya": (29.9953, 31.4314),
     "Helwan": (29.8414, 31.3008),
     "Tora": (29.9368, 31.2704),
 
-    # Giza / west
     "Giza": (30.0131, 31.2089),
     "Dokki": (30.0384, 31.2122),
     "Mohandessin": (30.0566, 31.2006),
@@ -83,7 +80,6 @@ AREA_COORDINATES = {
     "Hadayek October": (29.9140, 30.8655),
     "Hadayek Ahram": (29.9544, 31.0965),
 
-    # Alexandria
     "Alexandria Area": (31.2001, 29.9187),
     "Smouha": (31.2089, 29.9447),
     "Sidi Gaber": (31.2183, 29.9422),
@@ -96,7 +92,6 @@ AREA_COORDINATES = {
 
 
 AREA_ALIASES = {
-    # Obour
     "el obour": "Obour",
     "el-obour": "Obour",
     "al obour": "Obour",
@@ -107,7 +102,6 @@ AREA_ALIASES = {
     "العبور": "Obour",
     "عبور": "Obour",
 
-    # East Cairo / new cities
     "الشروق": "Shorouk",
     "شروق": "Shorouk",
     "shorouk": "Shorouk",
@@ -141,7 +135,6 @@ AREA_ALIASES = {
     "التجمع الأول": "First Settlement",
     "first settlement": "First Settlement",
 
-    # Cairo center/east
     "مدينة نصر": "Nasr City Area",
     "مدينه نصر": "Nasr City Area",
     "nasr city": "Nasr City Area",
@@ -181,7 +174,6 @@ AREA_ALIASES = {
     "رمسيس": "Ramses",
     "ramses": "Ramses",
 
-    # South Cairo
     "المعادي": "Maadi Area",
     "معادي": "Maadi Area",
     "maadi": "Maadi Area",
@@ -196,7 +188,6 @@ AREA_ALIASES = {
     "طره": "Tora",
     "tora": "Tora",
 
-    # Giza / west
     "giza": "Giza",
     "الجيزة": "Giza",
     "الجيزه": "Giza",
@@ -235,7 +226,6 @@ AREA_ALIASES = {
     "حدائق الأهرام": "Hadayek Ahram",
     "hadayek ahram": "Hadayek Ahram",
 
-    # Alexandria
     "اسكندرية": "Alexandria Area",
     "إسكندرية": "Alexandria Area",
     "الاسكندرية": "Alexandria Area",
@@ -361,6 +351,113 @@ def branch_display_name(branch: str) -> str:
     return BRANCH_DISPLAY_NAMES.get(branch, branch or "الفرع")
 
 
+def get_tool_reply_templates(assistant: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(assistant, dict):
+        return {}
+
+    templates = assistant.get("tool_reply_templates") or {}
+
+    if isinstance(templates, dict):
+        return templates
+
+    if isinstance(templates, str):
+        try:
+            parsed = json.loads(templates)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    return {}
+
+
+def map_tool_reason(reason: str, reason_map: Dict[str, str]) -> str:
+    raw_reason = _norm(reason)
+    reason_l = _lower(raw_reason)
+
+    if not reason_l:
+        return "غير متاح حاليًا"
+
+    if isinstance(reason_map, dict):
+        for key, mapped_reason in reason_map.items():
+            if _lower(key) in reason_l:
+                return _norm(mapped_reason)
+
+    return raw_reason
+
+
+def render_reply_template(template: str, values: Dict[str, Any]) -> str:
+    safe_values = {}
+
+    for key, value in (values or {}).items():
+        safe_values[key] = "" if value is None else value
+
+    try:
+        return str(template).format(**safe_values)
+    except Exception:
+        return str(template)
+
+
+def build_tool_template_values(
+    *,
+    variables: Dict[str, Any],
+    tool_result: Dict[str, Any],
+    reason_text: str = "",
+) -> Dict[str, Any]:
+    requested = tool_result.get("requested") or {}
+
+    branch = variables.get("location_branch") or requested.get("branch")
+    date = variables.get("appointment_date") or requested.get("date")
+    time = variables.get("appointment_time") or requested.get("time")
+    section = (
+        variables.get("customer_facing_section")
+        or variables.get("recommended_section")
+        or variables.get("service_needed")
+        or requested.get("section")
+    )
+
+    return {
+        "branch": branch_display_name(branch),
+        "branch_internal": branch or "",
+        "date": date or "",
+        "time": time or "",
+        "section": section or "",
+        "reason": reason_text or "",
+        "nearest_slots_text": (
+            variables.get("nearest_slots_text")
+            or tool_result.get("nearest_slots_text")
+            or ""
+        ),
+    }
+
+
+def compose_tool_reply_from_template(
+    *,
+    assistant: Dict[str, Any],
+    tool_type: str,
+    status: str,
+    template_key: str,
+    variables: Dict[str, Any],
+    tool_result: Dict[str, Any],
+    reason_text: str = "",
+) -> str:
+    templates = get_tool_reply_templates(assistant)
+    tool_templates = templates.get(tool_type, {}) if isinstance(templates, dict) else {}
+    status_templates = tool_templates.get(status, {}) if isinstance(tool_templates, dict) else {}
+
+    template = status_templates.get(template_key)
+
+    if not template:
+        return ""
+
+    values = build_tool_template_values(
+        variables=variables,
+        tool_result=tool_result,
+        reason_text=reason_text,
+    )
+
+    return render_reply_template(template, values).strip()
+
+
 def compose_booking_reply(
     *,
     user_message: str,
@@ -373,10 +470,10 @@ def compose_booking_reply(
     model = model_for_tier("normal")
 
     system_prompt = """
-You are the booking reply composer for Apex AutoCare in Egypt.
+You are the booking reply composer.
 
 Write only the final customer-facing WhatsApp reply.
-Use natural Egyptian Arabic unless the customer wrote in English.
+Use the same language/dialect style as the assistant.
 Sound like a helpful human service advisor, not a system or workflow.
 Do not mention JSON, variables, tools, stages, backend, availability API, or internal logic.
 Keep it short: 1 to 3 natural sentences.
@@ -438,16 +535,14 @@ Write the customer-facing reply only.
     if stage == "availability_unavailable_waiting_new_slot":
         reason = normalize_unavailable_reason(variables.get("unavailable_reason", ""))
         nearest = _norm(variables.get("nearest_slots_text"))
-
         if nearest:
             return (
-                f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
-                f"بس لقيتلك أقرب اختيارات متاحة:\n\n{nearest}\n\n"
+                f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
+                f"بس لقيتلك أقرب مواعيد متاحة:\n\n{nearest}\n\n"
                 "تحب أثبتلك واحد منهم؟"
             )
-
         return (
-            f"تمام، الميعاد ده مش متاح للأسف لأن {reason}. "
+            f"تمام، الميعاد ده مش متاح للأسف عشان {reason}. "
             "تحب نجرب وقت تاني في نفس الفرع، ولا أدوّرلك في فرع قريب؟"
         )
 
@@ -553,7 +648,6 @@ def detect_booking_intent(message: str, variables: Dict[str, Any]) -> bool:
 
 
 def detect_confirmation(message: str) -> bool:
-    text = _lower(message)
     confirmation_words = [
         "اه",
         "أه",
@@ -579,7 +673,7 @@ def detect_confirmation(message: str) -> bool:
         "احجزه",
         "احجزلي",
     ]
-    return _has_any(text, confirmation_words)
+    return _has_any(message, confirmation_words)
 
 
 def detect_nearest_branch_question(message: str) -> bool:
@@ -630,17 +724,14 @@ def detect_nearest_branch_question(message: str) -> bool:
 
 def extract_user_area(message: str) -> Optional[str]:
     text = _clean_location_text(message)
-
     sorted_aliases = sorted(AREA_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
 
     for alias, area in sorted_aliases:
         alias_clean = _clean_location_text(alias)
-
         if not alias_clean:
             continue
 
         pattern = r"(?<!\w)" + re.escape(alias_clean) + r"(?!\w)"
-
         if re.search(pattern, text):
             return area
 
@@ -648,9 +739,7 @@ def extract_user_area(message: str) -> Optional[str]:
 
 
 def recommend_branch_for_area(area: str) -> Optional[str]:
-    area = _norm(area)
-
-    area_coord = AREA_COORDINATES.get(area)
+    area_coord = AREA_COORDINATES.get(_norm(area))
 
     if not area_coord:
         return None
@@ -660,7 +749,6 @@ def recommend_branch_for_area(area: str) -> Optional[str]:
 
     for branch, branch_coord in BRANCH_COORDINATES.items():
         distance = _distance_km(area_coord, branch_coord)
-
         if nearest_distance is None or distance < nearest_distance:
             nearest_branch = branch
             nearest_distance = distance
@@ -669,8 +757,7 @@ def recommend_branch_for_area(area: str) -> Optional[str]:
 
 
 def recommend_nearest_branches_for_area(area: str, limit: int = 2) -> List[Dict[str, Any]]:
-    area = _norm(area)
-    area_coord = AREA_COORDINATES.get(area)
+    area_coord = AREA_COORDINATES.get(_norm(area))
 
     if not area_coord:
         return []
@@ -688,7 +775,6 @@ def recommend_nearest_branches_for_area(area: str, limit: int = 2) -> List[Dict[
         )
 
     ranked.sort(key=lambda item: item["distance_km_estimate"])
-
     return ranked[:limit]
 
 
@@ -728,7 +814,6 @@ def extract_branch(message: str, variables: Dict[str, Any]) -> Optional[str]:
 
     for key, branch in sorted_branches:
         key_clean = _clean_location_text(key)
-
         if key_clean in text:
             return branch
 
@@ -891,10 +976,7 @@ def extract_date(message: str, variables: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def collect_slot_variables(
-    message: str,
-    variables: Dict[str, Any],
-) -> Dict[str, Any]:
+def collect_slot_variables(message: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     variables = dict(variables or {})
 
     branch = extract_branch(message, variables)
@@ -1052,7 +1134,12 @@ def action_check_availability(variables: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def normalize_unavailable_reason(reason: str) -> str:
+def normalize_unavailable_reason(reason: str, reason_map: Optional[Dict[str, str]] = None) -> str:
+    if reason_map:
+        mapped = map_tool_reason(reason, reason_map)
+        if mapped and mapped != reason:
+            return mapped
+
     reason_l = _lower(reason)
 
     if not reason_l:
@@ -1064,22 +1151,18 @@ def normalize_unavailable_reason(reason: str) -> str:
     if "slot is full" in reason_l or "full" in reason_l:
         return "المعاد ده اتحجز بالكامل"
 
-    if "equipment" in reason_l:
-        return "القسم مش متاح في الوقت ده بسبب صيانة أو تجهيزات"
-
-    if "manager blocked" in reason_l or "blocked" in reason_l:
-        return "المعاد ده مقفول من إدارة الفرع حاليًا"
-
     return reason
 
 
 def handle_availability_result(
     tool_result: Dict[str, Any],
     variables: Dict[str, Any],
+    assistant: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     variables = dict(variables or {})
-    available = bool(tool_result.get("available"))
+    assistant = assistant or {}
 
+    available = bool(tool_result.get("available"))
     requested = tool_result.get("requested") or {}
 
     if requested:
@@ -1097,17 +1180,28 @@ def handle_availability_result(
         variables["booking_stage"] = "availability_available_waiting_confirmation"
         variables["booking_confirmation_requested"] = True
 
-        answer = compose_booking_reply(
-            user_message="__tool_result__",
+        answer = compose_tool_reply_from_template(
+            assistant=assistant,
+            tool_type="availability_result",
+            status="available",
+            template_key="default",
             variables=variables,
-            stage=variables["booking_stage"],
             tool_result=tool_result,
-            missing_variables=[],
-            instruction=(
-                "The requested appointment slot is available. "
-                "Tell the customer naturally that the slot is available and ask if they want to confirm it."
-            ),
+            reason_text="",
         )
+
+        if not answer:
+            answer = compose_booking_reply(
+                user_message="__tool_result__",
+                variables=variables,
+                stage=variables["booking_stage"],
+                tool_result=tool_result,
+                missing_variables=[],
+                instruction=(
+                    "The requested appointment slot is available. "
+                    "Tell the customer naturally that the slot is available and ask if they want to confirm it."
+                ),
+            )
 
         return {
             "handled": True,
@@ -1128,19 +1222,51 @@ def handle_availability_result(
     variables["nearest_slots"] = tool_result.get("nearest_slots") or []
     variables["nearest_slots_text"] = tool_result.get("nearest_slots_text") or ""
 
-    answer = compose_booking_reply(
-        user_message="__tool_result__",
-        variables=variables,
-        stage=variables["booking_stage"],
-        tool_result=tool_result,
-        missing_variables=[],
-        instruction=(
-            "The requested appointment slot is unavailable. "
-            "Explain the reason naturally if available. "
-            "If nearest_slots_text exists, offer those nearest slots. "
-            "If there are no nearest slots, ask whether to try another time in the same branch or another nearby branch."
-        ),
+    templates = get_tool_reply_templates(assistant)
+    availability_templates = templates.get("availability_result", {}) if isinstance(templates, dict) else {}
+    reason_map = availability_templates.get("reason_map", {}) if isinstance(availability_templates, dict) else {}
+
+    raw_reason = (
+        variables.get("unavailable_reason")
+        or tool_result.get("unavailable_reason")
+        or tool_result.get("reason")
+        or ""
     )
+
+    reason_text = normalize_unavailable_reason(raw_reason, reason_map)
+
+    nearest = _norm(
+        variables.get("nearest_slots_text")
+        or tool_result.get("nearest_slots_text")
+        or ""
+    )
+
+    template_key = "with_nearest_slots" if nearest else "default"
+
+    answer = compose_tool_reply_from_template(
+        assistant=assistant,
+        tool_type="availability_result",
+        status="unavailable",
+        template_key=template_key,
+        variables=variables,
+        tool_result=tool_result,
+        reason_text=reason_text,
+    )
+
+    if not answer:
+        answer = compose_booking_reply(
+            user_message="__tool_result__",
+            variables=variables,
+            stage=variables["booking_stage"],
+            tool_result=tool_result,
+            missing_variables=[],
+            instruction=(
+                "The requested appointment slot is unavailable. "
+                "Explain the reason naturally if available. "
+                "If nearest_slots_text exists, offer those nearest slots. "
+                "If there are no nearest slots, ask whether to try another time in the same branch or another nearby branch."
+            ),
+        )
 
     return {
         "handled": True,
@@ -1222,10 +1348,8 @@ def _extract_customer_name(message: str) -> Optional[str]:
 
 
 def _detect_phone_confirmed(message: str) -> bool:
-    text = _lower(message)
-
     return _has_any(
-        text,
+        message,
         [
             "نفس الرقم",
             "اه نفس الرقم",
@@ -1398,7 +1522,7 @@ def run_booking_subagent(
     variables = dict(variables or {})
 
     if tool_result and tool_result.get("type") == "availability_result":
-        return handle_availability_result(tool_result, variables)
+        return handle_availability_result(tool_result, variables, assistant=assistant)
 
     if tool_result and tool_result.get("type") == "booking_result":
         return handle_booking_result(tool_result, variables)
