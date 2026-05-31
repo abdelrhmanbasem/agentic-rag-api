@@ -111,7 +111,6 @@ def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
 
 def parse_manifest_response(content: Any) -> Dict[str, Any]:
     text = content.content if hasattr(content, "content") else str(content)
-
     try:
         parsed = json.loads(text)
         if not isinstance(parsed, dict):
@@ -206,11 +205,9 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return {}
-
     nested = schema.get("schema")
     if isinstance(nested, dict):
         return nested
-
     return schema
 
 
@@ -287,7 +284,6 @@ def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[s
 
 def compact_subagents_for_manifest(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     compact = []
-
     for subagent in agent_config.get("subagents") or []:
         compact.append({
             "id": subagent.get("id", ""),
@@ -296,13 +292,11 @@ def compact_subagents_for_manifest(agent_config: Dict[str, Any]) -> List[Dict[st
             "goal": clip_text(subagent.get("goal", ""), 220),
             "allowed_actions": subagent.get("allowed_actions", []),
         })
-
     return compact
 
 
 def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     tools = []
-
     for tool in agent_config.get("tool_catalog") or []:
         tools.append({
             "name": tool.get("name", ""),
@@ -312,7 +306,6 @@ def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "source_of_truth": tool.get("source_of_truth", False),
             "result_policy": clip_text(tool.get("result_policy", ""), 260),
         })
-
     return tools
 
 
@@ -418,9 +411,14 @@ def should_use_simple_response(state: AgentState) -> bool:
     """
     Generic express-lane logic.
 
-    This is not domain hardcoding. It only checks whether the manifest says no
-    resources/tools/subagent reasoning are needed, risk is low, confidence is acceptable,
-    and there is no tool_result that must be handled.
+    This is not domain hardcoding.
+    If the manifest says no external resources/tools are needed, risk is low,
+    confidence is acceptable, and there is no tool result to handle, then a
+    compact response path is safe.
+
+    We intentionally do NOT block on needs_subagent_reasoning here because the
+    express lane itself still uses the selected subagent instructions and the
+    manifest response_brief. This keeps simple turns smart and cheaper.
     """
     manifest = state.get("manifest", {}) or {}
 
@@ -431,9 +429,6 @@ def should_use_simple_response(state: AgentState) -> bool:
         return False
 
     if manifest.get("needs_memory"):
-        return False
-
-    if manifest.get("needs_subagent_reasoning"):
         return False
 
     if manifest.get("risk_level") in ["high", "medium"]:
