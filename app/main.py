@@ -41,16 +41,11 @@ class ChatRequest(BaseModel):
     message: str
     channel: str = "api"
 
-    # Supported modes:
-    # - normal: original behavior
-    # - planner: returns data_request/direct answer for workflow tools
-    # - final_with_external_context: uses external_context.result and returns final answer only
     mode: str = "normal"
 
     variables: Dict[str, Any] = Field(default_factory=dict)
     tool_result: Dict[str, Any] = Field(default_factory=dict)
 
-    # Used by n8n / Activepieces fetch-then-answer flow.
     planner_result: Dict[str, Any] = Field(default_factory=dict)
     conversation_state: Dict[str, Any] = Field(default_factory=dict)
     external_context: Dict[str, Any] = Field(default_factory=dict)
@@ -695,7 +690,6 @@ def replace_area_branch_phrases(answer: str, user_area: str, verified_branch: st
 
     replacements = [
         (f"فرع {user_area}", f"فرع {verified_branch}"),
-        (f"في {user_area}", f"في {verified_branch}"),
         (f"branch {user_area}", f"branch {verified_branch}"),
         (f"{user_area} branch", f"{verified_branch} branch"),
     ]
@@ -718,13 +712,12 @@ def sanitize_answer_with_verified_facts(answer: str, request: ChatRequest) -> st
 
     fixed = replace_area_branch_phrases(answer, user_area, verified_branch)
 
-    # If the model says "the branch is the user area" while a different verified branch exists,
-    # force only that phrase to the verified branch. This is dynamic, not branch-specific.
     if verified_branch and user_area and user_area.strip().casefold() != verified_branch.strip().casefold():
         escaped_area = re.escape(user_area)
+
         fixed = re.sub(
             rf"(فرع\s+){escaped_area}",
-            rf"\1{verified_branch}",
+            lambda match: match.group(1) + verified_branch,
             fixed,
             flags=re.IGNORECASE,
         )
