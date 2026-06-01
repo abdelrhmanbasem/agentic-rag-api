@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,14 +43,14 @@ class ChatRequest(BaseModel):
 
     # Supported modes:
     # - normal: original behavior
-    # - planner: return clean planner/data_request output for n8n/Activepieces
-    # - final_with_external_context: use external_context.result and return final answer only
+    # - planner: returns data_request/direct answer for workflow tools
+    # - final_with_external_context: uses external_context.result and returns final answer only
     mode: str = "normal"
 
     variables: Dict[str, Any] = Field(default_factory=dict)
     tool_result: Dict[str, Any] = Field(default_factory=dict)
 
-    # Used by n8n/Activepieces-style fetch-then-answer flow.
+    # Used by n8n / Activepieces fetch-then-answer flow.
     planner_result: Dict[str, Any] = Field(default_factory=dict)
     conversation_state: Dict[str, Any] = Field(default_factory=dict)
     external_context: Dict[str, Any] = Field(default_factory=dict)
@@ -117,20 +118,6 @@ def save_conversation(assistant_id: str, conversation_id: str, data: Dict[str, A
     safe_json_write(conversation_path(assistant_id, conversation_id), data)
 
 
-def message_to_dict(message: BaseMessage) -> Dict[str, str]:
-    if isinstance(message, HumanMessage):
-        role = "user"
-    elif isinstance(message, AIMessage):
-        role = "assistant"
-    else:
-        role = "system"
-
-    return {
-        "role": role,
-        "content": str(message.content),
-    }
-
-
 def dict_to_message(item: Dict[str, Any]) -> BaseMessage:
     role = item.get("role")
     content = item.get("content", "")
@@ -179,23 +166,6 @@ def append_conversation_messages(
 
 
 def build_agent_config(assistant_doc: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Supports two assistant.json shapes:
-
-    1. {
-         "assistant_id": "...",
-         "system_prompt": "...",
-         "agent_config": {...}
-       }
-
-    2. {
-         "assistant_id": "...",
-         "assistant_goal": "...",
-         "subagents": [...]
-       }
-
-    The graph expects agent_config.
-    """
     agent_config = assistant_doc.get("agent_config")
 
     if isinstance(agent_config, dict):
@@ -231,9 +201,6 @@ def merge_dicts(*items: Any) -> Dict[str, Any]:
 
 
 def compact_dict(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Keeps false/0 values but removes None and empty strings/lists/dicts.
-    """
     out: Dict[str, Any] = {}
 
     for key, value in data.items():
@@ -250,13 +217,32 @@ def compact_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def build_route_contract(final_state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Public route contract for n8n.
+def get_nested_dict(data: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = data.get(key)
 
-    This exposes the tool decision clearly without hardcoding any domain logic.
-    Tool names and payloads come from the graph planner/manifest.
-    """
+    if isinstance(value, dict):
+        return value
+
+    return {}
+
+
+def first_non_empty(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+
+        elif value not in ("", [], {}):
+            return str(value)
+
+    return ""
+
+
+def build_route_contract(final_state: Dict[str, Any]) -> Dict[str, Any]:
     planner = final_state.get("planner", {}) or {}
     manifest = final_state.get("manifest", {}) or {}
 
@@ -305,13 +291,6 @@ def build_route_contract(final_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_action_required_contract(final_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Backward-compatible action contract for n8n.
-
-    This replaces old action_required logic with a generic contract.
-    No domain-specific fields are hardcoded here.
-    The payload comes from planner.tool_request_payload / manifest.tool_request_payload.
-    """
     route = build_route_contract(final_state)
 
     if not route.get("needs_tool"):
@@ -330,13 +309,6 @@ def build_action_required_contract(final_state: Dict[str, Any]) -> Optional[Dict
 
 
 def should_hide_answer_for_tool_request(route: Dict[str, Any], request: ChatRequest) -> bool:
-    """
-    If a tool is ready to run, n8n should execute it first.
-    So the API response should not send a normal customer-facing answer.
-
-    If inputs are missing, keep the generated answer because it should ask the customer
-    for missing information.
-    """
     if request.tool_result:
         return False
 
@@ -376,10 +348,6 @@ def extract_data_request_from_response(
     route: Dict[str, Any],
     action_required: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """
-    Generic planner output for n8n/Activepieces.
-    Does not hardcode any operation names.
-    """
     if action_required and isinstance(action_required, dict):
         payload = action_required.get("payload") or {}
         if isinstance(payload, dict):
@@ -396,26 +364,22 @@ def build_planner_response(
     request: ChatRequest,
     response_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Converts the old graph route/action format into a cleaner n8n planner format.
-
-    This is generic:
-    - It does not know Apps Script.
-    - It does not know service center sheet structure.
-    - It only exposes route/action/data_request from the assistant planner.
-    """
     route = response_payload.get("route") or {}
     action_required = response_payload.get("action_required")
 
     missing_inputs = []
+
     if isinstance(action_required, dict):
         missing_inputs = action_required.get("missing_inputs") or []
+
     if not missing_inputs:
         missing_inputs = route.get("missing_tool_inputs") or []
 
     requested_tool_name = ""
+
     if isinstance(action_required, dict):
         requested_tool_name = action_required.get("type") or ""
+
     if not requested_tool_name:
         requested_tool_name = route.get("requested_tool_name") or ""
 
@@ -428,9 +392,7 @@ def build_planner_response(
     )
 
     answer = response_payload.get("answer") or ""
-    quality = response_payload.get("quality") or {}
 
-    # If planner needs external data, do not send customer-facing waiting text.
     if needs_external_data:
         answer = ""
 
@@ -449,7 +411,7 @@ def build_planner_response(
         "action_required": action_required if not needs_external_data else None,
 
         "missing_inputs": missing_inputs,
-        "quality": quality,
+        "quality": response_payload.get("quality") or {},
         "token_usage": response_payload.get("token_usage") or {},
         "mock_mode": response_payload.get("mock_mode", False),
     }
@@ -492,15 +454,6 @@ def get_external_operation(external_context: Dict[str, Any], planner_result: Dic
 
 
 def build_tool_result_from_external_context(request: ChatRequest) -> Dict[str, Any]:
-    """
-    Converts n8n/Activepieces fetched data into the existing graph's tool_result format.
-
-    This is generic:
-    - Does not hardcode sheet names.
-    - Does not hardcode URLs.
-    - Does not call external APIs.
-    - Uses whatever n8n sends in external_context.result.
-    """
     external_context = request.external_context or {}
     planner_result = request.planner_result or {}
     result = get_external_result(external_context)
@@ -535,46 +488,93 @@ def build_tool_result_from_external_context(request: ChatRequest) -> Dict[str, A
     return tool_result
 
 
-def infer_state_updates_from_external_context(request: ChatRequest) -> Dict[str, Any]:
-    """
-    State extraction from external_context.result using common field names if present.
+def get_verified_external_facts(request: ChatRequest) -> Dict[str, str]:
+    external_context = request.external_context or {}
+    planner_result = request.planner_result or {}
+    conversation_state = request.conversation_state or {}
+    data_request = get_nested_dict(planner_result, "data_request")
+    result = get_external_result(external_context)
 
-    This is still generic:
-    - It does not call a fixed tool.
-    - It does not know any URL.
-    - It only preserves fields if the external result already contains them.
-    """
+    operation = get_external_operation(external_context, planner_result)
+
+    verified_branch = first_non_empty(
+        result.get("branch_display_name"),
+        result.get("branch_name"),
+        result.get("branch"),
+        result.get("nearest_branch"),
+        result.get("location_branch"),
+        result.get("selected_branch"),
+        conversation_state.get("branch_display_name"),
+        conversation_state.get("branch_name"),
+        conversation_state.get("location_branch"),
+        conversation_state.get("nearest_branch"),
+        conversation_state.get("selected_branch"),
+    )
+
+    user_area = first_non_empty(
+        result.get("user_area"),
+        result.get("location_text"),
+        result.get("location"),
+        data_request.get("user_area"),
+        data_request.get("location_text"),
+        data_request.get("location"),
+        conversation_state.get("user_area"),
+        conversation_state.get("location_text"),
+        conversation_state.get("location"),
+    )
+
+    verified_date = first_non_empty(
+        result.get("date_display"),
+        result.get("date"),
+        result.get("appointment_date"),
+        data_request.get("date"),
+        conversation_state.get("appointment_date"),
+        conversation_state.get("requested_date"),
+    )
+
+    verified_time = first_non_empty(
+        result.get("time_display"),
+        result.get("time"),
+        result.get("appointment_time"),
+        data_request.get("time"),
+        conversation_state.get("appointment_time"),
+        conversation_state.get("requested_time"),
+    )
+
+    verified_section = first_non_empty(
+        result.get("section_display_name"),
+        result.get("section_name"),
+        result.get("section"),
+        result.get("service_needed"),
+        result.get("recommended_section"),
+        data_request.get("section"),
+        conversation_state.get("service_needed"),
+        conversation_state.get("recommended_section"),
+    )
+
+    return {
+        "operation": operation,
+        "verified_branch": verified_branch,
+        "user_area": user_area,
+        "verified_date": verified_date,
+        "verified_time": verified_time,
+        "verified_section": verified_section,
+    }
+
+
+def infer_state_updates_from_external_context(request: ChatRequest) -> Dict[str, Any]:
     result = get_external_result(request.external_context or {})
     operation = get_external_operation(request.external_context or {}, request.planner_result or {})
 
     if not result:
         return {}
 
-    branch = (
-        result.get("branch")
-        or result.get("nearest_branch")
-        or result.get("location_branch")
-        or ""
-    )
+    facts = get_verified_external_facts(request)
 
-    section = (
-        result.get("section")
-        or result.get("service_needed")
-        or result.get("recommended_section")
-        or ""
-    )
-
-    date = (
-        result.get("date")
-        or result.get("appointment_date")
-        or ""
-    )
-
-    time = (
-        result.get("time")
-        or result.get("appointment_time")
-        or ""
-    )
+    branch = facts.get("verified_branch", "")
+    section = facts.get("verified_section", "")
+    date = facts.get("verified_date", "")
+    time = facts.get("verified_time", "")
 
     updates = {
         "last_external_operation": operation,
@@ -644,10 +644,29 @@ def infer_state_updates_from_external_context(request: ChatRequest) -> Dict[str,
     return compact_dict(updates)
 
 
+def build_verified_external_facts_instruction(request: ChatRequest) -> str:
+    facts = get_verified_external_facts(request)
+
+    return (
+        "VERIFIED EXTERNAL FACTS:\n"
+        f"{json.dumps(facts, ensure_ascii=False)}\n\n"
+        "Grounding rules:\n"
+        "- verified_branch is the confirmed branch from external_context.result or preserved verified state.\n"
+        "- user_area is only the customer's area/location, not a branch.\n"
+        "- Never call user_area a branch unless it exactly equals verified_branch.\n"
+        "- If verified_branch exists, every branch mention in the final reply must use verified_branch.\n"
+        "- Do not invent branches, dates, times, slots, sections, booking IDs, or unavailable reasons.\n"
+        "- If slots are present in external_context.result, list only those slots.\n"
+        "- If no slots are present, explain using the external result and ask for the next missing useful detail.\n"
+    )
+
+
 def build_final_mode_instruction(request: ChatRequest) -> str:
     external_context = request.external_context or {}
     planner_result = request.planner_result or {}
     conversation_state = request.conversation_state or {}
+
+    verified_facts_instruction = build_verified_external_facts_instruction(request)
 
     return (
         "MODE: final_with_external_context\n"
@@ -657,14 +676,77 @@ def build_final_mode_instruction(request: ChatRequest) -> str:
         "Use external_context.result as the source of truth for external facts.\n"
         "external_context.result is verified data already fetched by the workflow before this call.\n"
         "Treat facts from external_context.result as confirmed external/tool data.\n"
-        "The quality check must not claim external_context.result facts are unverified.\n"
         "If external_context.result contains the requested answer, answer directly and naturally.\n"
         "If the external result says something is missing or not found, ask only for the missing customer detail.\n"
         "Do not expose internal fields, JSON, tools, operations, routes, payloads, or system logic.\n\n"
+        f"{verified_facts_instruction}\n\n"
         f"Planner result:\n{json.dumps(planner_result, ensure_ascii=False)}\n\n"
         f"Conversation state:\n{json.dumps(conversation_state, ensure_ascii=False)}\n\n"
         f"External context:\n{json.dumps(external_context, ensure_ascii=False)}\n"
     )
+
+
+def replace_area_branch_phrases(answer: str, user_area: str, verified_branch: str) -> str:
+    if not answer or not user_area or not verified_branch:
+        return answer
+
+    if user_area.strip().casefold() == verified_branch.strip().casefold():
+        return answer
+
+    replacements = [
+        (f"فرع {user_area}", f"فرع {verified_branch}"),
+        (f"في {user_area}", f"في {verified_branch}"),
+        (f"branch {user_area}", f"branch {verified_branch}"),
+        (f"{user_area} branch", f"{verified_branch} branch"),
+    ]
+
+    fixed = answer
+
+    for old, new in replacements:
+        fixed = fixed.replace(old, new)
+
+    return fixed
+
+
+def sanitize_answer_with_verified_facts(answer: str, request: ChatRequest) -> str:
+    if not answer:
+        return answer
+
+    facts = get_verified_external_facts(request)
+    verified_branch = facts.get("verified_branch", "")
+    user_area = facts.get("user_area", "")
+
+    fixed = replace_area_branch_phrases(answer, user_area, verified_branch)
+
+    # If the model says "the branch is the user area" while a different verified branch exists,
+    # force only that phrase to the verified branch. This is dynamic, not branch-specific.
+    if verified_branch and user_area and user_area.strip().casefold() != verified_branch.strip().casefold():
+        escaped_area = re.escape(user_area)
+        fixed = re.sub(
+            rf"(فرع\s+){escaped_area}",
+            rf"\1{verified_branch}",
+            fixed,
+            flags=re.IGNORECASE,
+        )
+
+    return fixed
+
+
+def sanitize_payload_with_verified_facts(payload: Dict[str, Any], request: ChatRequest) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+
+    payload["answer"] = sanitize_answer_with_verified_facts(payload.get("answer", ""), request)
+
+    quality = payload.get("quality")
+    if isinstance(quality, dict):
+        quality["revised_answer"] = sanitize_answer_with_verified_facts(
+            quality.get("revised_answer", ""),
+            request,
+        )
+        payload["quality"] = quality
+
+    return payload
 
 
 def run_graph_once(
@@ -680,6 +762,7 @@ def run_graph_once(
     messages.append(HumanMessage(content=request.message))
 
     system_prompt = assistant_doc.get("system_prompt", "")
+
     if extra_system_instruction:
         system_prompt = f"{system_prompt}\n\n{extra_system_instruction}"
 
@@ -769,6 +852,9 @@ def build_response_payload(
             "subagent_analysis": final_state.get("subagent_analysis", {}) or {},
         }
 
+    if request.mode == "final_with_external_context":
+        response_payload = sanitize_payload_with_verified_facts(response_payload, request)
+
     return response_payload
 
 
@@ -853,6 +939,7 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
         conversation_state = {}
 
     external_state_updates: Dict[str, Any] = {}
+
     if request.mode == "final_with_external_context":
         external_state_updates = infer_state_updates_from_external_context(request)
 
@@ -884,6 +971,7 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
             final_state.get("variables", {}) or {},
             external_state_updates,
         )
+
         final_state["variables"] = final_variables
 
         response_payload = build_response_payload(
@@ -896,8 +984,6 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
         conversation["variables"] = final_variables
         conversation["summary"] = final_state.get("summary", conversation.get("summary", ""))
 
-        # This final answer responds to the original user message.
-        # Avoid duplicating the same user message in history because planner mode already stored it.
         append_conversation_messages(
             conversation,
             user_message=request.message,
