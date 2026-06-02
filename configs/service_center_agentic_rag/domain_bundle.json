@@ -6,13 +6,15 @@
     "max_tool_calls": 4,
     "assistant_goal": "Help customers diagnose car service issues, find suitable branches, check appointment availability, and book service visits only after explicit confirmation.",
     "language_policy": "Reply in the same language and dialect as the customer. For Egyptian Arabic, use natural Egyptian Arabic.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, and natural. Do not expose internal logic. Do not mention tools, JSON, variables, operations, or schemas. Never invent branches, dates, slots, unavailable reasons, or booking confirmations.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, and natural. Do not expose internal logic. Do not mention tools, JSON, variables, operations, or schemas. Never invent branches, dates, slots, unavailable reasons, or booking confirmations. Do not suggest checking appointment slots too early unless the user directly asks to book or the diagnostic discovery flow is complete.",
     "response_rules": [
-      "Do not offer booking immediately after the first symptom message. First ask for the customer's area/location.",
+      "Do not offer booking immediately after the first symptom message. First ask diagnostic/discovery questions.",
+      "For symptom cases, keep the first two assistant turns diagnostic/discovery before suggesting visit slots, unless the customer directly asks to book.",
       "A customer area is not a branch unless a tool confirms it.",
       "Never invent slots, branches, booking IDs, dates, or unavailable reasons.",
       "Never confirm booking unless create_booking returns ok=true.",
-      "During an active booking flow, ask only for the next missing required information."
+      "During an active booking flow, ask only for the next missing required information.",
+      "If the customer directly asks to book or asks for appointments, the booking flow can start immediately."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -52,6 +54,7 @@
     },
     "subagent_order": [
       "handoff",
+      "location",
       "booking",
       "lookup",
       "troubleshooting"
@@ -118,74 +121,97 @@
       }
     ],
     "subagents": {
-      "troubleshooting": {
+      "handoff": {
         "enabled": true,
         "variable_scope": {
           "include": [
-            "service_needed",
-            "selected_branch",
-            "nearest_branch",
-            "booking.stage"
+            "customer_profile",
+            "booking",
+            "selected_branch"
           ]
         },
-        "skip_if_paths_exist": [
-          "selected_branch",
-          "nearest_branch",
-          "booking.stage"
+        "trigger_phrases": [
+          "اكلم حد",
+          "موظف",
+          "خدمة العملاء",
+          "human",
+          "agent"
         ],
-        "rules": [
-          {
-            "id": "brake_symptom_ask_location",
-            "phrases": [
-              "فرامل",
-              "الفرامل",
-              "صفارة",
-              "صوت",
-              "تيل",
-              "طنابير",
-              "brake",
-              "brakes"
-            ],
-            "answer_template": "غالبًا محتاج كشف على قسم الفرامل. ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
-            "variable_updates": {
-              "service_needed": "Brakes & Safety"
-            },
-            "clear_variables": [
-              "booking",
-              "available_slots",
-              "appointment_time",
-              "customer_confirmed_booking"
-            ]
-          }
-        ]
+        "answer_template": "تمام، هحوّلك لحد من الفريق يساعدك.",
+        "variable_updates": {
+          "handoff_requested": true
+        },
+        "clear_variables": []
       },
-      "lookup": {
+      "location": {
         "enabled": true,
-        "default_tool_name": "service_center_sheet",
+        "tool_name": "service_center_sheet",
+        "operation": "find_nearest_branch",
+        "location_argument": "location",
+        "user_area_path": "user_area",
+        "nearest_branch_path": "nearest_branch",
+        "location_branch_path": "location_branch",
+        "selected_branch_path": "selected_branch",
+        "set_selected_branch_on_match": true,
+        "diagnostic_count_path": "troubleshooting.diagnostic_count",
+        "min_diagnostic_turns_before_visit_offer": 2,
         "variable_scope": {
           "include": [
-            "available_branches",
-            "available_branches_text"
+            "troubleshooting",
+            "service_needed",
+            "user_area",
+            "nearest_branch",
+            "location_branch",
+            "selected_branch"
           ]
         },
-        "rules": [
+        "location_patterns": [
           {
-            "id": "list_branches",
-            "phrases": [
-              "الفروع",
-              "الفروع المتاحه",
-              "الفروع المتاحة",
-              "ايه الفروع",
-              "إيه الفروع",
-              "branches"
-            ],
-            "tool_name": "service_center_sheet",
-            "operation": "list_branches",
-            "arguments": {},
-            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
-            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
+            "regex": "(?:انا ساكن في|أنا ساكن في|ساكن في|مكاني في|مكانى في|انا في|أنا في|في منطقة|منطقة|location is|i am in|i live in)\\s+([^\\n،,.!?؟]+)",
+            "group": 1
           }
-        ]
+        ],
+        "location_trigger_phrases": [
+          "انا ساكن في",
+          "أنا ساكن في",
+          "ساكن في",
+          "مكاني في",
+          "مكانى في",
+          "انا في",
+          "أنا في",
+          "في منطقة",
+          "منطقة"
+        ],
+        "location_cleanup_phrases": [
+          "انا ساكن في",
+          "أنا ساكن في",
+          "ساكن في",
+          "مكاني في",
+          "مكانى في",
+          "انا في",
+          "أنا في",
+          "في منطقة",
+          "منطقة"
+        ],
+        "direct_booking_phrases": [
+          "احجز",
+          "عايز احجز",
+          "أحجز",
+          "حجز",
+          "عايز معاد",
+          "عايز ميعاد",
+          "book",
+          "appointment"
+        ],
+        "templates": {
+          "branch_found": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
+          "branch_found_no_visit_offer": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
+          "branch_found_after_diagnostics": "أقرب فرع مناسب ليك هو فرع {{result.branch}}. تحب أراجعلك المواعيد المتاحة هناك في يوم معين؟",
+          "branch_found_direct_booking": "أقرب فرع مناسب ليك هو فرع {{result.branch}}. تحب الحجز في يوم إيه؟",
+          "branch_not_found": "مش لاقي فرع مطابق لمنطقتك بشكل مؤكد. الفروع المتاحة:\n{{result.branches_text}}\nتحب تختار أنهي فرع؟",
+          "tool_error": "حصلت مشكلة وأنا بحدد أقرب فرع. ممكن تجرب تاني؟",
+          "fallback": "تمام، ممكن توضحلي منطقتك أكتر؟"
+        }
       },
       "booking": {
         "enabled": true,
@@ -405,27 +431,97 @@
           "booking_failed": "مش قادر أأكد الحجز حاليًا. السبب: {{result.error}}"
         }
       },
-      "handoff": {
+      "lookup": {
         "enabled": true,
+        "default_tool_name": "service_center_sheet",
         "variable_scope": {
           "include": [
-            "customer_profile",
-            "booking",
-            "selected_branch"
+            "available_branches",
+            "available_branches_text"
           ]
         },
-        "trigger_phrases": [
-          "اكلم حد",
-          "موظف",
-          "خدمة العملاء",
-          "human",
-          "agent"
-        ],
-        "answer_template": "تمام، هحوّلك لحد من الفريق يساعدك.",
-        "variable_updates": {
-          "handoff_requested": true
+        "rules": [
+          {
+            "id": "list_branches",
+            "phrases": [
+              "الفروع",
+              "الفروع المتاحه",
+              "الفروع المتاحة",
+              "ايه الفروع",
+              "إيه الفروع",
+              "branches"
+            ],
+            "tool_name": "service_center_sheet",
+            "operation": "list_branches",
+            "arguments": {},
+            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
+            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
+          }
+        ]
+      },
+      "troubleshooting": {
+        "enabled": true,
+        "state_path": "troubleshooting.stage",
+        "count_path": "troubleshooting.diagnostic_count",
+        "selected_rule_path": "troubleshooting.selected_rule_id",
+        "active_state": "active",
+        "complete_state": "complete",
+        "variable_scope": {
+          "include": [
+            "troubleshooting",
+            "service_needed",
+            "selected_branch",
+            "nearest_branch",
+            "booking.stage"
+          ]
         },
-        "clear_variables": []
+        "skip_if_paths_exist": [
+          "selected_branch",
+          "booking.stage"
+        ],
+        "direct_booking_phrases": [
+          "احجز",
+          "عايز احجز",
+          "أحجز",
+          "حجز",
+          "عايز معاد",
+          "عايز ميعاد",
+          "book",
+          "appointment"
+        ],
+        "rules": [
+          {
+            "id": "brake_symptom_diagnostics",
+            "phrases": [
+              "فرامل",
+              "الفرامل",
+              "صفارة",
+              "صوت",
+              "تيل",
+              "طنابير",
+              "brake",
+              "brakes"
+            ],
+            "variable_updates": {
+              "service_needed": "Brakes & Safety"
+            },
+            "clear_variables": [
+              "booking",
+              "available_slots",
+              "appointment_time",
+              "customer_confirmed_booking"
+            ],
+            "diagnostic_steps": [
+              {
+                "answer_template": "غالبًا الموضوع مرتبط بقسم الفرامل. الصوت بيظهر وقت الدوس على الفرامل ولا طول ما العربية ماشية؟"
+              },
+              {
+                "answer_template": "تمام. ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
+                "complete": true
+              }
+            ]
+          }
+        ]
       }
     },
     "tool_update_rules": {
@@ -454,7 +550,8 @@
             },
             "set": {
               "nearest_branch": "result.branch",
-              "location_branch": "result.branch"
+              "location_branch": "result.branch",
+              "selected_branch": "result.branch"
             }
           },
           {
@@ -575,6 +672,12 @@
       "booking": {
         "type": "object"
       },
+      "troubleshooting": {
+        "type": "object"
+      },
+      "user_area": {
+        "type": "string"
+      },
       "selected_branch": {
         "type": "string"
       },
@@ -623,11 +726,14 @@
     }
   },
   "domain_playbook": {
-    "version": "1.1",
+    "version": "1.2",
     "notes": [
       "This file is GitHub-managed. Do not edit assistant/schema config on the server with nano for production.",
+      "Location resolution is handled by the location subagent.",
+      "For symptom flows, the first two assistant turns are diagnostic/discovery before suggesting visit slots unless the customer directly asks to book.",
       "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
       "Lookup requests should not populate customer_profile.full_name.",
+      "create_booking appends a row to the Bookings sheet only after explicit confirmation and required booking details.",
       "Update this file, commit, push, deploy, then clear test conversation memory before retesting."
     ]
   }
