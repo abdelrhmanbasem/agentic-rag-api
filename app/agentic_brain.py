@@ -12,10 +12,11 @@ from app.subagents.base import (
     deep_merge,
     get_subagent_variable_scope
 )
-from app.subagents.troubleshooting_subagent import TroubleshootingSubagent
+from app.subagents.handoff_subagent import HandoffSubagent
+from app.subagents.location_subagent import LocationSubagent
 from app.subagents.booking_subagent import BookingSubagent
 from app.subagents.lookup_subagent import LookupSubagent
-from app.subagents.handoff_subagent import HandoffSubagent
+from app.subagents.troubleshooting_subagent import TroubleshootingSubagent
 
 
 OPENAI_MODEL = os.getenv("AGENTIC_BRAIN_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
@@ -26,6 +27,7 @@ class AgenticBrain:
         self.client = OpenAI()
         self.subagents = [
             HandoffSubagent(),
+            LocationSubagent(),
             BookingSubagent(),
             LookupSubagent(),
             TroubleshootingSubagent()
@@ -161,7 +163,7 @@ class AgenticBrain:
     def ordered_subagents(self, assistant_config: Dict[str, Any]) -> List[Any]:
         configured_order = (
             assistant_config.get("subagent_order")
-            or ["handoff", "booking", "lookup", "troubleshooting"]
+            or ["handoff", "location", "booking", "lookup", "troubleshooting"]
         )
 
         by_name = {
@@ -369,7 +371,7 @@ Rules:
 - If a tool observation says ok=false, handle it safely and do not hallucinate.
 - If a tool observation says branch_found=false, do not invent or choose a branch.
 - If a tool observation says slots_found=false, do not invent slots.
-- If the active workflow requires a subagent and you are unsure, ask one focused clarification question.
+- Do not suggest checking appointment slots too early unless the user directly asks to book.
 
 Assistant goal:
 {assistant_config.get("assistant_goal", "")}
