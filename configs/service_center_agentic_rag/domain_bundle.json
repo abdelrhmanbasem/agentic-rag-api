@@ -44,7 +44,7 @@
         "name": "service_center_sheet",
         "type": "http",
         "description": "Fetch service center branches, slots, and bookings.",
-        "url": "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE",
+        "url": "https://script.google.com/macros/s/AKfycby7Qb-XWOtEL0P7TwODQtBN0Sp1cOOGESWm2Lfm9PKXZdxKYxlRGpsi8O3cWMCsDPU/exec",
         "method": "POST",
         "timeout_seconds": 30,
         "headers": {
