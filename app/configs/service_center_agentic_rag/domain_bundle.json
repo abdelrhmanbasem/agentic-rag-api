@@ -1,0 +1,566 @@
+{
+  "assistant": {
+    "assistant_id": "service_center_agentic_rag",
+    "model": "gpt-4o-mini",
+    "temperature": 0.05,
+    "max_tool_calls": 4,
+    "assistant_goal": "Help customers diagnose car service issues, find suitable branches, check appointment availability, and book service visits only after explicit confirmation.",
+    "language_policy": "Reply in the same language and dialect as the customer. For Egyptian Arabic, use natural Egyptian Arabic.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, and natural. Do not expose internal logic. Do not mention tools, JSON, variables, operations, or schemas. Never invent branches, dates, slots, unavailable reasons, or booking confirmations.",
+    "fallback_messages": {
+      "empty_answer": "ممكن توضحلي أكتر؟",
+      "max_tool_calls": "محتاج أتأكد من البيانات الأول. ممكن تعيد طلبك بشكل أوضح؟",
+      "default_final": "محتاج تفاصيل أكتر عشان أساعدك."
+    },
+    "normalization": {
+      "digit_map": {
+        "٠": "0",
+        "١": "1",
+        "٢": "2",
+        "٣": "3",
+        "٤": "4",
+        "٥": "5",
+        "٦": "6",
+        "٧": "7",
+        "٨": "8",
+        "٩": "9"
+      },
+      "replacements": {
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ة": "ه",
+        "ى": "ي"
+      }
+    },
+    "subagent_order": [
+      "handoff",
+      "booking",
+      "lookup",
+      "troubleshooting"
+    ],
+    "tools": [
+      {
+        "name": "service_center_sheet",
+        "type": "http",
+        "description": "Fetch service center branches, slots, and bookings.",
+        "url": "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE",
+        "method": "POST",
+        "timeout_seconds": 30,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "operations": {
+          "list_branches": {
+            "required": [],
+            "optional": []
+          },
+          "find_nearest_branch": {
+            "required": [
+              "location"
+            ],
+            "optional": [
+              "latitude",
+              "longitude"
+            ]
+          },
+          "list_available_slots": {
+            "required": [
+              "branch",
+              "date_text"
+            ],
+            "optional": [
+              "section",
+              "limit"
+            ]
+          },
+          "check_availability": {
+            "required": [
+              "branch",
+              "date_text",
+              "time"
+            ],
+            "optional": [
+              "section"
+            ]
+          },
+          "create_booking": {
+            "required": [
+              "branch",
+              "date_text",
+              "time",
+              "section",
+              "full_name",
+              "phone",
+              "plate_digits",
+              "customer_confirmed_booking"
+            ],
+            "optional": []
+          }
+        }
+      }
+    ],
+    "subagents": {
+      "troubleshooting": {
+        "enabled": true,
+        "variable_scope": {
+          "include": [
+            "service_needed",
+            "selected_branch",
+            "nearest_branch",
+            "booking.stage"
+          ]
+        },
+        "skip_if_paths_exist": [
+          "selected_branch",
+          "nearest_branch",
+          "booking.stage"
+        ],
+        "rules": [
+          {
+            "id": "brake_symptom_ask_location",
+            "phrases": [
+              "فرامل",
+              "الفرامل",
+              "صفارة",
+              "صوت",
+              "تيل",
+              "طنابير",
+              "brake",
+              "brakes"
+            ],
+            "answer_template": "غالبًا محتاج كشف على قسم الفرامل. ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
+            "variable_updates": {
+              "service_needed": "Brakes & Safety"
+            },
+            "clear_variables": [
+              "booking",
+              "available_slots",
+              "appointment_time"
+            ]
+          }
+        ]
+      },
+      "lookup": {
+        "enabled": true,
+        "default_tool_name": "service_center_sheet",
+        "variable_scope": {
+          "include": [
+            "available_branches",
+            "available_branches_text"
+          ]
+        },
+        "rules": [
+          {
+            "id": "list_branches",
+            "phrases": [
+              "الفروع",
+              "الفروع المتاحه",
+              "الفروع المتاحة",
+              "ايه الفروع",
+              "branches"
+            ],
+            "tool_name": "service_center_sheet",
+            "operation": "list_branches",
+            "arguments": {},
+            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
+            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
+          }
+        ]
+      },
+      "booking": {
+        "enabled": true,
+        "tool_name": "service_center_sheet",
+        "stage_path": "booking.stage",
+        "pending_booking_path": "booking.pending",
+        "available_slots_path": "available_slots",
+        "variable_scope": {
+          "include": [
+            "booking",
+            "available_slots",
+            "selected_slot",
+            "selected_branch",
+            "nearest_branch",
+            "location_branch",
+            "date_text",
+            "appointment_date",
+            "appointment_time",
+            "service_needed",
+            "customer_profile"
+          ]
+        },
+        "stages": {
+          "awaiting_confirmation": "awaiting_confirmation",
+          "awaiting_customer_details": "awaiting_customer_details"
+        },
+        "operations": {
+          "list_slots": "list_available_slots",
+          "create_booking": "create_booking"
+        },
+        "trigger_phrases": [
+          "مواعيد",
+          "معاد",
+          "ميعاد",
+          "احجز",
+          "حجز",
+          "slots",
+          "appointment",
+          "book"
+        ],
+        "active_request_stages": [
+          "needs_date",
+          "slot_selection"
+        ],
+        "required_before_list_slots": [
+          "variables.selected_branch",
+          "variables.date_text"
+        ],
+        "required_before_create": [
+          "variables.booking.pending.branch",
+          "variables.booking.pending.date_text",
+          "variables.booking.pending.time",
+          "variables.booking.pending.section",
+          "variables.customer_profile.full_name",
+          "variables.customer_profile.phone",
+          "variables.customer_profile.plate_digits"
+        ],
+        "field_labels": {
+          "variables.selected_branch": "الفرع",
+          "variables.date_text": "اليوم أو التاريخ",
+          "variables.booking.pending.branch": "الفرع",
+          "variables.booking.pending.date_text": "اليوم أو التاريخ",
+          "variables.booking.pending.time": "الوقت",
+          "variables.booking.pending.section": "نوع الخدمة",
+          "variables.customer_profile.full_name": "اسمك",
+          "variables.customer_profile.phone": "رقم الموبايل",
+          "variables.customer_profile.plate_digits": "رقم اللوحة"
+        },
+        "confirmation_phrases": [
+          "اه",
+          "أه",
+          "ايوه",
+          "أيوه",
+          "تمام",
+          "مظبوط",
+          "صح",
+          "yes",
+          "ok",
+          "confirm"
+        ],
+        "rejection_phrases": [
+          "لا",
+          "لأ",
+          "مش مناسب",
+          "no",
+          "cancel"
+        ],
+        "extraction_patterns": [
+          {
+            "variable": "customer_profile.full_name",
+            "regex": "(?:اسمي|انا اسمي|الاسم|الإسم|name is|my name is)\\s+([^\\n،,.]+)",
+            "group": 1
+          },
+          {
+            "variable": "customer_profile.phone",
+            "regex": "(01\\d{9}|\\+?20\\d{10,11})",
+            "group": 1
+          },
+          {
+            "variable": "customer_profile.plate_digits",
+            "regex": "(?:لوحه|لوحة|رقم اللوحه|رقم اللوحة|plate)\\D*(\\d{2,8})",
+            "group": 1
+          },
+          {
+            "variable": "customer_profile.plate_digits",
+            "regex": "^\\s*(\\d{2,8})\\s*$",
+            "group": 1,
+            "when_missing": "customer_profile.plate_digits"
+          },
+          {
+            "variable": "customer_profile.full_name",
+            "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{2,}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{2,}){0,4})\\s*$",
+            "group": 1,
+            "when_missing": "customer_profile.full_name"
+          }
+        ],
+        "time_normalization": {
+          "regex": "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?",
+          "replacements": {
+            "صباحا": "am",
+            "صباحًا": "am",
+            "الصبح": "am",
+            "مساء": "pm",
+            "مساءا": "pm",
+            "مساءً": "pm",
+            "بالليل": "pm",
+            "الظهر": "pm"
+          }
+        },
+        "slot_resolver": {
+          "time_field": "time",
+          "time_normalizer": "hour_exact_or_same_hour",
+          "ordinal_map": {
+            "اول": 0,
+            "الأول": 0,
+            "الاول": 0,
+            "1": 0,
+            "واحد": 0,
+            "تاني": 1,
+            "الثاني": 1,
+            "التاني": 1,
+            "2": 1,
+            "اتنين": 1,
+            "ثالث": 2,
+            "التالت": 2,
+            "الثالث": 2,
+            "3": 2
+          }
+        },
+        "slot_to_pending_booking_mapping": {
+          "branch": "slot.branch",
+          "date": "slot.date",
+          "date_text": "slot.date_text",
+          "time": "slot.time",
+          "section": "slot.section"
+        },
+        "list_slots_arguments": {
+          "branch": "variables.selected_branch",
+          "date_text": "variables.date_text",
+          "section": "variables.service_needed"
+        },
+        "create_booking_arguments": {
+          "branch": "variables.booking.pending.branch",
+          "date_text": "variables.booking.pending.date_text",
+          "date": "variables.booking.pending.date",
+          "time": "variables.booking.pending.time",
+          "section": "variables.booking.pending.section",
+          "full_name": "variables.customer_profile.full_name",
+          "phone": "variables.customer_profile.phone",
+          "plate_digits": "variables.customer_profile.plate_digits",
+          "customer_confirmed_booking": "variables.customer_confirmed_booking"
+        },
+        "on_slot_selected_updates": {
+          "booking.stage": "awaiting_confirmation",
+          "customer_confirmed_booking": false
+        },
+        "on_confirm_updates": {
+          "booking.stage": "awaiting_customer_details",
+          "customer_confirmed_booking": true
+        },
+        "on_missing_details_updates": {
+          "booking.stage": "awaiting_customer_details"
+        },
+        "on_reject_updates": {
+          "booking.stage": "slot_selection",
+          "customer_confirmed_booking": false
+        },
+        "on_reject_clear": [
+          "booking.pending"
+        ],
+        "slots_found_result_path": "slots_found",
+        "templates": {
+          "missing_fields": "تمام، محتاج {{missing_fields}} عشان أكمل.",
+          "slots_found": "المواعيد المتاحة:\n{{result.available_slots_text}}\nتحب أنهي معاد؟",
+          "no_slots": "مش لاقي مواعيد متاحة في اليوم ده. تحب أراجعلك يوم تاني؟",
+          "tool_error": "حصلت مشكلة وأنا براجع المواعيد. ممكن تجرب تاني؟",
+          "confirm_slot": "تمام، أأكدلك الحجز في فرع {{pending.branch}} يوم {{pending.date_text}} الساعة {{pending.time}} لقسم {{pending.section}}؟",
+          "repeat_confirmation": "محتاج تأكيدك على نفس المعاد قبل ما أكمل الحجز.",
+          "slot_rejected": "تمام، مش هأكد الحجز. تحب تختار معاد تاني؟",
+          "booking_confirmed": "تم تأكيد الحجز. رقم الزيارة: {{result.visit_id}}",
+          "booking_failed": "مش قادر أأكد الحجز حاليًا. السبب: {{result.error}}"
+        }
+      },
+      "handoff": {
+        "enabled": true,
+        "variable_scope": {
+          "include": [
+            "customer_profile",
+            "booking",
+            "selected_branch"
+          ]
+        },
+        "trigger_phrases": [
+          "اكلم حد",
+          "موظف",
+          "خدمة العملاء",
+          "human",
+          "agent"
+        ],
+        "answer_template": "تمام، هحوّلك لحد من الفريق يساعدك.",
+        "variable_updates": {
+          "handoff_requested": true
+        },
+        "clear_variables": []
+      }
+    },
+    "tool_update_rules": {
+      "list_branches": {
+        "clear": [
+          "selected_branch",
+          "nearest_branch",
+          "location_branch",
+          "available_slots",
+          "booking"
+        ],
+        "set": {
+          "available_branches": "result.branches",
+          "available_branches_text": "result.branches_text"
+        }
+      },
+      "find_nearest_branch": {
+        "set": {
+          "user_area": "result.user_area"
+        },
+        "conditional": [
+          {
+            "when": {
+              "path": "result.branch_found",
+              "equals": true
+            },
+            "set": {
+              "nearest_branch": "result.branch",
+              "location_branch": "result.branch"
+            }
+          },
+          {
+            "when": {
+              "path": "result.branch_found",
+              "equals": false
+            },
+            "clear": [
+              "nearest_branch",
+              "location_branch",
+              "selected_branch"
+            ],
+            "set": {
+              "available_branches": "result.branches",
+              "available_branches_text": "result.branches_text"
+            }
+          }
+        ]
+      },
+      "list_available_slots": {
+        "clear": [
+          "booking.pending",
+          "appointment_time"
+        ],
+        "set": {
+          "selected_branch": "result.branch",
+          "location_branch": "result.branch",
+          "appointment_date": "result.date",
+          "date_text": "result.date_text",
+          "available_slots": "result.available_slots",
+          "available_slots_text": "result.available_slots_text",
+          "slots_found": "result.slots_found"
+        },
+        "conditional": [
+          {
+            "when": {
+              "path": "result.slots_found",
+              "equals": true
+            },
+            "set": {
+              "booking.stage": "slot_selection"
+            }
+          },
+          {
+            "when": {
+              "path": "result.slots_found",
+              "equals": false
+            },
+            "set": {
+              "booking.stage": "no_slots_found"
+            }
+          }
+        ]
+      },
+      "create_booking": {
+        "conditional": [
+          {
+            "when": {
+              "path": "result.ok",
+              "equals": true
+            },
+            "clear": [
+              "booking.pending"
+            ],
+            "set": {
+              "booking_status": "result.booking_status",
+              "visit_id": "result.visit_id",
+              "booking.confirmed": "result.booking",
+              "booking.stage": "result.booking_status"
+            }
+          },
+          {
+            "when": {
+              "path": "result.ok",
+              "equals": false
+            },
+            "set": {
+              "booking_status": "failed",
+              "booking_error": "result.error",
+              "booking.stage": "booking_failed"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "schema": {
+    "assistant_id": "service_center_agentic_rag",
+    "variables": {
+      "customer_profile": {
+        "type": "object"
+      },
+      "booking": {
+        "type": "object"
+      },
+      "selected_branch": {
+        "type": "string"
+      },
+      "nearest_branch": {
+        "type": "string"
+      },
+      "location_branch": {
+        "type": "string"
+      },
+      "date_text": {
+        "type": "string"
+      },
+      "appointment_date": {
+        "type": "string"
+      },
+      "appointment_time": {
+        "type": "string"
+      },
+      "service_needed": {
+        "type": "string"
+      },
+      "available_slots": {
+        "type": "array"
+      },
+      "available_slots_text": {
+        "type": "string"
+      },
+      "available_branches": {
+        "type": "array"
+      },
+      "available_branches_text": {
+        "type": "string"
+      },
+      "booking_status": {
+        "type": "string"
+      },
+      "visit_id": {
+        "type": "string"
+      }
+    }
+  },
+  "domain_playbook": {
+    "version": "1.0",
+    "notes": [
+      "This file is GitHub-managed. Do not edit assistant/schema config on the server with nano for production.",
+      "Update this file, commit, deploy, then clear test conversation memory before retesting."
+    ]
+  }
+}
