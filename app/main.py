@@ -62,9 +62,12 @@ def schema_path(assistant_id: str) -> Path:
     return SCHEMAS_DIR / f"{assistant_id}.json"
 
 
+def safe_conversation_id(conversation_id: str) -> str:
+    return conversation_id.replace("/", "_")
+
+
 def conversation_path(assistant_id: str, conversation_id: str) -> Path:
-    safe_id = conversation_id.replace("/", "_")
-    return CONVERSATIONS_DIR / assistant_id / f"{safe_id}.json"
+    return CONVERSATIONS_DIR / assistant_id / f"{safe_conversation_id(conversation_id)}.json"
 
 
 def load_assistant(assistant_id: str) -> Dict[str, Any]:
@@ -112,7 +115,6 @@ def append_messages(conversation: Dict[str, Any], user_message: str, assistant_a
     })
 
     conversation["messages"] = messages[-30:]
-
     return conversation
 
 
@@ -206,7 +208,8 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
     if request.debug:
         response["debug"] = {
             "decision": result.get("decision"),
-            "observations": result.get("observations")
+            "observations": result.get("observations"),
+            "deterministic": result.get("deterministic")
         }
 
     return response
