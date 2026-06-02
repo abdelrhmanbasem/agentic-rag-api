@@ -14,7 +14,8 @@
       "Never invent slots, branches, booking IDs, dates, or unavailable reasons.",
       "Never confirm booking unless create_booking returns ok=true.",
       "During an active booking flow, ask only for the next missing required information.",
-      "If the customer directly asks to book or asks for appointments, the booking flow can start immediately."
+      "If the customer directly asks to book or asks for appointments, the booking flow can start immediately.",
+      "If the user says yes after being asked whether to check slots, ask for the day/date first unless date_text already exists."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -112,7 +113,7 @@
               "section",
               "full_name",
               "phone",
-              "plate_digits",
+              "plate_number",
               "customer_confirmed_booking"
             ],
             "optional": []
@@ -155,6 +156,12 @@
         "set_selected_branch_on_match": true,
         "diagnostic_count_path": "troubleshooting.diagnostic_count",
         "min_diagnostic_turns_before_visit_offer": 2,
+        "on_branch_found_after_diagnostics_updates": {
+          "booking.stage": "awaiting_date"
+        },
+        "on_branch_found_direct_booking_updates": {
+          "booking.stage": "awaiting_date"
+        },
         "variable_scope": {
           "include": [
             "troubleshooting",
@@ -162,7 +169,8 @@
             "user_area",
             "nearest_branch",
             "location_branch",
-            "selected_branch"
+            "selected_branch",
+            "booking"
           ]
         },
         "location_patterns": [
@@ -219,6 +227,7 @@
         "stage_path": "booking.stage",
         "pending_booking_path": "booking.pending",
         "available_slots_path": "available_slots",
+        "date_text_path": "date_text",
         "variable_scope": {
           "include": [
             "booking",
@@ -248,6 +257,7 @@
         },
         "trigger_phrases": [
           "مواعيد",
+          "المواعيد",
           "معاد",
           "ميعاد",
           "احجز",
@@ -257,6 +267,7 @@
           "book"
         ],
         "active_request_stages": [
+          "awaiting_date",
           "needs_date",
           "slot_selection"
         ],
@@ -271,7 +282,7 @@
           "variables.booking.pending.section",
           "variables.customer_profile.full_name",
           "variables.customer_profile.phone",
-          "variables.customer_profile.plate_digits"
+          "variables.customer_profile.plate_number"
         ],
         "field_labels": {
           "variables.selected_branch": "الفرع",
@@ -282,8 +293,42 @@
           "variables.booking.pending.section": "نوع الخدمة",
           "variables.customer_profile.full_name": "اسمك",
           "variables.customer_profile.phone": "رقم الموبايل",
-          "variables.customer_profile.plate_digits": "رقم اللوحة"
+          "variables.customer_profile.plate_number": "رقم اللوحة"
         },
+        "date_direct_terms": [
+          "بكرة",
+          "بكره",
+          "بعد بكرة",
+          "بعد بكره",
+          "النهارده",
+          "انهارده",
+          "اليوم",
+          "الخميس",
+          "الجمعة",
+          "الجمعه",
+          "السبت",
+          "الأحد",
+          "الاحد",
+          "الاثنين",
+          "التلات",
+          "الثلاثاء",
+          "الأربعاء",
+          "الاربعاء"
+        ],
+        "date_extraction_patterns": [
+          {
+            "regex": "(?:يوم|ميعاد|معاد|تاريخ|مواعيد)\\s+([^\\n،,.!?؟]+)",
+            "group": 1
+          },
+          {
+            "regex": "(\\d{1,2}\\s*(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر))",
+            "group": 1
+          },
+          {
+            "regex": "(\\d{4}-\\d{2}-\\d{2})",
+            "group": 1
+          }
+        ],
         "confirmation_phrases": [
           "اه",
           "أه",
@@ -295,6 +340,8 @@
           "صح",
           "اكيد",
           "أكيد",
+          "اوكي",
+          "أوكي",
           "yes",
           "ok",
           "okay",
@@ -322,15 +369,21 @@
             "group": 1
           },
           {
-            "variable": "customer_profile.plate_digits",
-            "regex": "(?:لوحه|لوحة|رقم اللوحه|رقم اللوحة|plate)\\D*(\\d{2,8})",
+            "variable": "customer_profile.plate_number",
+            "regex": "(?:لوحه|لوحة|رقم اللوحه|رقم اللوحة|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,12}\\d[\\d\\s٠-٩۰-۹]{0,10})",
             "group": 1
           },
           {
-            "variable": "customer_profile.plate_digits",
+            "variable": "customer_profile.plate_number",
+            "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,3}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,3}){0,4}\\s*\\d[\\d\\s٠-٩۰-۹]{0,10})\\s*$",
+            "group": 1,
+            "when_missing": "customer_profile.plate_number"
+          },
+          {
+            "variable": "customer_profile.plate_number",
             "regex": "^\\s*(\\d{2,8})\\s*$",
             "group": 1,
-            "when_missing": "customer_profile.plate_digits"
+            "when_missing": "customer_profile.plate_number"
           },
           {
             "variable": "customer_profile.full_name",
@@ -396,8 +449,11 @@
           "section": "variables.booking.pending.section",
           "full_name": "variables.customer_profile.full_name",
           "phone": "variables.customer_profile.phone",
-          "plate_digits": "variables.customer_profile.plate_digits",
+          "plate_number": "variables.customer_profile.plate_number",
           "customer_confirmed_booking": "variables.customer_confirmed_booking"
+        },
+        "on_missing_list_slots_updates": {
+          "booking.stage": "awaiting_date"
         },
         "on_slot_selected_updates": {
           "booking.stage": "awaiting_confirmation",
@@ -409,7 +465,8 @@
           "customer_confirmed_booking": true
         },
         "on_missing_details_updates": {
-          "booking.stage": "awaiting_customer_details"
+          "booking.stage": "awaiting_customer_details",
+          "customer_confirmed_booking": true
         },
         "on_reject_updates": {
           "booking.stage": "slot_selection",
@@ -424,7 +481,7 @@
           "slots_found": "المواعيد المتاحة:\n{{result.available_slots_text}}\nتحب أنهي معاد؟",
           "no_slots": "مش لاقي مواعيد متاحة في اليوم ده. تحب أراجعلك يوم تاني؟",
           "tool_error": "حصلت مشكلة وأنا براجع المواعيد. ممكن تجرب تاني؟",
-          "confirm_slot": "تمام، أأكدلك الحجز في فرع {{pending.branch}} يوم {{pending.date_text}} الساعة {{pending.time}} لقسم {{pending.section}}؟",
+          "confirm_slot": "تمام، أقدر أأكدلك الحجز في فرع {{pending.branch}} يوم {{pending.date_text}} الساعة {{pending.time}} لقسم {{pending.section}}. أأكد المعاد ده؟",
           "repeat_confirmation": "محتاج تأكيدك على نفس المعاد قبل ما أكمل الحجز.",
           "slot_rejected": "تمام، مش هأكد الحجز. تحب تختار معاد تاني؟",
           "booking_confirmed": "تم تأكيد الحجز. رقم الزيارة: {{result.visit_id}}",
@@ -601,7 +658,7 @@
               "equals": false
             },
             "set": {
-              "booking.stage": "no_slots_found"
+              "booking.stage": "awaiting_date"
             }
           }
         ]
@@ -667,7 +724,18 @@
     "assistant_id": "service_center_agentic_rag",
     "variables": {
       "customer_profile": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "plate_number": {
+            "type": "string"
+          }
+        }
       },
       "booking": {
         "type": "object"
@@ -726,12 +794,14 @@
     }
   },
   "domain_playbook": {
-    "version": "1.2",
+    "version": "1.3",
     "notes": [
       "This file is GitHub-managed. Do not edit assistant/schema config on the server with nano for production.",
       "Location resolution is handled by the location subagent.",
       "For symptom flows, the first two assistant turns are diagnostic/discovery before suggesting visit slots unless the customer directly asks to book.",
+      "If the user says yes after being asked whether to check slots, booking.stage=awaiting_date ensures the bot asks for the day/date first.",
       "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
+      "The booking flow uses customer_profile.plate_number instead of plate_digits so Arabic plates like ب د ج ١٥٦ can be captured.",
       "Lookup requests should not populate customer_profile.full_name.",
       "create_booking appends a row to the Bookings sheet only after explicit confirmation and required booking details.",
       "Update this file, commit, push, deploy, then clear test conversation memory before retesting."
