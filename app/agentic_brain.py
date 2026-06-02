@@ -9,7 +9,8 @@ from app.subagents.base import (
     SubagentContext,
     apply_variable_patch,
     apply_tool_update_rules,
-    deep_merge
+    deep_merge,
+    get_subagent_variable_scope
 )
 from app.subagents.troubleshooting_subagent import TroubleshootingSubagent
 from app.subagents.booking_subagent import BookingSubagent
@@ -40,6 +41,7 @@ class AgenticBrain:
         max_tool_calls: int = 4
     ) -> Dict[str, Any]:
         variables = conversation.get("variables", {})
+
         if not isinstance(variables, dict):
             variables = {}
 
@@ -61,22 +63,30 @@ class AgenticBrain:
             "final_answer": ""
         }
 
-        context = SubagentContext(
-            assistant_config=assistant_config,
-            schema=schema,
-            variables=variables,
-            user_message=user_message,
-            history=history,
-            tool_runner=tool_runner,
-            observations=observations,
-            max_tool_calls=max_tool_calls
-        )
-
         for subagent in self.ordered_subagents(assistant_config):
+            subagent_name = getattr(subagent, "name", "unknown")
+
+            scoped_variables = get_subagent_variable_scope(
+                assistant_config=assistant_config,
+                subagent_name=subagent_name,
+                variables=variables
+            )
+
+            context = SubagentContext(
+                assistant_config=assistant_config,
+                schema=schema,
+                variables=scoped_variables,
+                user_message=user_message,
+                history=history,
+                tool_runner=tool_runner,
+                observations=observations,
+                max_tool_calls=max_tool_calls
+            )
+
             result = subagent.run(context)
 
             trace["subagent_attempts"].append({
-                "subagent": getattr(subagent, "name", "unknown"),
+                "subagent": subagent_name,
                 "handled": result.handled,
                 "notes": result.notes
             })
@@ -88,19 +98,17 @@ class AgenticBrain:
                         result.variable_updates,
                         result.clear_variables
                     )
-                    context.variables = variables
                 continue
 
-            variables = apply_variable_patch(
-                variables,
-                result.variable_updates,
-                result.clear_variables
+            variables = self.merge_subagent_result(
+                variables=variables,
+                result=result
             )
 
             if result.observations:
                 observations.extend(result.observations)
 
-            trace["selected_subagent"] = result.selected_subagent
+            trace["selected_subagent"] = result.selected_subagent or subagent_name
             trace["observations"] = observations
             trace["state_after"] = variables
             trace["final_answer"] = result.answer
@@ -139,6 +147,17 @@ class AgenticBrain:
             "trace": trace
         }
 
+    @staticmethod
+    def merge_subagent_result(variables: Dict[str, Any], result: Any) -> Dict[str, Any]:
+        updates = result.variable_updates if isinstance(result.variable_updates, dict) else {}
+        clear = result.clear_variables if isinstance(result.clear_variables, list) else []
+
+        return apply_variable_patch(
+            variables=variables,
+            updates=updates,
+            clear=clear
+        )
+
     def ordered_subagents(self, assistant_config: Dict[str, Any]) -> List[Any]:
         configured_order = (
             assistant_config.get("subagent_order")
@@ -154,6 +173,7 @@ class AgenticBrain:
 
         for name in configured_order:
             agent = by_name.get(name)
+
             if agent:
                 ordered.append(agent)
 
@@ -193,15 +213,16 @@ class AgenticBrain:
             )
 
             variables = apply_variable_patch(
-                variables,
-                decision.get("variable_updates", {}),
-                decision.get("clear_variables", [])
+                variables=variables,
+                updates=decision.get("variable_updates", {}),
+                clear=decision.get("clear_variables", [])
             )
 
             action = decision.get("action", "reply")
 
             if action in ["reply", "ask_user"]:
                 answer = decision.get("answer", "") or empty_answer or default_final
+
                 return {
                     "answer": answer,
                     "variables": variables,
@@ -213,6 +234,7 @@ class AgenticBrain:
 
             if action != "call_tool":
                 answer = decision.get("answer", "") or default_final
+
                 return {
                     "answer": answer,
                     "variables": variables,
@@ -334,7 +356,7 @@ class AgenticBrain:
         return f"""
 You are the fallback reasoning brain for this assistant.
 
-Use the configured subagents first when applicable. You are only called when no subagent handled the turn.
+Use configured subagents first when applicable. You are only called when no subagent handled the turn.
 
 Rules:
 - Do not expose tools, JSON, variables, schemas, or internal logic.
@@ -345,6 +367,9 @@ Rules:
 - Clear stale variables with clear_variables.
 - Never confirm bookings, payments, orders, or irreversible actions unless a tool result confirms success.
 - If a tool observation says ok=false, handle it safely and do not hallucinate.
+- If a tool observation says branch_found=false, do not invent or choose a branch.
+- If a tool observation says slots_found=false, do not invent slots.
+- If the active workflow requires a subagent and you are unsure, ask one focused clarification question.
 
 Assistant goal:
 {assistant_config.get("assistant_goal", "")}
@@ -385,8 +410,9 @@ Return valid JSON only:
     def safe_json_loads(text: str) -> Dict[str, Any]:
         try:
             data = json.loads(text)
+
             if isinstance(data, dict):
-                return data
+                return AgenticBrain.normalize_decision(data)
         except Exception:
             pass
 
@@ -396,18 +422,42 @@ Return valid JSON only:
         if start >= 0 and end > start:
             try:
                 data = json.loads(text[start:end + 1])
+
                 if isinstance(data, dict):
-                    return data
+                    return AgenticBrain.normalize_decision(data)
             except Exception:
                 pass
 
-        return {
+        return AgenticBrain.normalize_decision({
             "action": "reply",
             "answer": "",
             "variable_updates": {},
             "clear_variables": [],
             "arguments": {}
-        }
+        })
+
+    @staticmethod
+    def normalize_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
+        decision.setdefault("action", "reply")
+        decision.setdefault("answer", "")
+        decision.setdefault("tool_name", "")
+        decision.setdefault("operation", "")
+        decision.setdefault("arguments", {})
+        decision.setdefault("variable_updates", {})
+        decision.setdefault("clear_variables", [])
+        decision.setdefault("confidence", 0)
+        decision.setdefault("notes", "")
+
+        if not isinstance(decision["arguments"], dict):
+            decision["arguments"] = {}
+
+        if not isinstance(decision["variable_updates"], dict):
+            decision["variable_updates"] = {}
+
+        if not isinstance(decision["clear_variables"], list):
+            decision["clear_variables"] = []
+
+        return decision
 
     @staticmethod
     def extract_history(conversation: Dict[str, Any]) -> List[Dict[str, str]]:
