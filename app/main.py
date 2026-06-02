@@ -7,6 +7,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agentic_brain import AgenticBrain
+from app.config_loader import load_assistant_and_schema, get_config_source
 
 
 APP_SECRET = os.getenv("APP_SECRET", os.getenv("API_KEY", ""))
@@ -70,7 +71,7 @@ def conversation_path(assistant_id: str, conversation_id: str) -> Path:
     return CONVERSATIONS_DIR / assistant_id / f"{safe_conversation_id(conversation_id)}.json"
 
 
-def load_assistant(assistant_id: str) -> Dict[str, Any]:
+def load_assistant_legacy(assistant_id: str) -> Dict[str, Any]:
     data = safe_json_load(assistant_path(assistant_id), {})
 
     if not data:
@@ -79,7 +80,7 @@ def load_assistant(assistant_id: str) -> Dict[str, Any]:
     return data
 
 
-def load_schema(assistant_id: str) -> Dict[str, Any]:
+def load_schema_legacy(assistant_id: str) -> Dict[str, Any]:
     return safe_json_load(schema_path(assistant_id), {})
 
 
@@ -158,7 +159,13 @@ def save_assistant_endpoint(payload: Dict[str, Any], x_api_key: Optional[str] = 
 @app.get("/assistants/{assistant_id}")
 def get_assistant_endpoint(assistant_id: str, x_api_key: Optional[str] = Header(default=None)):
     require_api_key(x_api_key)
-    return load_assistant(assistant_id)
+
+    assistant_config, _schema = load_assistant_and_schema(assistant_id)
+
+    if assistant_config:
+        return assistant_config
+
+    return load_assistant_legacy(assistant_id)
 
 
 @app.post("/schemas")
@@ -181,15 +188,30 @@ def save_schema_endpoint(payload: Dict[str, Any], x_api_key: Optional[str] = Hea
 @app.get("/schemas/{assistant_id}")
 def get_schema_endpoint(assistant_id: str, x_api_key: Optional[str] = Header(default=None)):
     require_api_key(x_api_key)
-    return load_schema(assistant_id)
+
+    _assistant_config, schema = load_assistant_and_schema(assistant_id)
+
+    if schema:
+        return schema
+
+    return load_schema_legacy(assistant_id)
+
+
+@app.get("/config-source/{assistant_id}")
+def get_config_source_endpoint(assistant_id: str, x_api_key: Optional[str] = Header(default=None)):
+    require_api_key(x_api_key)
+    return get_config_source(assistant_id)
 
 
 @app.post("/chat")
 def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
     require_api_key(x_api_key)
 
-    assistant_config = load_assistant(request.assistant_id)
-    schema = load_schema(request.assistant_id)
+    assistant_config, schema = load_assistant_and_schema(request.assistant_id)
+
+    if not assistant_config:
+        raise HTTPException(status_code=404, detail=f"Assistant not found: {request.assistant_id}")
+
     conversation = load_conversation(request.assistant_id, request.conversation_id)
 
     result = brain.run(
@@ -223,6 +245,7 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
 
     if request.debug:
         response["debug"] = trace
+        response["config_source"] = get_config_source(request.assistant_id)
 
     return response
 
@@ -246,3 +269,14 @@ def clear_conversation_endpoint(
         "assistant_id": assistant_id,
         "conversation_id": conversation_id
     }
+
+
+@app.get("/conversations/{assistant_id}/{conversation_id}")
+def get_conversation_endpoint(
+    assistant_id: str,
+    conversation_id: str,
+    x_api_key: Optional[str] = Header(default=None)
+):
+    require_api_key(x_api_key)
+
+    return load_conversation(assistant_id, conversation_id)
