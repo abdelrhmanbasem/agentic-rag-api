@@ -15,8 +15,8 @@ def get_nested(data: Dict[str, Any], path: str, default: Any = None) -> Any:
 
 def set_nested(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
     target = data
-
     parts = path.split(".")
+
     for part in parts[:-1]:
         if part not in target or not isinstance(target[part], dict):
             target[part] = {}
@@ -126,8 +126,6 @@ def render_template(template: str, context: Dict[str, Any]) -> str:
     if not isinstance(template, str):
         return ""
 
-    result = template
-
     pattern = re.compile(r"{{\s*([^}]+)\s*}}")
 
     def replace(match: re.Match) -> str:
@@ -135,21 +133,88 @@ def render_template(template: str, context: Dict[str, Any]) -> str:
         value = get_nested(context, path, "")
         return "" if value is None else str(value)
 
-    result = pattern.sub(replace, result)
-    return result
+    return pattern.sub(replace, template)
 
 
-def extract_by_patterns(message: str, patterns: List[Dict[str, Any]], normalization_config: Dict[str, Any]) -> Dict[str, Any]:
+def build_context(
+    variables: Dict[str, Any],
+    user_message: str,
+    tool_result: Optional[Dict[str, Any]] = None,
+    arguments: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    return {
+        "variables": variables or {},
+        "message": user_message or "",
+        "tool_result": tool_result or {},
+        "arguments": arguments or {}
+    }
+
+
+def evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any], assistant_config: Dict[str, Any]) -> bool:
+    if not isinstance(condition, dict):
+        return False
+
+    kind = condition.get("type")
+
+    if kind == "state_equals":
+        path = condition.get("path", "")
+        expected = condition.get("value")
+        return get_nested(context, f"variables.{path}") == expected
+
+    if kind == "state_exists":
+        path = condition.get("path", "")
+        value = get_nested(context, f"variables.{path}")
+        return value not in [None, "", [], {}]
+
+    if kind == "state_missing":
+        path = condition.get("path", "")
+        value = get_nested(context, f"variables.{path}")
+        return value in [None, "", [], {}]
+
+    if kind == "message_matches_any":
+        phrases = condition.get("phrases", [])
+        if not isinstance(phrases, list):
+            phrases = []
+        return message_matches_any(context.get("message", ""), phrases, get_normalization_config(assistant_config))
+
+    if kind == "message_extracts_list_item":
+        items_path = condition.get("items_path", "")
+        resolver = condition.get("resolver", {})
+        items = get_nested(context, f"variables.{items_path}", [])
+        return resolve_list_item_from_message(context.get("message", ""), items, assistant_config, resolver) is not None
+
+    return False
+
+
+def all_conditions_match(conditions: List[Dict[str, Any]], context: Dict[str, Any], assistant_config: Dict[str, Any]) -> bool:
+    if not isinstance(conditions, list):
+        return False
+
+    for condition in conditions:
+        if not evaluate_condition(condition, context, assistant_config):
+            return False
+
+    return True
+
+
+def extract_by_patterns(message: str, patterns: List[Dict[str, Any]], variables: Dict[str, Any], assistant_config: Dict[str, Any]) -> Dict[str, Any]:
     updates: Dict[str, Any] = {}
 
     if not isinstance(patterns, list):
         return updates
 
+    normalization_config = get_normalization_config(assistant_config)
     raw_message = normalize_digits(message, normalization_config.get("digit_map", {}))
+    context = build_context(variables, message)
 
     for item in patterns:
         if not isinstance(item, dict):
             continue
+
+        when = item.get("when", [])
+        if when:
+            if not all_conditions_match(when, context, assistant_config):
+                continue
 
         variable = item.get("variable")
         regex = item.get("regex")
@@ -167,6 +232,7 @@ def extract_by_patterns(message: str, patterns: List[Dict[str, Any]], normalizat
             value = match.group(group).strip()
             if value:
                 updates[str(variable)] = value
+                set_nested(context["variables"], str(variable), value)
 
     return updates
 
@@ -259,62 +325,6 @@ def resolve_list_item_from_message(
     return None
 
 
-def build_context(
-    variables: Dict[str, Any],
-    user_message: str,
-    tool_result: Optional[Dict[str, Any]] = None,
-    arguments: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    return {
-        "variables": variables or {},
-        "message": user_message or "",
-        "tool_result": tool_result or {},
-        "arguments": arguments or {}
-    }
-
-
-def evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any], assistant_config: Dict[str, Any]) -> bool:
-    if not isinstance(condition, dict):
-        return False
-
-    kind = condition.get("type")
-
-    if kind == "state_equals":
-        path = condition.get("path", "")
-        expected = condition.get("value")
-        return get_nested(context, f"variables.{path}") == expected
-
-    if kind == "state_exists":
-        path = condition.get("path", "")
-        value = get_nested(context, f"variables.{path}")
-        return value not in [None, "", [], {}]
-
-    if kind == "message_matches_any":
-        phrases = condition.get("phrases", [])
-        if not isinstance(phrases, list):
-            phrases = []
-        return message_matches_any(context.get("message", ""), phrases, get_normalization_config(assistant_config))
-
-    if kind == "message_extracts_list_item":
-        items_path = condition.get("items_path", "")
-        resolver = condition.get("resolver", {})
-        items = get_nested(context, f"variables.{items_path}", [])
-        return resolve_list_item_from_message(context.get("message", ""), items, assistant_config, resolver) is not None
-
-    return False
-
-
-def all_conditions_match(conditions: List[Dict[str, Any]], context: Dict[str, Any], assistant_config: Dict[str, Any]) -> bool:
-    if not isinstance(conditions, list):
-        return False
-
-    for condition in conditions:
-        if not evaluate_condition(condition, context, assistant_config):
-            return False
-
-    return True
-
-
 def apply_mapping(mapping: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
     updates: Dict[str, Any] = {}
 
@@ -375,20 +385,20 @@ def run_configured_state_rules(
     variables: Dict[str, Any],
     user_message: str
 ) -> Optional[Dict[str, Any]]:
+    variables = dict(variables or {})
     state_config = get_state_config(assistant_config)
     rules = state_config.get("pre_llm_rules", [])
 
     if not isinstance(rules, list):
         return None
 
-    context = build_context(variables, user_message)
-
     extraction_patterns = state_config.get("extraction_patterns", [])
-    extracted = extract_by_patterns(user_message, extraction_patterns, get_normalization_config(assistant_config))
+    extracted = extract_by_patterns(user_message, extraction_patterns, variables, assistant_config)
 
     if extracted:
         variables = apply_variable_patch(variables, extracted, [])
-        context = build_context(variables, user_message)
+
+    context = build_context(variables, user_message)
 
     for rule in rules:
         if not isinstance(rule, dict):
@@ -400,6 +410,9 @@ def run_configured_state_rules(
 
         variable_updates = dict(rule.get("variable_updates", {}) or {})
         clear_variables = list(rule.get("clear_variables", []) or [])
+
+        if extracted:
+            variable_updates.update(extracted)
 
         list_item_config = rule.get("resolve_list_item")
         resolved_item = None
@@ -432,24 +445,24 @@ def run_configured_state_rules(
                     "resolved_item": resolved_item or {}
                 })
 
+        patched_variables = apply_variable_patch(variables, variable_updates, clear_variables)
+
         required_fields = rule.get("required_fields", [])
-        missing_fields = get_missing_required_fields(required_fields, apply_variable_patch(variables, variable_updates, []), {
+        missing_fields = get_missing_required_fields(required_fields, patched_variables, {
             "resolved_item": resolved_item or {}
         })
 
         if missing_fields:
-            missing_labels = []
             labels = state_config.get("field_labels", {})
             if not isinstance(labels, dict):
                 labels = {}
 
-            for field in missing_fields:
-                missing_labels.append(str(labels.get(field, field)))
+            missing_labels = [str(labels.get(field, field)) for field in missing_fields]
 
             template = rule.get("missing_template") or state_config.get("default_missing_template") or "{{missing_fields}}"
             answer = render_template(template, {
                 "missing_fields": " و ".join(missing_labels),
-                "variables": apply_variable_patch(variables, variable_updates, [])
+                "variables": patched_variables
             })
 
             return {
@@ -468,7 +481,6 @@ def run_configured_state_rules(
             operation = rule.get("operation") or ""
             arguments_mapping = rule.get("arguments", {})
 
-            patched_variables = apply_variable_patch(variables, variable_updates, clear_variables)
             args = build_object_from_mapping(arguments_mapping, {
                 "variables": patched_variables,
                 "resolved_item": resolved_item or {},
@@ -488,7 +500,7 @@ def run_configured_state_rules(
 
         template = rule.get("answer_template", "")
         answer = render_template(template, {
-            "variables": apply_variable_patch(variables, variable_updates, clear_variables),
+            "variables": patched_variables,
             "resolved_item": resolved_item or {},
             "message": user_message
         })
@@ -552,6 +564,7 @@ def apply_tool_update_rules(
     if isinstance(set_mapping, dict):
         updates = apply_mapping(set_mapping, context)
         variables = apply_variable_patch(variables, updates, [])
+        context["variables"] = variables
 
     conditional_rules = rule.get("conditional", [])
     if isinstance(conditional_rules, list):
@@ -578,5 +591,6 @@ def apply_tool_update_rules(
                 if isinstance(conditional_set, dict):
                     updates = apply_mapping(conditional_set, context)
                     variables = apply_variable_patch(variables, updates, [])
+                    context["variables"] = variables
 
     return variables
