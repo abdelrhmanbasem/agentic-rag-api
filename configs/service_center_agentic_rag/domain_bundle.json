@@ -61,7 +61,7 @@
         "name": "service_center_sheet",
         "type": "http",
         "description": "Fetch service center branches, slots, and bookings.",
-        "url": "https://script.google.com/macros/s/AKfycbzlgUPPf-bHipfQmkwSLG09U9b9lJ8Jlz_TW2C1zShnXdRBrzX0CwK8sVbfqi_fQZJl/exec",
+        "url": "https://script.google.com/macros/s/AKfycbzCqlXBxx4oWut13PrjrUyMimRfIMeWJaKo1q4Axcxf0rdLnNBA_2b5KmqQknck6XJ5/exec",
         "method": "POST",
         "timeout_seconds": 30,
         "headers": {
