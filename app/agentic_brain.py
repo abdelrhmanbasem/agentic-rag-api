@@ -12,12 +12,37 @@ from app.state_engine import (
     apply_tool_update_rules,
     apply_variable_patch,
     compact_dict,
-    get_nested,
     run_configured_state_rules
 )
 
 
 OPENAI_MODEL = os.getenv("AGENTIC_BRAIN_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+
+
+def deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deep merge incoming variables into stored conversation variables.
+
+    Important:
+    n8n may send only:
+      {"customer_profile": {"phone": "..."}}
+
+    A shallow merge would overwrite and delete:
+      customer_profile.full_name
+      customer_profile.plate_digits
+
+    This function preserves nested values unless the incoming value is non-empty.
+    """
+    merged = dict(base or {})
+
+    for key, value in (incoming or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge_dicts(merged[key], value)
+        else:
+            if value not in [None, "", [], {}]:
+                merged[key] = value
+
+    return merged
 
 
 def safe_json_loads(text: str) -> Dict[str, Any]:
@@ -78,6 +103,7 @@ def normalize_tool_manifest(assistant_config: Dict[str, Any]) -> List[Dict[str, 
             continue
 
         operations = tool.get("operations", {})
+
         if isinstance(operations, list):
             operations = {
                 op.get("name"): op
@@ -100,11 +126,13 @@ def find_tool(tools: List[Dict[str, Any]], tool_name: str) -> Optional[Dict[str,
     for tool in tools:
         if tool.get("name") == tool_name:
             return tool
+
     return None
 
 
 def get_operation_spec(tool: Dict[str, Any], operation: str) -> Dict[str, Any]:
     operations = tool.get("operations", {})
+
     if not isinstance(operations, dict):
         return {}
 
@@ -114,6 +142,7 @@ def get_operation_spec(tool: Dict[str, Any], operation: str) -> Dict[str, Any]:
 
 def missing_required_inputs(operation_spec: Dict[str, Any], arguments: Dict[str, Any]) -> List[str]:
     required = operation_spec.get("required", [])
+
     if not isinstance(required, list):
         return []
 
@@ -121,6 +150,7 @@ def missing_required_inputs(operation_spec: Dict[str, Any], arguments: Dict[str,
 
     for key in required:
         value = arguments.get(key)
+
         if value is None or value == "" or value == [] or value == {}:
             missing.append(key)
 
@@ -152,6 +182,7 @@ def build_tool_body(tool: Dict[str, Any], operation: str, arguments: Dict[str, A
         }
 
         body: Dict[str, Any] = {}
+
         for key, value in body_template.items():
             body[key] = render_value_template(value, context)
 
@@ -165,6 +196,7 @@ def build_tool_body(tool: Dict[str, Any], operation: str, arguments: Dict[str, A
 
 def call_http_tool(tool: Dict[str, Any], operation: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     url = tool.get("url", "")
+
     if not url:
         return {
             "ok": False,
@@ -176,6 +208,7 @@ def call_http_tool(tool: Dict[str, Any], operation: str, arguments: Dict[str, An
     timeout = int(tool.get("timeout_seconds", 30))
 
     headers = tool.get("headers", {})
+
     if not isinstance(headers, dict):
         headers = {}
 
@@ -186,6 +219,7 @@ def call_http_tool(tool: Dict[str, Any], operation: str, arguments: Dict[str, An
     }
 
     rendered_headers: Dict[str, str] = {}
+
     for key, value in headers.items():
         rendered_headers[str(key)] = str(render_value_template(value, context))
 
@@ -233,6 +267,7 @@ def call_http_tool(tool: Dict[str, Any], operation: str, arguments: Dict[str, An
 
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
+
         return {
             "ok": False,
             "operation": operation,
@@ -330,6 +365,7 @@ def build_system_prompt(
     )
 
     behavior_rules = assistant_config.get("response_rules", [])
+
     if not isinstance(behavior_rules, list):
         behavior_rules = []
 
@@ -351,6 +387,8 @@ Your job:
 - Never invent tool results.
 - Never claim an external fact unless it came from a tool result or a trusted variable.
 - Never confirm an action like booking/order/payment unless the configured tool succeeded.
+- Never expose internal JSON, tools, variables, operations, schemas, or system logic.
+- If a deterministic state rule handles the turn, respect the resulting state and do not restart the flow.
 
 Assistant goal:
 {assistant_goal}
@@ -376,12 +414,15 @@ Available tools:
 Configured deterministic state rules:
 {json.dumps(state_config, ensure_ascii=False, indent=2)}
 
-Important:
+Important behavior:
 - Business behavior is configured, not hardcoded.
 - If a configured deterministic state rule already handled the turn, you will receive that result before being called.
 - If you need external data, return action="call_tool".
 - If required tool inputs are missing, ask the user only for the missing inputs.
 - Do not expose internal JSON, tools, variables, operations, or system logic.
+- If tool observations include branch_found=false, do not choose or invent a branch.
+- If tool observations include slots_found=false, do not invent slots.
+- If booking_stage is awaiting_customer_details, collect missing details only; do not ask to confirm the slot again.
 
 You must respond with valid JSON only.
 
@@ -569,10 +610,7 @@ class AgenticBrain:
             variables = {}
 
         if isinstance(incoming_variables, dict):
-            variables = {
-                **variables,
-                **incoming_variables
-            }
+            variables = deep_merge_dicts(variables, incoming_variables)
 
         tools = normalize_tool_manifest(assistant_config)
         history = extract_history(conversation)
@@ -607,7 +645,10 @@ class AgenticBrain:
                     "tool_calls_used": 0
                 }
 
-            if deterministic.get("action") == "call_tool":
+            if deterministic.get("action") == "continue":
+                pass
+
+            elif deterministic.get("action") == "call_tool":
                 variables = self.execute_tool_decision(
                     assistant_config=assistant_config,
                     decision=deterministic,
@@ -683,8 +724,8 @@ class AgenticBrain:
                 tools=tools,
                 observations=observations
             )
-            tool_calls_used += 1
 
+            tool_calls_used += 1
             time.sleep(0.1)
 
         return {
