@@ -1,26 +1,34 @@
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def deep_get(data: Dict[str, Any], path: str, default: Any = None) -> Any:
+    if not path:
+        return default
+
     current: Any = data
 
     for part in str(path).split("."):
         if not isinstance(current, dict):
             return default
+
         current = current.get(part)
 
     return current if current is not None else default
 
 
 def deep_set(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
+    if not path:
+        return data
+
     target = data
     parts = str(path).split(".")
 
     for part in parts[:-1]:
         if part not in target or not isinstance(target[part], dict):
             target[part] = {}
+
         target = target[part]
 
     target[parts[-1]] = value
@@ -28,12 +36,16 @@ def deep_set(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
 
 
 def deep_delete(data: Dict[str, Any], path: str) -> Dict[str, Any]:
+    if not path:
+        return data
+
     target = data
     parts = str(path).split(".")
 
     for part in parts[:-1]:
         if not isinstance(target, dict) or part not in target:
             return data
+
         target = target[part]
 
     if isinstance(target, dict):
@@ -88,6 +100,7 @@ def matches_any(message: str, phrases: List[str], normalization_config: Dict[str
 
     for phrase in phrases or []:
         normalized_phrase = normalize_text(str(phrase), normalization_config)
+
         if normalized_phrase and normalized_phrase in normalized:
             return True
 
@@ -128,6 +141,51 @@ def apply_variable_patch(
     return patched
 
 
+def pick_variable_scope(variables: Dict[str, Any], include_paths: List[str]) -> Dict[str, Any]:
+    if not include_paths:
+        return dict(variables or {})
+
+    scoped: Dict[str, Any] = {}
+
+    for path in include_paths:
+        if path == "*":
+            return dict(variables or {})
+
+        value = deep_get(variables, path)
+
+        if value not in [None, "", [], {}]:
+            deep_set(scoped, path, value)
+
+    return scoped
+
+
+def get_subagent_variable_scope(
+    assistant_config: Dict[str, Any],
+    subagent_name: str,
+    variables: Dict[str, Any]
+) -> Dict[str, Any]:
+    subagent_config = (
+        assistant_config
+        .get("subagents", {})
+        .get(subagent_name, {})
+    )
+
+    scope = subagent_config.get("variable_scope", {})
+
+    if not isinstance(scope, dict):
+        return dict(variables or {})
+
+    include_paths = scope.get("include", [])
+
+    if include_paths == "*" or include_paths == ["*"]:
+        return dict(variables or {})
+
+    if not isinstance(include_paths, list):
+        return dict(variables or {})
+
+    return pick_variable_scope(variables, include_paths)
+
+
 def build_object_from_mapping(mapping: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
 
@@ -136,6 +194,7 @@ def build_object_from_mapping(mapping: Dict[str, str], context: Dict[str, Any]) 
 
     for target, source in mapping.items():
         value = deep_get(context, str(source), "")
+
         if value not in [None, "", [], {}]:
             deep_set(result, str(target), value)
 
@@ -150,6 +209,7 @@ def build_updates_from_mapping(mapping: Dict[str, str], context: Dict[str, Any])
 
     for target, source in mapping.items():
         value = deep_get(context, str(source), "")
+
         if value not in [None, "", [], {}]:
             result[str(target)] = value
 
@@ -180,6 +240,7 @@ def extract_by_patterns(
 
         if when_missing:
             current_value = deep_get(variables, str(when_missing))
+
             if current_value not in [None, "", [], {}]:
                 continue
 
@@ -193,8 +254,10 @@ def extract_by_patterns(
 
         if match:
             value = match.group(group).strip()
+
             if value:
                 updates[str(variable)] = value
+                deep_set(variables, str(variable), value)
 
     return updates
 
@@ -253,12 +316,14 @@ def apply_tool_update_rules(
     patched = dict(variables or {})
 
     clear = rule.get("clear", [])
+
     if isinstance(clear, list):
         for path in clear:
             if isinstance(path, str):
                 deep_delete(patched, path)
 
     set_mapping = rule.get("set", {})
+
     if isinstance(set_mapping, dict):
         updates = build_updates_from_mapping(set_mapping, context)
         patched = apply_variable_patch(patched, updates, [])
@@ -266,12 +331,14 @@ def apply_tool_update_rules(
     context["variables"] = patched
 
     conditional = rule.get("conditional", [])
+
     if isinstance(conditional, list):
         for item in conditional:
             if not isinstance(item, dict):
                 continue
 
             when = item.get("when", {})
+
             if not isinstance(when, dict):
                 continue
 
@@ -281,12 +348,14 @@ def apply_tool_update_rules(
 
             if actual == expected:
                 c_clear = item.get("clear", [])
+
                 if isinstance(c_clear, list):
                     for path_to_clear in c_clear:
                         if isinstance(path_to_clear, str):
                             deep_delete(patched, path_to_clear)
 
                 c_set = item.get("set", {})
+
                 if isinstance(c_set, dict):
                     updates = build_updates_from_mapping(c_set, context)
                     patched = apply_variable_patch(patched, updates, [])
