@@ -22,7 +22,8 @@ class BookingSubagent:
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
         return (
-            assistant_config.get("subagents", {})
+            assistant_config
+            .get("subagents", {})
             .get(self.name, {})
         )
 
@@ -37,18 +38,26 @@ class BookingSubagent:
         observations: List[Dict[str, Any]] = []
         tool_calls_used = 0
 
-        extracted = extract_by_patterns(
-            message=context.user_message,
-            patterns=config.get("extraction_patterns", []),
-            variables=variables,
-            normalization_config=normalization
-        )
-
-        if extracted:
-            variables = apply_variable_patch(variables, extracted, [])
-
         stage_path = config.get("stage_path", "booking.stage")
         stage = deep_get(variables, stage_path, "")
+
+        extraction_active_stages = config.get("extraction_active_stages", [
+            config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details")
+        ])
+
+        should_extract = stage in extraction_active_stages
+        extracted: Dict[str, Any] = {}
+
+        if should_extract:
+            extracted = extract_by_patterns(
+                message=context.user_message,
+                patterns=config.get("extraction_patterns", []),
+                variables=variables,
+                normalization_config=normalization
+            )
+
+            if extracted:
+                variables = apply_variable_patch(variables, extracted, [])
 
         if stage == config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"):
             return self.handle_awaiting_confirmation(
@@ -124,8 +133,8 @@ class BookingSubagent:
                 handled=True,
                 action="ask_user",
                 answer=answer,
-                variable_updates=updates,
-                clear_variables=clear,
+                variable_updates=updates if isinstance(updates, dict) else {},
+                clear_variables=clear if isinstance(clear, list) else [],
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
@@ -312,9 +321,12 @@ class BookingSubagent:
             "arguments": arguments
         }
 
+        slots_found_path = config.get("slots_found_result_path", "slots_found")
+        slots_found = deep_get(tool_result, slots_found_path, False)
+
         if tool_result.get("ok") is False:
             template = config.get("templates", {}).get("tool_error", "")
-        elif tool_result.get(config.get("slots_found_result_path", "slots_found")) is True:
+        elif slots_found is True:
             template = config.get("templates", {}).get("slots_found", "")
         else:
             template = config.get("templates", {}).get("no_slots", "")
@@ -408,9 +420,11 @@ class BookingSubagent:
         normalized_message = normalize_text(context.user_message, normalization)
 
         ordinal_map = resolver.get("ordinal_map", {})
+
         if isinstance(ordinal_map, dict):
             for phrase, index in ordinal_map.items():
                 normalized_phrase = normalize_text(str(phrase), normalization)
+
                 if normalized_phrase and normalized_phrase in normalized_message:
                     try:
                         i = int(index)
@@ -429,6 +443,7 @@ class BookingSubagent:
             if requested_time:
                 for slot in slots:
                     slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+
                     if slot_time == requested_time:
                         return slot
 
@@ -436,6 +451,7 @@ class BookingSubagent:
 
                 for slot in slots:
                     slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+
                     if slot_time and slot_time.split(":")[0] == requested_hour:
                         return slot
 
