@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional
 
 from app.subagents.base import (
@@ -13,6 +14,7 @@ from app.subagents.base import (
     get_missing_paths,
     matches_any,
     normalize_text,
+    normalize_digits,
     render_template
 )
 
@@ -41,14 +43,26 @@ class BookingSubagent:
         stage_path = config.get("stage_path", "booking.stage")
         stage = deep_get(variables, stage_path, "")
 
+        # Extract date phrases only when booking is active or user is asking for slots/appointments.
+        date_text = self.extract_date_text(context.user_message, config, normalization)
+        if date_text and self.should_extract_date(context, config, stage):
+            variables = apply_variable_patch(
+                variables,
+                {
+                    config.get("date_text_path", "date_text"): date_text
+                },
+                []
+            )
+
+        # Customer details extraction only during customer-detail collection.
         extraction_active_stages = config.get("extraction_active_stages", [
             config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details")
         ])
 
-        should_extract = stage in extraction_active_stages
+        should_extract_customer_details = stage in extraction_active_stages
         extracted: Dict[str, Any] = {}
 
-        if should_extract:
+        if should_extract_customer_details:
             extracted = extract_by_patterns(
                 message=context.user_message,
                 patterns=config.get("extraction_patterns", []),
@@ -58,6 +72,8 @@ class BookingSubagent:
 
             if extracted:
                 variables = apply_variable_patch(variables, extracted, [])
+
+        stage = deep_get(variables, stage_path, stage)
 
         if stage == config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"):
             return self.handle_awaiting_confirmation(
@@ -91,7 +107,7 @@ class BookingSubagent:
                 selected_slot=selected_slot
             )
 
-        if self.is_booking_or_availability_request(context, config):
+        if self.is_booking_or_availability_request(context, config, variables):
             return self.handle_booking_request(
                 context=context,
                 config=config,
@@ -103,9 +119,9 @@ class BookingSubagent:
         if extracted:
             return SubagentResult(
                 handled=False,
-                variable_updates=extracted,
+                variable_updates=variables,
                 selected_subagent=self.name,
-                notes="extraction only"
+                notes="customer detail extraction only"
             )
 
         return SubagentResult(handled=False)
@@ -125,16 +141,23 @@ class BookingSubagent:
         if matches_any(context.user_message, rejection_phrases, normalization):
             updates = config.get("on_reject_updates", {})
             clear = config.get("on_reject_clear", [])
+
+            patched = apply_variable_patch(
+                variables,
+                updates if isinstance(updates, dict) else {},
+                clear if isinstance(clear, list) else []
+            )
+
             answer = render_template(config.get("templates", {}).get("slot_rejected", ""), {
-                "variables": variables
+                "variables": patched
             })
 
             return SubagentResult(
                 handled=True,
                 action="ask_user",
                 answer=answer,
-                variable_updates=updates if isinstance(updates, dict) else {},
-                clear_variables=clear if isinstance(clear, list) else [],
+                variable_updates=patched,
+                clear_variables=[],
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
@@ -150,12 +173,14 @@ class BookingSubagent:
                 handled=True,
                 action="ask_user",
                 answer=answer,
+                variable_updates=variables,
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
                 notes="awaiting explicit confirmation"
             )
 
+        # Important: persist customer_confirmed_booking=true.
         variables = apply_variable_patch(
             variables,
             config.get("on_confirm_updates", {}),
@@ -170,11 +195,17 @@ class BookingSubagent:
         if missing:
             answer = self.render_missing_question(config, variables, missing)
 
+            variables = apply_variable_patch(
+                variables,
+                config.get("on_missing_details_updates", {}),
+                []
+            )
+
             return SubagentResult(
                 handled=True,
                 action="ask_user",
                 answer=answer,
-                variable_updates=config.get("on_missing_details_updates", {}),
+                variable_updates=variables,
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
@@ -209,6 +240,7 @@ class BookingSubagent:
                 handled=True,
                 action="ask_user",
                 answer=answer,
+                variable_updates=variables,
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
@@ -242,8 +274,10 @@ class BookingSubagent:
         updates = dict(config.get("on_slot_selected_updates", {}))
         updates[pending_booking_path] = pending
 
+        patched = apply_variable_patch(variables, updates, [])
+
         answer = render_template(config.get("templates", {}).get("confirm_slot", ""), {
-            "variables": apply_variable_patch(variables, updates, []),
+            "variables": patched,
             "slot": selected_slot,
             "pending": pending
         })
@@ -252,7 +286,7 @@ class BookingSubagent:
             handled=True,
             action="ask_user",
             answer=answer,
-            variable_updates=updates,
+            variable_updates=patched,
             clear_variables=config.get("on_slot_selected_clear", []),
             selected_subagent=self.name,
             notes="slot selected"
@@ -270,12 +304,19 @@ class BookingSubagent:
         missing = get_missing_paths(required_for_slots, variables)
 
         if missing:
+            variables = apply_variable_patch(
+                variables,
+                config.get("on_missing_list_slots_updates", {}),
+                []
+            )
+
             answer = self.render_missing_question(config, variables, missing)
 
             return SubagentResult(
                 handled=True,
                 action="ask_user",
                 answer=answer,
+                variable_updates=variables,
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
@@ -386,6 +427,7 @@ class BookingSubagent:
         )
 
         template_key = "booking_confirmed" if tool_result.get("ok") is True else "booking_failed"
+
         answer = render_template(config.get("templates", {}).get(template_key, ""), {
             "variables": updated_variables,
             "result": tool_result,
@@ -458,8 +500,6 @@ class BookingSubagent:
         return None
 
     def extract_time(self, text: str, config: Dict[str, Any], normalization: Dict[str, Any]) -> str:
-        import re
-
         time_config = config.get("time_normalization", {})
         digit_map = normalization.get("digit_map", {})
 
@@ -494,7 +534,57 @@ class BookingSubagent:
 
         return f"{hour:02d}:{minute:02d}"
 
-    def is_booking_or_availability_request(self, context: SubagentContext, config: Dict[str, Any]) -> bool:
+    def should_extract_date(self, context: SubagentContext, config: Dict[str, Any], stage: str) -> bool:
+        active_stages = config.get("active_request_stages", [])
+
+        if stage in active_stages:
+            return True
+
+        return matches_any(
+            context.user_message,
+            config.get("trigger_phrases", []),
+            context.assistant_config.get("normalization", {})
+        )
+
+    def extract_date_text(self, message: str, config: Dict[str, Any], normalization: Dict[str, Any]) -> str:
+        raw_message = normalize_digits(str(message or ""), normalization.get("digit_map", {})).strip()
+        normalized = normalize_text(raw_message, normalization)
+
+        for item in config.get("date_extraction_patterns", []):
+            if not isinstance(item, dict):
+                continue
+
+            regex = item.get("regex", "")
+            group = int(item.get("group", 1))
+
+            if not regex:
+                continue
+
+            try:
+                match = re.search(regex, raw_message, flags=re.IGNORECASE)
+            except re.error:
+                continue
+
+            if match:
+                value = match.group(group).strip()
+                if value:
+                    return value
+
+        direct_terms = config.get("date_direct_terms", [])
+
+        for term in direct_terms:
+            normalized_term = normalize_text(str(term), normalization)
+            if normalized_term and normalized_term in normalized:
+                return str(term)
+
+        return ""
+
+    def is_booking_or_availability_request(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any]
+    ) -> bool:
         normalization = context.assistant_config.get("normalization", {})
         phrases = config.get("trigger_phrases", [])
 
@@ -502,7 +592,7 @@ class BookingSubagent:
             return True
 
         stage_path = config.get("stage_path", "booking.stage")
-        stage = deep_get(context.variables, stage_path, "")
+        stage = deep_get(variables, stage_path, "")
 
         return stage in config.get("active_request_stages", [])
 
