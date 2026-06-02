@@ -7,6 +7,13 @@
     "assistant_goal": "Help customers diagnose car service issues, find suitable branches, check appointment availability, and book service visits only after explicit confirmation.",
     "language_policy": "Reply in the same language and dialect as the customer. For Egyptian Arabic, use natural Egyptian Arabic.",
     "system_prompt": "You are a helpful car service center assistant. Be direct, practical, and natural. Do not expose internal logic. Do not mention tools, JSON, variables, operations, or schemas. Never invent branches, dates, slots, unavailable reasons, or booking confirmations.",
+    "response_rules": [
+      "Do not offer booking immediately after the first symptom message. First ask for the customer's area/location.",
+      "A customer area is not a branch unless a tool confirms it.",
+      "Never invent slots, branches, booking IDs, dates, or unavailable reasons.",
+      "Never confirm booking unless create_booking returns ok=true.",
+      "During an active booking flow, ask only for the next missing required information."
+    ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
       "max_tool_calls": "محتاج أتأكد من البيانات الأول. ممكن تعيد طلبك بشكل أوضح؟",
@@ -23,7 +30,17 @@
         "٦": "6",
         "٧": "7",
         "٨": "8",
-        "٩": "9"
+        "٩": "9",
+        "۰": "0",
+        "۱": "1",
+        "۲": "2",
+        "۳": "3",
+        "۴": "4",
+        "۵": "5",
+        "۶": "6",
+        "۷": "7",
+        "۸": "8",
+        "۹": "9"
       },
       "replacements": {
         "أ": "ا",
@@ -136,7 +153,8 @@
             "clear_variables": [
               "booking",
               "available_slots",
-              "appointment_time"
+              "appointment_time",
+              "customer_confirmed_booking"
             ]
           }
         ]
@@ -158,6 +176,7 @@
               "الفروع المتاحه",
               "الفروع المتاحة",
               "ايه الفروع",
+              "إيه الفروع",
               "branches"
             ],
             "tool_name": "service_center_sheet",
@@ -186,13 +205,17 @@
             "appointment_date",
             "appointment_time",
             "service_needed",
-            "customer_profile"
+            "customer_profile",
+            "customer_confirmed_booking"
           ]
         },
         "stages": {
           "awaiting_confirmation": "awaiting_confirmation",
           "awaiting_customer_details": "awaiting_customer_details"
         },
+        "extraction_active_stages": [
+          "awaiting_customer_details"
+        ],
         "operations": {
           "list_slots": "list_available_slots",
           "create_booking": "create_booking"
@@ -240,17 +263,24 @@
           "أه",
           "ايوه",
           "أيوه",
+          "نعم",
           "تمام",
           "مظبوط",
           "صح",
+          "اكيد",
+          "أكيد",
           "yes",
           "ok",
-          "confirm"
+          "okay",
+          "confirm",
+          "confirmed"
         ],
         "rejection_phrases": [
           "لا",
           "لأ",
           "مش مناسب",
+          "غير",
+          "لا شكرا",
           "no",
           "cancel"
         ],
@@ -313,7 +343,11 @@
             "ثالث": 2,
             "التالت": 2,
             "الثالث": 2,
-            "3": 2
+            "3": 2,
+            "تلاته": 2,
+            "رابع": 3,
+            "الرابع": 3,
+            "4": 3
           }
         },
         "slot_to_pending_booking_mapping": {
@@ -343,6 +377,7 @@
           "booking.stage": "awaiting_confirmation",
           "customer_confirmed_booking": false
         },
+        "on_slot_selected_clear": [],
         "on_confirm_updates": {
           "booking.stage": "awaiting_customer_details",
           "customer_confirmed_booking": true
@@ -474,6 +509,31 @@
           }
         ]
       },
+      "check_availability": {
+        "set": {
+          "selected_branch": "result.branch",
+          "appointment_date": "result.date",
+          "date_text": "result.date_text",
+          "appointment_time": "result.time",
+          "exact_slot": "result.exact_slot",
+          "nearest_slots": "result.nearest_slots",
+          "nearest_slots_text": "result.nearest_slots_text",
+          "unavailable_reason": "result.unavailable_reason"
+        },
+        "conditional": [
+          {
+            "when": {
+              "path": "result.exact_slot_available",
+              "equals": true
+            },
+            "set": {
+              "booking.stage": "awaiting_confirmation",
+              "booking.pending": "result.requested_slot",
+              "customer_confirmed_booking": false
+            }
+          }
+        ]
+      },
       "create_booking": {
         "conditional": [
           {
@@ -553,14 +613,22 @@
       },
       "visit_id": {
         "type": "string"
+      },
+      "customer_confirmed_booking": {
+        "type": "boolean"
+      },
+      "handoff_requested": {
+        "type": "boolean"
       }
     }
   },
   "domain_playbook": {
-    "version": "1.0",
+    "version": "1.1",
     "notes": [
       "This file is GitHub-managed. Do not edit assistant/schema config on the server with nano for production.",
-      "Update this file, commit, deploy, then clear test conversation memory before retesting."
+      "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
+      "Lookup requests should not populate customer_profile.full_name.",
+      "Update this file, commit, push, deploy, then clear test conversation memory before retesting."
     ]
   }
 }
