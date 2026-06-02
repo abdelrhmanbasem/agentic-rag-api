@@ -20,7 +20,7 @@ ASSISTANTS_DIR.mkdir(parents=True, exist_ok=True)
 SCHEMAS_DIR.mkdir(parents=True, exist_ok=True)
 CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Agentic Brain API")
+app = FastAPI(title="Modular Agentic Brain API")
 brain = AgenticBrain()
 
 
@@ -88,14 +88,15 @@ def load_conversation(assistant_id: str, conversation_id: str) -> Dict[str, Any]
         conversation_path(assistant_id, conversation_id),
         {
             "variables": {},
-            "summary": "",
-            "messages": []
+            "messages": [],
+            "traces": []
         }
     )
 
 
 def save_conversation(assistant_id: str, conversation_id: str, data: Dict[str, Any]) -> None:
-    safe_json_write(conversation_path(assistant_id, conversation_id), data)
+    save_path = conversation_path(assistant_id, conversation_id)
+    safe_json_write(save_path, data)
 
 
 def append_messages(conversation: Dict[str, Any], user_message: str, assistant_answer: str) -> Dict[str, Any]:
@@ -114,7 +115,18 @@ def append_messages(conversation: Dict[str, Any], user_message: str, assistant_a
         "content": assistant_answer
     })
 
-    conversation["messages"] = messages[-30:]
+    conversation["messages"] = messages[-40:]
+    return conversation
+
+
+def append_trace(conversation: Dict[str, Any], trace: Dict[str, Any]) -> Dict[str, Any]:
+    traces = conversation.get("traces", [])
+
+    if not isinstance(traces, list):
+        traces = []
+
+    traces.append(trace)
+    conversation["traces"] = traces[-30:]
     return conversation
 
 
@@ -122,7 +134,7 @@ def append_messages(conversation: Dict[str, Any], user_message: str, assistant_a
 def health():
     return {
         "ok": True,
-        "service": "agentic-brain-api"
+        "service": "modular-agentic-brain-api"
     }
 
 
@@ -186,14 +198,17 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
         conversation=conversation,
         user_message=request.message,
         incoming_variables=request.variables,
-        max_tool_calls=int(assistant_config.get("max_tool_calls", 3))
+        max_tool_calls=int(assistant_config.get("max_tool_calls", 4))
     )
 
     answer = result.get("answer", "")
     variables = result.get("variables", {})
+    trace = result.get("trace", {})
 
     conversation["variables"] = variables
     append_messages(conversation, request.message, answer)
+    append_trace(conversation, trace)
+
     save_conversation(request.assistant_id, request.conversation_id, conversation)
 
     response = {
@@ -201,16 +216,13 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
         "assistant_id": request.assistant_id,
         "conversation_id": request.conversation_id,
         "variables": variables,
+        "selected_subagent": trace.get("selected_subagent"),
         "action": result.get("action", "reply"),
         "tool_calls_used": result.get("tool_calls_used", 0)
     }
 
     if request.debug:
-        response["debug"] = {
-            "decision": result.get("decision"),
-            "observations": result.get("observations"),
-            "deterministic": result.get("deterministic")
-        }
+        response["debug"] = trace
 
     return response
 
