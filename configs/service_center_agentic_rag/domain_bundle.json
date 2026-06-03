@@ -10,6 +10,114 @@
     "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer says بكرة، بكره، tomorrow with an appointment request, treat it as the requested date.",
     "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false, explain safely and do not hallucinate a successful result.",
     "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For symptom conversations, explain likely causes carefully and ask useful diagnostic questions before recommending a visit, unless the customer directly asks to book or clearly agrees to inspect the car.",
+    "routing_guardrails": {
+      "visit_intent": {
+        "enabled": true,
+        "description": "Config-driven guardrail for cases where the user clearly wants to inspect/check the car or proceed to a visit. Python must read these phrases from config and must not hardcode domain phrases.",
+        "strong_phrases": [
+          "حابب اكشف",
+          "حابب أكشف",
+          "عايز اكشف",
+          "عايز أكشف",
+          "عاوز اكشف",
+          "عاوز أكشف",
+          "اكشف واطمن",
+          "أكشف واطمن",
+          "عايز اطمن",
+          "عايز أطمن",
+          "عاوز اطمن",
+          "عاوز أطمن",
+          "عايز اطمن على العربية",
+          "عايز أطمن على العربية",
+          "عاوز اطمن على العربية",
+          "عاوز أطمن على العربية",
+          "عاوز اطمن عليها",
+          "عاوز أطمن عليها",
+          "اطمن عليها",
+          "أطمن عليها",
+          "اكشف عليها",
+          "أكشف عليها",
+          "اكشف على العربية",
+          "أكشف على العربية",
+          "اودي العربية",
+          "أودي العربية",
+          "اوديها",
+          "أوديها",
+          "اروح اكشف",
+          "أروح أكشف",
+          "اروح اطمن",
+          "أروح أطمن",
+          "اشوفها",
+          "أشوفها",
+          "اه ياريت",
+          "أه ياريت",
+          "ايوه ياريت",
+          "أيوه ياريت",
+          "ياريت",
+          "تمام اكشف",
+          "تمام نكشف",
+          "ماشي اكشف",
+          "ماشي نكشف"
+        ],
+        "contextual_phrases_from": [
+          "subagents.booking.trigger_phrases",
+          "subagents.troubleshooting.direct_booking_phrases"
+        ],
+        "requires_context_for_contextual_phrases": true,
+        "context_paths": [
+          "troubleshooting.stage",
+          "troubleshooting.inspection_recommended",
+          "service_needed"
+        ],
+        "context_stage_values": [
+          "active",
+          "complete"
+        ],
+        "target_without_branch": "location",
+        "target_with_branch": "booking",
+        "set_updates_without_branch": {
+          "location.intent": "nearest_branch"
+        },
+        "workflow_stage_without_branch": "nearest_branch_location_needed",
+        "workflow_stage_with_branch": "booking_information_collection",
+        "response_brief_without_branch": {
+          "tone": "natural professional Egyptian Arabic",
+          "language": "Egyptian Arabic",
+          "reply_length": "short",
+          "next_move": "Ask for the user's area/location to find the nearest suitable branch.",
+          "must_do": [
+            "acknowledge that the user wants to inspect/check the car",
+            "do not ask more diagnostic questions",
+            "ask for the user's area/location",
+            "do not ask for appointment date before branch is known"
+          ],
+          "must_not_do": [
+            "do not continue troubleshooting",
+            "do not ask what type of sound again",
+            "do not invent branch or slot",
+            "do not use formal MSA wording"
+          ]
+        },
+        "response_brief_with_branch": {
+          "tone": "natural professional Egyptian Arabic",
+          "language": "Egyptian Arabic",
+          "reply_length": "short",
+          "next_move": "Continue booking using the known branch and ask for the preferred date if missing.",
+          "must_do": [
+            "acknowledge that the user wants to inspect/check the car",
+            "do not ask more diagnostic questions",
+            "use the known branch if present",
+            "ask for preferred date if date is missing"
+          ],
+          "must_not_do": [
+            "do not continue troubleshooting",
+            "do not ask what type of sound again",
+            "do not invent branch or slot",
+            "do not use formal MSA wording"
+          ]
+        }
+      }
+    },
     "response_rules": [
       "The final user-facing answer must be written by the graph response node, not by subagent templates.",
       "Subagent template values are internal labels or grounded draft signals only.",
@@ -451,10 +559,13 @@
           "أشوفها",
           "اه ياريت",
           "أه ياريت",
+          "ايوه ياريت",
+          "أيوه ياريت",
           "ياريت",
-          "ماشي اكشف",
           "تمام اكشف",
           "تمام نكشف",
+          "ماشي اكشف",
+          "ماشي نكشف",
           "عايز أحجز",
           "slots",
           "appointment",
@@ -802,10 +913,13 @@
           "أشوفها",
           "اه ياريت",
           "أه ياريت",
+          "ايوه ياريت",
+          "أيوه ياريت",
           "ياريت",
-          "ماشي اكشف",
           "تمام اكشف",
           "تمام نكشف",
+          "ماشي اكشف",
+          "ماشي نكشف",
           "موعد كشف",
           "معاد كشف",
           "حجز كشف",
@@ -1087,13 +1201,14 @@
     }
   },
   "domain_playbook": {
-    "version": "3.2-langgraph-egyptian-arabic-visit-intent",
+    "version": "3.3-config-driven-routing-guardrails",
     "architecture": "LangGraph manifest decides; deterministic executors safely call tools/update state; graph response node writes final customer answer; quality guard validates.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
       "Final customer-facing wording is handled by graph.response_node.",
       "Subagent templates are internal labels or fallback hints only.",
       "No customer-facing scripted Arabic replies should live in subagents.",
+      "No domain-specific Arabic phrase lists should live in graph.py; graph.py should read routing_guardrails from the bundle.",
       "Arabic response style should be natural Egyptian Arabic, not formal MSA.",
       "BookingSubagent controls deterministic safety only: state, extraction, slot selection, required fields, duplicate prevention, and tool calls.",
       "LocationSubagent resolves location/coordinates through the nearest-branch tool only.",
@@ -1101,7 +1216,8 @@
       "TroubleshootingSubagent stores diagnostic metadata only; response LLM writes the explanation/question.",
       "Tool results are the source of truth for branches, slots, and booking IDs.",
       "create_booking appends a row only after explicit confirmation and required details.",
-      "Phrases like حابب اكشف, عاوز اطمن, اكشف عليها, اودي العربية, and اه ياريت after troubleshooting should move to visit/booking flow.",
+      "Strong visit-intent phrases like عاوز اطمن, اكشف عليها, اودي العربية, and اه ياريت should route to visit/booking even if troubleshooting state was not persisted.",
+      "Contextual booking phrases can still require troubleshooting context to avoid false positives.",
       "Combined messages like اعرف اقرب فرع ليا انا ساكن في العبور should call nearest branch directly."
     ]
   }
