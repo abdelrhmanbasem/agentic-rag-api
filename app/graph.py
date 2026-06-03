@@ -112,6 +112,32 @@ SUBAGENT_EXECUTORS = {
 }
 
 
+SOURCE_OF_TRUTH_EXACT_VARIABLES = {
+    "visit_id",
+    "booking_status",
+    "available_slots",
+    "available_slots_text",
+    "available_branches",
+    "available_branches_text",
+    "slots_found",
+    "appointment_date",
+    "appointment_time",
+    "selected_branch",
+    "nearest_branch",
+    "location_branch",
+    "customer_confirmed_booking",
+}
+
+SOURCE_OF_TRUTH_PREFIXES = (
+    "booking",
+    "booking.",
+    "tool_result",
+    "exact_slot",
+    "nearest_slots",
+    "unavailable_reason",
+)
+
+
 def last_user_message(state: AgentState) -> str:
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, HumanMessage):
@@ -247,6 +273,66 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         out["risk_level"] = "low"
 
     return out
+
+
+def filter_manifest_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The manifest LLM may extract soft user info, but it must not directly write
+    source-of-truth operational state. Tool/subagent execution owns those fields.
+    """
+    if not isinstance(updates, dict):
+        return {}
+
+    allowed: Dict[str, Any] = {}
+
+    for key, value in updates.items():
+        key_text = str(key or "").strip()
+
+        if not key_text:
+            continue
+
+        if key_text in SOURCE_OF_TRUTH_EXACT_VARIABLES:
+            continue
+
+        if any(
+            key_text == prefix or key_text.startswith(prefix + ".")
+            for prefix in SOURCE_OF_TRUTH_PREFIXES
+        ):
+            continue
+
+        allowed[key_text] = value
+
+    return allowed
+
+
+def filter_manifest_deletions(deletions: List[str]) -> List[str]:
+    """
+    The manifest LLM may request deletion of soft state, but cannot delete
+    source-of-truth operational state.
+    """
+    if not isinstance(deletions, list):
+        return []
+
+    allowed: List[str] = []
+
+    for item in deletions:
+        path = str(item or "").strip()
+
+        if not path:
+            continue
+
+        if path in SOURCE_OF_TRUTH_EXACT_VARIABLES:
+            continue
+
+        if any(
+            path == prefix or path.startswith(prefix + ".")
+            for prefix in SOURCE_OF_TRUTH_PREFIXES
+        ):
+            continue
+
+        allowed.append(path)
+
+    return allowed
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -666,6 +752,7 @@ def unified_manifest_node(state: AgentState):
             "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, variables, conversation context, or retrieved knowledge. "
             "For booking/availability/nearest-branch/branch-list actions, prefer needs_tool=true when inputs are available. "
             "For symptom/problem reports, do not force a booking immediately; response_brief should guide a diagnostic response first unless user asks to book. "
+            "The manifest may extract soft user info only. Source-of-truth operational state must come from tool/subagent execution, not manifest extracted_updates. "
             "The JSON object must use exactly these top-level keys: "
             "user_intent, selected_subagent_id, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
             "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
@@ -773,10 +860,18 @@ def unified_manifest_node(state: AgentState):
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
+    safe_manifest_updates = filter_manifest_updates(
+        manifest.get("extracted_updates", {}) or {}
+    )
+
+    safe_manifest_deletions = filter_manifest_deletions(
+        manifest.get("extracted_deletions", []) or []
+    )
+
     updated_variables = apply_subagent_variable_patch(
         variables,
-        manifest.get("extracted_updates", {}) or {},
-        manifest.get("extracted_deletions", []) or [],
+        safe_manifest_updates,
+        safe_manifest_deletions,
     )
 
     return {
@@ -937,6 +1032,22 @@ def normalize_tool_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def subagent_observations_are_ok(observations: List[Dict[str, Any]]) -> bool:
+    if not isinstance(observations, list):
+        return True
+
+    for obs in observations:
+        if not isinstance(obs, dict):
+            continue
+
+        obs_result = obs.get("result")
+
+        if isinstance(obs_result, dict) and obs_result.get("ok") is False:
+            return False
+
+    return True
+
+
 def tool_execution_node(state: AgentState):
     manifest = state.get("manifest", {}) or {}
     agent_config = state.get("agent_config", {}) or {}
@@ -987,15 +1098,18 @@ def tool_execution_node(state: AgentState):
                 result.clear_variables or [],
             )
 
+            subagent_observations = result.observations or []
+            subagent_ok = subagent_observations_are_ok(subagent_observations)
+
             return {
                 "variables": updated_variables,
                 "tool_result": {
-                    "ok": True,
+                    "ok": subagent_ok,
                     "subagent": selected_id,
                     "action": result.action,
                     "answer_draft": result.answer,
                     "notes": result.notes,
-                    "observations": result.observations or [],
+                    "observations": subagent_observations,
                     "tool_calls_used": result.tool_calls_used,
                 },
             }
@@ -1178,9 +1292,9 @@ Rules:
         "final_answer": answer,
         "quality": {
             "pass_check": True,
-            "skipped": True,
+            "skipped": False,
             "simple_response_mode": True,
-            "node": "simple_response",
+            "node": "simple_response_pre_quality_guard",
         },
     }
 
@@ -1251,7 +1365,7 @@ Rules:
         "messages": [AIMessage(content=answer)],
         "final_answer": answer,
         "quality": {
-            "node": "response",
+            "node": "response_pre_quality_guard",
             "pre_quality_guard": True,
         },
     }
@@ -1334,7 +1448,16 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
 
 def quality_guard_node(state: AgentState):
     if not should_run_quality_guard(state):
-        return {"quality": {"pass_check": True, "skipped": True, "node": "quality_guard_skipped"}}
+        final_answer = enforce_answer_safety(state.get("final_answer", ""), state)
+
+        return {
+            "final_answer": final_answer,
+            "quality": {
+                "pass_check": True,
+                "skipped": True,
+                "node": "quality_guard_skipped",
+            }
+        }
 
     answer = state.get("final_answer", "")
     latest_user = last_user_message(state)
@@ -1464,7 +1587,7 @@ workflow.add_conditional_edges(
 
 workflow.add_edge("subagent_reasoning", "response")
 workflow.add_edge("response", "quality_guard")
+workflow.add_edge("simple_response", "quality_guard")
 workflow.add_edge("quality_guard", END)
-workflow.add_edge("simple_response", END)
 
 app_graph = workflow.compile()
