@@ -23,11 +23,7 @@ class BookingSubagent:
     name = "booking"
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
-        return (
-            assistant_config
-            .get("subagents", {})
-            .get(self.name, {})
-        )
+        return assistant_config.get("subagents", {}).get(self.name, {})
 
     def run(self, context: SubagentContext) -> SubagentResult:
         config = self.get_config(context.assistant_config)
@@ -126,12 +122,10 @@ class BookingSubagent:
                 )
 
             answer = render_template(
-                config.get("templates", {}).get(
-                    "choose_slot_again",
-                    "تحب تختار أنهي معاد من المواعيد اللي فوق؟"
-                ),
+                config.get("templates", {}).get("choose_slot_again", ""),
                 {
-                    "variables": variables
+                    "variables": variables,
+                    "message": context.user_message
                 }
             )
 
@@ -192,7 +186,8 @@ class BookingSubagent:
             )
 
             answer = render_template(config.get("templates", {}).get("slot_rejected", ""), {
-                "variables": patched
+                "variables": patched,
+                "message": context.user_message
             })
 
             return SubagentResult(
@@ -209,7 +204,8 @@ class BookingSubagent:
 
         if not matches_any(context.user_message, confirmation_phrases, normalization):
             answer = render_template(config.get("templates", {}).get("repeat_confirmation", ""), {
-                "variables": variables
+                "variables": variables,
+                "message": context.user_message
             })
 
             return SubagentResult(
@@ -235,7 +231,7 @@ class BookingSubagent:
         )
 
         if missing:
-            answer = self.render_missing_question(config, variables, missing)
+            answer = self.render_missing_question(config, variables, missing, context.user_message)
 
             variables = apply_variable_patch(
                 variables,
@@ -276,7 +272,7 @@ class BookingSubagent:
         )
 
         if missing:
-            answer = self.render_missing_question(config, variables, missing)
+            answer = self.render_missing_question(config, variables, missing, context.user_message)
 
             return SubagentResult(
                 handled=True,
@@ -321,7 +317,8 @@ class BookingSubagent:
         answer = render_template(config.get("templates", {}).get("confirm_slot", ""), {
             "variables": patched,
             "slot": selected_slot,
-            "pending": pending
+            "pending": pending,
+            "message": context.user_message
         })
 
         return SubagentResult(
@@ -352,7 +349,7 @@ class BookingSubagent:
                 []
             )
 
-            answer = self.render_missing_question(config, variables, missing)
+            answer = self.render_missing_question(config, variables, missing, context.user_message)
 
             return SubagentResult(
                 handled=True,
@@ -401,7 +398,8 @@ class BookingSubagent:
         result_context = {
             "variables": updated_variables,
             "result": tool_result,
-            "arguments": arguments
+            "arguments": arguments,
+            "message": context.user_message
         }
 
         slots_found_path = config.get("slots_found_result_path", "slots_found")
@@ -476,7 +474,8 @@ class BookingSubagent:
         answer = render_template(config.get("templates", {}).get(template_key, ""), {
             "variables": updated_variables,
             "result": tool_result,
-            "arguments": arguments
+            "arguments": arguments,
+            "message": context.user_message
         })
 
         return SubagentResult(
@@ -694,22 +693,15 @@ class BookingSubagent:
         normalization = context.assistant_config.get("normalization", {})
         message = normalize_text(context.user_message, normalization)
 
-        availability_terms = [
-            "مواعيد",
-            "المواعيد",
-            "المتاح",
-            "المتاحه",
-            "المتاحه",
-            "المتاحة",
-            "متاح",
-            "slots",
-            "available",
-            "availability"
-        ]
+        availability_terms = config.get("availability_request_terms", [])
+
+        if not isinstance(availability_terms, list):
+            availability_terms = []
 
         has_availability_intent = any(
             normalize_text(term, normalization) in message
             for term in availability_terms
+            if str(term or "").strip()
         )
 
         if not has_availability_intent:
@@ -720,40 +712,40 @@ class BookingSubagent:
 
         return bool(branch and date_text)
 
-    def render_missing_question(self, config: Dict[str, Any], variables: Dict[str, Any], missing: List[str]) -> str:
+    def render_missing_question(
+        self,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        missing: List[str],
+        message: str
+    ) -> str:
         templates = config.get("templates", {})
-
         missing_set = set(missing)
 
+        template_key = "missing_fields"
+
         if missing_set == {"variables.date_text"}:
-            return render_template(templates.get("missing_date", ""), {
-                "variables": variables
-            })
-
-        if missing_set == {"variables.customer_profile.full_name"}:
-            return render_template(templates.get("missing_full_name", ""), {
-                "variables": variables
-            })
-
-        if missing_set == {"variables.customer_profile.plate_number"}:
-            return render_template(templates.get("missing_plate_number", ""), {
-                "variables": variables
-            })
-
-        if missing_set == {
+            template_key = "missing_date"
+        elif missing_set == {"variables.selected_branch"}:
+            template_key = "missing_branch"
+        elif missing_set == {"variables.customer_profile.full_name"}:
+            template_key = "missing_full_name"
+        elif missing_set == {"variables.customer_profile.plate_number"}:
+            template_key = "missing_plate_number"
+        elif missing_set == {
             "variables.customer_profile.full_name",
             "variables.customer_profile.plate_number"
         }:
-            return render_template(templates.get("missing_name_and_plate", ""), {
-                "variables": variables
-            })
+            template_key = "missing_name_and_plate"
 
         labels = config.get("field_labels", {})
         missing_text = format_missing_fields(missing, labels)
 
-        return render_template(templates.get("missing_fields", ""), {
+        return render_template(templates.get(template_key, templates.get("missing_fields", "")), {
             "variables": variables,
-            "missing_fields": missing_text
+            "missing_fields": missing_text,
+            "missing_paths": missing,
+            "message": message
         })
 
     def post_process_extracted_fields(
@@ -785,7 +777,6 @@ class BookingSubagent:
     @staticmethod
     def normalize_plate_number(value: str, normalization: Dict[str, Any]) -> str:
         digit_map = normalization.get("digit_map", {})
-
         text = str(value or "")
 
         for src, dst in digit_map.items():
