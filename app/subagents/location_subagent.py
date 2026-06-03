@@ -40,6 +40,41 @@ class LocationSubagent:
         )
 
         if not location:
+            if matches_any(
+                context.user_message,
+                config.get("nearest_branch_request_phrases", []),
+                normalization
+            ):
+                answer = render_template(
+                    config.get("templates", {}).get(
+                        "ask_location_for_nearest_branch",
+                        "تمام، ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟"
+                    ),
+                    {
+                        "variables": variables,
+                        "message": context.user_message
+                    }
+                )
+
+                updates = config.get("on_nearest_branch_request_updates", {})
+
+                patched_variables = apply_variable_patch(
+                    variables=variables,
+                    updates=updates if isinstance(updates, dict) else {},
+                    clear=[]
+                )
+
+                return SubagentResult(
+                    handled=True,
+                    action="ask_user",
+                    answer=answer,
+                    variable_updates=patched_variables,
+                    observations=observations,
+                    selected_subagent=self.name,
+                    tool_calls_used=0,
+                    notes="nearest branch requested without location"
+                )
+
             return SubagentResult(handled=False)
 
         tool_name = config.get("tool_name", "")
