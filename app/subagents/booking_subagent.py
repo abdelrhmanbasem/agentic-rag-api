@@ -43,8 +43,12 @@ class BookingSubagent:
         stage_path = config.get("stage_path", "booking.stage")
         stage = deep_get(variables, stage_path, "")
 
-        # Extract date phrases only when booking is active or user is asking for slots/appointments.
-        date_text = self.extract_date_text(context.user_message, config, normalization)
+        date_text = self.extract_date_text(
+            message=context.user_message,
+            config=config,
+            normalization=normalization
+        )
+
         if date_text and self.should_extract_date(context, config, stage):
             variables = apply_variable_patch(
                 variables,
@@ -54,7 +58,6 @@ class BookingSubagent:
                 []
             )
 
-        # Customer details extraction only during customer-detail collection.
         extraction_active_stages = config.get("extraction_active_stages", [
             config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details")
         ])
@@ -107,7 +110,37 @@ class BookingSubagent:
                 selected_slot=selected_slot
             )
 
-        if self.is_booking_or_availability_request(context, config, variables):
+        if stage == "slot_selection":
+            # Important guard:
+            # If we are waiting for the user to choose a slot and they did not give
+            # a resolvable time/ordinal, do NOT call list_available_slots again and
+            # do NOT fall back to the LLM.
+            answer = render_template(
+                config.get("templates", {}).get(
+                    "choose_slot_again",
+                    "تحب تختار أنهي معاد من المواعيد اللي فوق؟"
+                ),
+                {
+                    "variables": variables
+                }
+            )
+
+            return SubagentResult(
+                handled=True,
+                action="ask_user",
+                answer=answer,
+                variable_updates=variables,
+                selected_subagent=self.name,
+                observations=observations,
+                tool_calls_used=tool_calls_used,
+                notes="slot_selection unresolved"
+            )
+
+        if self.is_booking_or_availability_request(
+            context=context,
+            config=config,
+            variables=variables
+        ):
             return self.handle_booking_request(
                 context=context,
                 config=config,
@@ -180,7 +213,6 @@ class BookingSubagent:
                 notes="awaiting explicit confirmation"
             )
 
-        # Important: persist customer_confirmed_booking=true.
         variables = apply_variable_patch(
             variables,
             config.get("on_confirm_updates", {}),
@@ -503,11 +535,15 @@ class BookingSubagent:
         time_config = config.get("time_normalization", {})
         digit_map = normalization.get("digit_map", {})
 
+        text = str(text or "")
+
         for src, dst in time_config.get("replacements", {}).items():
             text = text.replace(src, dst)
 
         for src, dst in digit_map.items():
             text = text.replace(src, dst)
+
+        text = self.replace_arabic_time_words(text, normalization)
 
         regex = time_config.get("regex", r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
 
@@ -529,10 +565,70 @@ class BookingSubagent:
         if suffix == "am" and hour == 12:
             hour = 0
 
+        # Egyptian customer-service assumption:
+        # If user says "10 الصبح" or "عشرة الصبح", keep 10:00.
+        # If user says "10 مساء", the replacements above turn it into pm.
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
             return ""
 
         return f"{hour:02d}:{minute:02d}"
+
+    def replace_arabic_time_words(self, text: str, normalization: Dict[str, Any]) -> str:
+        normalized = normalize_text(text, normalization)
+
+        word_map = {
+            "واحده": "1",
+            "واحدة": "1",
+            "واحد": "1",
+            "اتنين": "2",
+            "اثنين": "2",
+            "تلاته": "3",
+            "تلاتة": "3",
+            "ثلاثه": "3",
+            "ثلاثة": "3",
+            "اربعه": "4",
+            "اربعة": "4",
+            "اربعا": "4",
+            "خمسه": "5",
+            "خمسة": "5",
+            "سته": "6",
+            "ستة": "6",
+            "سبعه": "7",
+            "سبعة": "7",
+            "تمانيه": "8",
+            "تمانية": "8",
+            "ثمانيه": "8",
+            "ثمانية": "8",
+            "تسعه": "9",
+            "تسعة": "9",
+            "عشره": "10",
+            "عشرة": "10",
+            "عشر": "10",
+            "احداشر": "11",
+            "حداشر": "11",
+            "احدى عشر": "11",
+            "احدي عشر": "11",
+            "اتناشر": "12",
+            "اثنا عشر": "12",
+            "اثني عشر": "12",
+            "اتني عشر": "12"
+        }
+
+        result = text
+
+        # Replace longer phrases first.
+        for word, number in sorted(word_map.items(), key=lambda item: len(item[0]), reverse=True):
+            normalized_word = normalize_text(word, normalization)
+
+            if normalized_word and normalized_word in normalized:
+                result = re.sub(
+                    re.escape(word),
+                    number,
+                    result,
+                    flags=re.IGNORECASE
+                )
+
+        return result
 
     def should_extract_date(self, context: SubagentContext, config: Dict[str, Any], stage: str) -> bool:
         active_stages = config.get("active_request_stages", [])
@@ -574,6 +670,7 @@ class BookingSubagent:
 
         for term in direct_terms:
             normalized_term = normalize_text(str(term), normalization)
+
             if normalized_term and normalized_term in normalized:
                 return str(term)
 
