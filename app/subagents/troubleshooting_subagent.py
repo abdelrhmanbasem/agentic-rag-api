@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from app.subagents.base import (
     SubagentContext,
@@ -105,8 +105,10 @@ class TroubleshootingSubagent:
         steps = rule.get("diagnostic_steps", [])
 
         if not isinstance(steps, list) or not steps:
+            updates = dict(rule.get("variable_updates", {}))
+
             answer = render_template(rule.get("answer_template", ""), {
-                "variables": variables,
+                "variables": apply_variable_patch(variables, updates, []),
                 "message": context.user_message
             })
 
@@ -114,7 +116,7 @@ class TroubleshootingSubagent:
                 handled=True,
                 action="ask_user",
                 answer=answer,
-                variable_updates=rule.get("variable_updates", {}),
+                variable_updates=updates,
                 clear_variables=rule.get("clear_variables", []),
                 selected_subagent=self.name,
                 notes=f"matched rule {rule.get('id', '')}"
@@ -158,7 +160,16 @@ class TroubleshootingSubagent:
         steps = rule.get("diagnostic_steps", [])
 
         if not isinstance(steps, list) or current_count >= len(steps):
-            return SubagentResult(handled=False)
+            updates = {
+                state_path: config.get("complete_state", "complete")
+            }
+
+            return SubagentResult(
+                handled=False,
+                variable_updates=updates,
+                selected_subagent=self.name,
+                notes="diagnostic flow already complete"
+            )
 
         step = steps[current_count]
         next_count = current_count + 1
@@ -167,8 +178,10 @@ class TroubleshootingSubagent:
         updates.update(step.get("variable_updates", {}))
         updates[count_path] = next_count
 
-        if step.get("complete", False) is True:
+        if step.get("complete", False) is True or next_count >= len(steps):
             updates[state_path] = config.get("complete_state", "complete")
+        else:
+            updates[state_path] = config.get("active_state", "active")
 
         answer = render_template(step.get("answer_template", ""), {
             "variables": apply_variable_patch(variables, updates, []),
