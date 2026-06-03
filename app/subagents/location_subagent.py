@@ -17,11 +17,7 @@ class LocationSubagent:
     name = "location"
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
-        return (
-            assistant_config
-            .get("subagents", {})
-            .get(self.name, {})
-        )
+        return assistant_config.get("subagents", {}).get(self.name, {})
 
     def run(self, context: SubagentContext) -> SubagentResult:
         config = self.get_config(context.assistant_config)
@@ -45,23 +41,20 @@ class LocationSubagent:
                 config.get("nearest_branch_request_phrases", []),
                 normalization
             ):
-                answer = render_template(
-                    config.get("templates", {}).get(
-                        "ask_location_for_nearest_branch",
-                        "تمام، ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟"
-                    ),
-                    {
-                        "variables": variables,
-                        "message": context.user_message
-                    }
-                )
-
                 updates = config.get("on_nearest_branch_request_updates", {})
 
                 patched_variables = apply_variable_patch(
                     variables=variables,
                     updates=updates if isinstance(updates, dict) else {},
                     clear=[]
+                )
+
+                answer = render_template(
+                    config.get("templates", {}).get("ask_location_for_nearest_branch", ""),
+                    {
+                        "variables": patched_variables,
+                        "message": context.user_message
+                    }
                 )
 
                 return SubagentResult(
@@ -166,12 +159,6 @@ class LocationSubagent:
             "location": location
         })
 
-        if not answer:
-            answer = config.get("templates", {}).get(
-                "fallback",
-                "تمام، ممكن توضحلي منطقتك أكتر؟"
-            )
-
         return SubagentResult(
             handled=True,
             action="reply",
@@ -272,7 +259,6 @@ class LocationSubagent:
         if direct_booking:
             return templates.get("branch_found_direct_booking", "") or templates.get("branch_found", "")
 
-        min_diagnostic_turns = int(config.get("min_diagnostic_turns_before_visit_offer", 2))
         diagnostic_count_path = config.get("diagnostic_count_path", "troubleshooting.diagnostic_count")
         diagnostic_count = deep_get(variables, diagnostic_count_path, 0)
 
@@ -280,6 +266,8 @@ class LocationSubagent:
             diagnostic_count_int = int(diagnostic_count or 0)
         except Exception:
             diagnostic_count_int = 0
+
+        min_diagnostic_turns = int(config.get("min_diagnostic_turns_before_visit_offer", 2))
 
         if diagnostic_count_int >= min_diagnostic_turns:
             return templates.get("branch_found_after_diagnostics", "") or templates.get("branch_found", "")
