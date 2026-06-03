@@ -74,6 +74,7 @@ class BookingSubagent:
             )
 
             if extracted:
+                extracted = self.post_process_extracted_fields(extracted, normalization)
                 variables = apply_variable_patch(variables, extracted, [])
 
         stage = deep_get(variables, stage_path, stage)
@@ -111,10 +112,6 @@ class BookingSubagent:
             )
 
         if stage == "slot_selection":
-            # Important guard:
-            # If we are waiting for the user to choose a slot and they did not give
-            # a resolvable time/ordinal, do NOT call list_available_slots again and
-            # do NOT fall back to the LLM.
             answer = render_template(
                 config.get("templates", {}).get(
                     "choose_slot_again",
@@ -435,6 +432,9 @@ class BookingSubagent:
             "message": context.user_message
         })
 
+        arguments["conversation_id"] = getattr(context, "conversation_id", "") or deep_get(variables, "conversation_id", "")
+        arguments["user_id"] = getattr(context, "user_id", "") or deep_get(variables, "user_id", "")
+
         tool_result = context.tool_runner.call(
             tool_name=tool_name,
             operation=operation,
@@ -535,20 +535,21 @@ class BookingSubagent:
         time_config = config.get("time_normalization", {})
         digit_map = normalization.get("digit_map", {})
 
-        text = str(text or "")
+        raw_text = str(text or "")
 
         for src, dst in time_config.get("replacements", {}).items():
-            text = text.replace(src, dst)
+            raw_text = raw_text.replace(src, dst)
 
         for src, dst in digit_map.items():
-            text = text.replace(src, dst)
+            raw_text = raw_text.replace(src, dst)
 
-        text = self.replace_arabic_time_words(text, normalization)
+        normalized = normalize_text(raw_text, normalization)
+        normalized = self.replace_arabic_time_words(normalized)
 
         regex = time_config.get("regex", r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
 
         try:
-            match = re.search(regex, text, flags=re.IGNORECASE)
+            match = re.search(regex, normalized, flags=re.IGNORECASE)
         except re.error:
             return ""
 
@@ -565,30 +566,22 @@ class BookingSubagent:
         if suffix == "am" and hour == 12:
             hour = 0
 
-        # Egyptian customer-service assumption:
-        # If user says "10 الصبح" or "عشرة الصبح", keep 10:00.
-        # If user says "10 مساء", the replacements above turn it into pm.
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
             return ""
 
         return f"{hour:02d}:{minute:02d}"
 
-    def replace_arabic_time_words(self, text: str, normalization: Dict[str, Any]) -> str:
-        normalized = normalize_text(text, normalization)
-
+    @staticmethod
+    def replace_arabic_time_words(text: str) -> str:
         word_map = {
             "واحده": "1",
-            "واحدة": "1",
             "واحد": "1",
             "اتنين": "2",
             "اثنين": "2",
             "تلاته": "3",
-            "تلاتة": "3",
             "ثلاثه": "3",
-            "ثلاثة": "3",
             "اربعه": "4",
             "اربعة": "4",
-            "اربعا": "4",
             "خمسه": "5",
             "خمسة": "5",
             "سته": "6",
@@ -596,39 +589,25 @@ class BookingSubagent:
             "سبعه": "7",
             "سبعة": "7",
             "تمانيه": "8",
-            "تمانية": "8",
             "ثمانيه": "8",
-            "ثمانية": "8",
             "تسعه": "9",
             "تسعة": "9",
             "عشره": "10",
-            "عشرة": "10",
             "عشر": "10",
             "احداشر": "11",
             "حداشر": "11",
-            "احدى عشر": "11",
             "احدي عشر": "11",
             "اتناشر": "12",
-            "اثنا عشر": "12",
-            "اثني عشر": "12",
-            "اتني عشر": "12"
+            "اتني عشر": "12",
+            "اثني عشر": "12"
         }
 
-        result = text
+        output = text
 
-        # Replace longer phrases first.
         for word, number in sorted(word_map.items(), key=lambda item: len(item[0]), reverse=True):
-            normalized_word = normalize_text(word, normalization)
+            output = re.sub(rf"\b{re.escape(word)}\b", number, output)
 
-            if normalized_word and normalized_word in normalized:
-                result = re.sub(
-                    re.escape(word),
-                    number,
-                    result,
-                    flags=re.IGNORECASE
-                )
-
-        return result
+        return output
 
     def should_extract_date(self, context: SubagentContext, config: Dict[str, Any], stage: str) -> bool:
         active_stages = config.get("active_request_stages", [])
@@ -694,10 +673,77 @@ class BookingSubagent:
         return stage in config.get("active_request_stages", [])
 
     def render_missing_question(self, config: Dict[str, Any], variables: Dict[str, Any], missing: List[str]) -> str:
+        templates = config.get("templates", {})
+
+        missing_set = set(missing)
+
+        if missing_set == {"variables.date_text"}:
+            return render_template(templates.get("missing_date", ""), {
+                "variables": variables
+            })
+
+        if missing_set == {"variables.customer_profile.full_name"}:
+            return render_template(templates.get("missing_full_name", ""), {
+                "variables": variables
+            })
+
+        if missing_set == {"variables.customer_profile.plate_number"}:
+            return render_template(templates.get("missing_plate_number", ""), {
+                "variables": variables
+            })
+
+        if missing_set == {
+            "variables.customer_profile.full_name",
+            "variables.customer_profile.plate_number"
+        }:
+            return render_template(templates.get("missing_name_and_plate", ""), {
+                "variables": variables
+            })
+
         labels = config.get("field_labels", {})
         missing_text = format_missing_fields(missing, labels)
 
-        return render_template(config.get("templates", {}).get("missing_fields", ""), {
+        return render_template(templates.get("missing_fields", ""), {
             "variables": variables,
             "missing_fields": missing_text
         })
+
+    def post_process_extracted_fields(
+        self,
+        extracted: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        output = dict(extracted)
+
+        plate = output.get("customer_profile.plate_number")
+
+        if plate:
+            output["customer_profile.plate_number"] = self.normalize_plate_number(
+                str(plate),
+                normalization
+            )
+
+        full_name = output.get("customer_profile.full_name")
+
+        if full_name:
+            output["customer_profile.full_name"] = re.sub(
+                r"\s+",
+                " ",
+                str(full_name).strip()
+            )
+
+        return output
+
+    @staticmethod
+    def normalize_plate_number(value: str, normalization: Dict[str, Any]) -> str:
+        digit_map = normalization.get("digit_map", {})
+
+        text = str(value or "")
+
+        for src, dst in digit_map.items():
+            text = text.replace(src, dst)
+
+        text = re.sub(r"[،,.!?؟:;]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        return text
