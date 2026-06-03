@@ -27,6 +27,8 @@ from app.subagents.base import (
     apply_variable_patch as apply_subagent_variable_patch,
     apply_tool_update_rules,
     get_subagent_variable_scope,
+    matches_any,
+    deep_get,
 )
 from app.subagents.booking_subagent import BookingSubagent
 from app.subagents.location_subagent import LocationSubagent
@@ -731,6 +733,145 @@ def unify_subagent_id(selected_id: str) -> str:
     return aliases.get(selected_id, selected_id)
 
 
+def append_unique(values: List[str], additions: List[str]) -> List[str]:
+    output: List[str] = []
+
+    for item in values or []:
+        text = str(item or "").strip()
+        if text and text not in output:
+            output.append(text)
+
+    for item in additions or []:
+        text = str(item or "").strip()
+        if text and text not in output:
+            output.append(text)
+
+    return output
+
+
+def has_known_branch(variables: Dict[str, Any]) -> bool:
+    return bool(
+        deep_get(variables, "selected_branch", "")
+        or deep_get(variables, "location_branch", "")
+        or deep_get(variables, "nearest_branch", "")
+    )
+
+
+def has_configured_visit_intent(
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any]
+) -> bool:
+    normalization = agent_config.get("normalization", {}) or {}
+    subagents = agent_config.get("subagents", {}) or {}
+
+    booking_config = subagents.get("booking", {}) or {}
+    troubleshooting_config = subagents.get("troubleshooting", {}) or {}
+
+    visit_phrases: List[str] = []
+    visit_phrases.extend(booking_config.get("trigger_phrases", []) or [])
+    visit_phrases.extend(troubleshooting_config.get("direct_booking_phrases", []) or [])
+
+    phrase_match = matches_any(message, visit_phrases, normalization)
+
+    troubleshooting_stage = str(
+        deep_get(variables, "troubleshooting.stage", "") or ""
+    ).strip()
+
+    inspection_recommended = bool(
+        deep_get(variables, "troubleshooting.inspection_recommended", False)
+    )
+
+    has_troubleshooting_context = (
+        troubleshooting_stage in {"active", "complete"}
+        or inspection_recommended is True
+        or bool(deep_get(variables, "service_needed", ""))
+    )
+
+    return bool(phrase_match and has_troubleshooting_context)
+
+
+def apply_routing_guardrails(
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any]
+) -> Dict[str, Any]:
+    patched = dict(manifest or {})
+
+    if not has_configured_visit_intent(message, agent_config, variables):
+        return patched
+
+    known_branch = has_known_branch(variables)
+
+    patched["simple_response_mode"] = False
+    patched["needs_tool"] = True
+    patched["needs_subagent_reasoning"] = False
+    patched["needs_quality_guard"] = True
+    patched["needs_style_repair"] = True
+    patched["user_intent"] = "visit_or_booking_after_troubleshooting"
+    patched["conversation_stage"] = "visit_intent_after_diagnostics"
+
+    extracted_updates = patched.get("extracted_updates", {})
+    if not isinstance(extracted_updates, dict):
+        extracted_updates = {}
+
+    if known_branch:
+        patched["selected_subagent_id"] = "booking"
+        patched["workflow_stage"] = "booking_information_collection"
+        patched["response_strategy"] = (
+            "The user agreed to inspect/check the car after troubleshooting. "
+            "Do not continue diagnostics. Continue toward visit booking. "
+            "A branch is already known from variables, so ask only for the preferred day/date if missing. "
+            "Do not ask for location again unless branch data is missing."
+        )
+        next_move = "Move to booking flow using the known branch."
+        must_do = [
+            "acknowledge the user wants to inspect/check the car",
+            "do not ask more diagnostic questions",
+            "use the known branch if present",
+            "ask for preferred date if date is missing"
+        ]
+    else:
+        patched["selected_subagent_id"] = "location"
+        patched["workflow_stage"] = "nearest_branch_location_needed"
+        patched["response_strategy"] = (
+            "The user agreed to inspect/check the car after troubleshooting. "
+            "Do not continue diagnostics. No branch is known yet, so ask naturally for the user's area/location "
+            "to find the nearest suitable branch before checking appointments."
+        )
+        extracted_updates["location.intent"] = "nearest_branch"
+        next_move = "Ask for area/location to find the nearest branch."
+        must_do = [
+            "acknowledge the user wants to inspect/check the car",
+            "do not ask more diagnostic questions",
+            "ask for the user's area/location",
+            "do not ask for appointment date before branch is known"
+        ]
+
+    patched["extracted_updates"] = extracted_updates
+
+    brief = patched.get("response_brief")
+    if not isinstance(brief, dict):
+        brief = {}
+
+    brief["tone"] = "natural professional Egyptian Arabic"
+    brief["language"] = "Egyptian Arabic"
+    brief["reply_length"] = "short"
+    brief["next_move"] = next_move
+    brief["must_do"] = append_unique(brief.get("must_do", []), must_do)
+    brief["must_not_do"] = append_unique(brief.get("must_not_do", []), [
+        "do not continue troubleshooting",
+        "do not ask what type of sound again",
+        "do not invent branch or slot",
+        "do not use formal MSA wording"
+    ])
+
+    patched["response_brief"] = brief
+
+    return patched
+
+
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -787,6 +928,13 @@ def unified_manifest_node(state: AgentState):
 
         parsed = parse_manifest_response(decision)
         parsed = normalize_json_manifest(parsed)
+        parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
+        parsed = apply_routing_guardrails(
+            manifest=parsed,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
         parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
         parsed["manifest_profile_used"] = profile
         return parsed
@@ -857,6 +1005,16 @@ def unified_manifest_node(state: AgentState):
             "manifest_error": error_text,
             "manifest_profile_used": "fallback",
         }
+
+        manifest = apply_routing_guardrails(
+            manifest=manifest,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
+        manifest["selected_subagent_id"] = unify_subagent_id(
+            manifest.get("selected_subagent_id", "")
+        )
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
