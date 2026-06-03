@@ -35,8 +35,10 @@ _openai_client = None
 
 def get_openai_client():
     global _openai_client
+
     if _openai_client is None:
         _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
     return _openai_client
 
 
@@ -47,8 +49,10 @@ def mock_embed(text):
     while len(values) < VECTOR_SIZE:
         for byte in digest:
             values.append((byte / 255.0) - 0.5)
+
             if len(values) >= VECTOR_SIZE:
                 break
+
         digest = hashlib.sha256(digest).digest()
 
     norm = math.sqrt(sum(v * v for v in values)) or 1.0
@@ -56,11 +60,13 @@ def mock_embed(text):
 
 
 def embed(text):
+    text = text or ""
+
     if MOCK_MODE:
-        return mock_embed(text or "")
+        return mock_embed(text)
 
     client = get_openai_client()
-    response = client.embeddings.create(model=EMBED_MODEL, input=text or "")
+    response = client.embeddings.create(model=EMBED_MODEL, input=text)
     return response.data[0].embedding
 
 
@@ -78,6 +84,14 @@ def ensure_qdrant():
             collection_name="memories",
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
+
+
+def safe_ensure_qdrant() -> bool:
+    try:
+        ensure_qdrant()
+        return True
+    except Exception:
+        return False
 
 
 def clean_words(text):
@@ -109,8 +123,10 @@ def chunk_text(text, chunk_size=650, overlap=90):
 
         while i < len(words):
             piece = " ".join(words[i:i + chunk_size]).strip()
+
             if piece:
                 chunks.append(piece)
+
             i += step
 
     return chunks
@@ -165,6 +181,8 @@ def result_score(result):
 
 
 def delete_document_chunks(assistant_id, document_id):
+    ensure_qdrant()
+
     qdrant.delete(
         collection_name="knowledge",
         points_selector=FilterSelector(filter=document_filter(assistant_id, document_id)),
@@ -174,8 +192,10 @@ def delete_document_chunks(assistant_id, document_id):
 
 def ingest_document(assistant_id, document_id, title, text, metadata=None):
     ensure_qdrant()
+
     metadata = metadata or {}
     chunks = chunk_text(text)
+
     delete_document_chunks(assistant_id, document_id)
 
     points = []
@@ -214,14 +234,22 @@ def lexical_overlap_score(item: Dict[str, Any], query: str) -> float:
 
 
 def search_knowledge(assistant_id, query, limit=6):
-    ensure_qdrant()
+    if not assistant_id or not query:
+        return []
 
-    vector_results = query_collection(
-        collection_name="knowledge",
-        query_vector=embed(query),
-        query_filter=assistant_filter(assistant_id),
-        limit=max(limit, 12),
-    )
+    if not safe_ensure_qdrant():
+        return []
+
+    try:
+        query_vector = embed(query)
+        vector_results = query_collection(
+            collection_name="knowledge",
+            query_vector=query_vector,
+            query_filter=assistant_filter(assistant_id),
+            limit=max(limit, 12),
+        )
+    except Exception:
+        return []
 
     payloads = []
     seen = set()
@@ -257,6 +285,9 @@ def search_knowledge(assistant_id, query, limit=6):
 
 
 def compress_single_knowledge_item(item, query):
+    if not isinstance(item, dict):
+        return {}
+
     text = item.get("text", "")
 
     if len(text) <= KNOWLEDGE_COMPRESS_MAX_CHARS:
@@ -303,6 +334,8 @@ def compress_single_knowledge_item(item, query):
         if total >= KNOWLEDGE_COMPRESS_MAX_CHARS:
             break
 
+    # Critical architecture fix:
+    # relevance chooses which sentences to keep, but final context keeps original document order.
     selected.sort(key=lambda item_: item_["index"])
 
     compressed_text = " ".join(item_["sentence"] for item_ in selected).strip()
@@ -319,9 +352,16 @@ def compress_single_knowledge_item(item, query):
 
 
 def compress_knowledge(knowledge_items, query):
+    if not isinstance(knowledge_items, list):
+        return []
+
     return [
-        compress_single_knowledge_item(item, query)
-        for item in knowledge_items
+        compressed
+        for compressed in [
+            compress_single_knowledge_item(item, query)
+            for item in knowledge_items
+        ]
+        if compressed
     ]
 
 
@@ -334,41 +374,55 @@ def write_memory(
     importance=0.5,
     confidence=0.5
 ):
-    ensure_qdrant()
+    if not assistant_id or not user_id:
+        return
 
     if not (text or "").strip():
         return
 
-    qdrant.upsert(
-        collection_name="memories",
-        points=[
-            PointStruct(
-                id=str(uuid.uuid4()),
-                vector=embed(text),
-                payload={
-                    "assistant_id": assistant_id,
-                    "user_id": user_id,
-                    "conversation_id": conversation_id,
-                    "text": text,
-                    "type": memory_type,
-                    "importance": importance,
-                    "confidence": confidence,
-                },
-            )
-        ],
-        wait=True,
-    )
+    if not safe_ensure_qdrant():
+        return
+
+    try:
+        qdrant.upsert(
+            collection_name="memories",
+            points=[
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=embed(text),
+                    payload={
+                        "assistant_id": assistant_id,
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "text": text,
+                        "type": memory_type,
+                        "importance": importance,
+                        "confidence": confidence,
+                    },
+                )
+            ],
+            wait=True,
+        )
+    except Exception:
+        return
 
 
 def search_memories(assistant_id, user_id, query, limit=5):
-    ensure_qdrant()
+    if not assistant_id or not user_id or not query:
+        return []
 
-    results = query_collection(
-        collection_name="memories",
-        query_vector=embed(query),
-        query_filter=memory_filter(assistant_id, user_id),
-        limit=limit,
-    )
+    if not safe_ensure_qdrant():
+        return []
+
+    try:
+        results = query_collection(
+            collection_name="memories",
+            query_vector=embed(query),
+            query_filter=memory_filter(assistant_id, user_id),
+            limit=limit,
+        )
+    except Exception:
+        return []
 
     payloads = []
 
