@@ -1,6 +1,7 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 import json
 import operator
+import re
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -20,7 +21,18 @@ from app.config import (
     QUALITY_GUARD_ENABLED,
 )
 from app.rag import search_knowledge, compress_knowledge, search_memories
-from app.variables import apply_variable_patch
+from app.tool_runner import ToolRunner
+from app.subagents.base import (
+    SubagentContext,
+    apply_variable_patch as apply_subagent_variable_patch,
+    apply_tool_update_rules,
+    get_subagent_variable_scope,
+)
+from app.subagents.booking_subagent import BookingSubagent
+from app.subagents.location_subagent import LocationSubagent
+from app.subagents.lookup_subagent import LookupSubagent
+from app.subagents.troubleshooting_subagent import TroubleshootingSubagent
+from app.subagents.handoff_subagent import HandoffSubagent
 
 
 class AgentState(TypedDict, total=False):
@@ -78,12 +90,26 @@ class QualityDecision(BaseModel):
     issues: List[str] = Field(default_factory=list)
 
 
-manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=700).bind(
+manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=900).bind(
     response_format={"type": "json_object"}
 )
-subagent_llm = llm(MODEL_SUBAGENT, temperature=0.2).with_structured_output(SubagentAnalysis)
-response_llm = llm(MODEL_RESPONSE, temperature=0.55, max_tokens=MAX_OUTPUT_TOKENS)
+subagent_llm = llm(MODEL_SUBAGENT, temperature=0.15).with_structured_output(SubagentAnalysis)
+response_llm = llm(MODEL_RESPONSE, temperature=0.45, max_tokens=MAX_OUTPUT_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0).with_structured_output(QualityDecision)
+
+
+SUBAGENT_EXECUTORS = {
+    "booking": BookingSubagent(),
+    "booking_advisor": BookingSubagent(),
+    "location": LocationSubagent(),
+    "branch_locator": LocationSubagent(),
+    "lookup": LookupSubagent(),
+    "general_lookup": LookupSubagent(),
+    "troubleshooting": TroubleshootingSubagent(),
+    "diagnosis_advisor": TroubleshootingSubagent(),
+    "handoff": HandoffSubagent(),
+    "human_handoff": HandoffSubagent(),
+}
 
 
 def last_user_message(state: AgentState) -> str:
@@ -103,14 +129,7 @@ def clip_text(value: Any, max_chars: int = 1200) -> str:
 
 
 def clip_text_head_tail(value: Any, max_chars: int = 900, head_ratio: float = 0.55) -> str:
-    """
-    Generic compaction that preserves both the beginning and the end of long text.
-
-    Useful for assistant/subagent instructions because important style rules may be
-    appended at the end. This is not domain hardcoding.
-    """
     text = "" if value is None else str(value)
-
     if len(text) <= max_chars:
         return text
 
@@ -125,7 +144,10 @@ def clip_text_head_tail(value: Any, max_chars: int = 900, head_ratio: float = 0.
 
 
 def safe_json(value: Any, max_chars: Optional[int] = None) -> str:
-    text = json.dumps(value, ensure_ascii=False)
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except Exception:
+        text = str(value)
     if max_chars:
         return clip_text(text, max_chars)
     return text
@@ -228,13 +250,6 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Supports both shapes:
-    1. {"field_name": {...}}
-    2. {"schema": {"field_name": {...}}}
-
-    This keeps the engine generic. Assistant-specific variables come from schema.json.
-    """
     if not isinstance(schema, dict):
         return {}
 
@@ -242,17 +257,14 @@ def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(nested, dict):
         return nested
 
+    variables = schema.get("variables")
+    if isinstance(variables, dict):
+        return variables
+
     return schema
 
 
 def schema_priority_rank(value: Dict[str, Any]) -> int:
-    """
-    Generic priority ranking.
-
-    No assistant-specific fields are hardcoded here.
-    The priority comes from schema.json:
-      "priority": "high" | "medium" | "low"
-    """
     if not isinstance(value, dict):
         return 99
 
@@ -260,13 +272,10 @@ def schema_priority_rank(value: Dict[str, Any]) -> int:
 
     if priority == "high":
         return 0
-
     if priority == "medium":
         return 1
-
     if priority == "low":
         return 2
-
     return 3
 
 
@@ -275,20 +284,6 @@ def summarize_schema_fields(
     max_fields: int = 50,
     profile: str = "short",
 ) -> Dict[str, Any]:
-    """
-    Generic schema compaction.
-
-    No assistant-specific fields are hardcoded here.
-    Field importance comes from schema.json metadata:
-      "priority": "high" | "medium" | "low"
-
-    short profile:
-      - prioritizes high fields first
-      - includes fewer/lighter descriptions
-
-    full profile:
-      - allows more fields and slightly more description
-    """
     fields = get_schema_fields(schema)
     if not fields:
         return {}
@@ -330,13 +325,8 @@ def summarize_schema_fields(
 def compact_variables(
     variables: Dict[str, Any],
     schema: Optional[Dict[str, Any]] = None,
-    max_items: int = 40,
+    max_items: int = 50,
 ) -> Dict[str, Any]:
-    """
-    Generic variable compaction.
-    Prioritizes variables defined by the assistant schema, then keeps other non-empty variables.
-    No business-specific keys are hardcoded.
-    """
     if not variables:
         return {}
 
@@ -362,8 +352,29 @@ def compact_variables(
     return compact
 
 
+def get_subagent_config_list(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = agent_config.get("subagents") or []
+
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+
+    if isinstance(raw, dict):
+        output = []
+        for key, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            item = dict(value)
+            item.setdefault("id", key)
+            item.setdefault("name", key)
+            item.setdefault("when_to_use", item.get("description", ""))
+            output.append(item)
+        return output
+
+    return []
+
+
 def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[str, Any]:
-    subagents = agent_config.get("subagents") or []
+    subagents = get_subagent_config_list(agent_config)
 
     if not subagents:
         return {
@@ -384,7 +395,7 @@ def get_subagent_by_id(agent_config: Dict[str, Any], subagent_id: str) -> Dict[s
 def compact_subagents_for_manifest(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     compact = []
 
-    for subagent in agent_config.get("subagents") or []:
+    for subagent in get_subagent_config_list(agent_config):
         compact.append({
             "id": subagent.get("id", ""),
             "name": subagent.get("name", ""),
@@ -400,6 +411,8 @@ def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     tools = []
 
     for tool in agent_config.get("tool_catalog") or []:
+        if not isinstance(tool, dict):
+            continue
         tools.append({
             "name": tool.get("name", ""),
             "description": clip_text(tool.get("description", ""), 220),
@@ -407,6 +420,16 @@ def compact_tool_catalog(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "result_fields": tool.get("result_fields", []),
             "source_of_truth": tool.get("source_of_truth", False),
             "result_policy": clip_text(tool.get("result_policy", ""), 260),
+        })
+
+    for tool in agent_config.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        tools.append({
+            "name": tool.get("name", ""),
+            "description": clip_text(tool.get("description", ""), 220),
+            "operations": tool.get("operations", {}),
+            "source_of_truth": True,
         })
 
     return tools
@@ -417,18 +440,6 @@ def unified_manifest_card(
     schema: Dict[str, Any],
     profile: str = "short",
 ) -> Dict[str, Any]:
-    """
-    Generic assistant manifest profile.
-
-    profile="short":
-      Smaller card for most normal turns.
-      Keeps tone, language, routing, subagents, tools, grounding, and high-priority schema.
-
-    profile="full":
-      Larger card used only when the short card is insufficient or confidence is low.
-
-    No assistant-specific fields or business rules are hardcoded here.
-    """
     profile = (profile or "short").lower().strip()
 
     if profile == "full":
@@ -437,9 +448,9 @@ def unified_manifest_card(
             "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 650),
             "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 550),
             "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 420),
-            "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 950),
-            "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 720),
-            "response_rules": (agent_config.get("response_rules") or [])[:16],
+            "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 1200),
+            "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 900),
+            "response_rules": (agent_config.get("response_rules") or [])[:20],
             "subagents": compact_subagents_for_manifest(agent_config),
             "tools": compact_tool_catalog(agent_config),
             "variable_schema": summarize_schema_fields(schema, max_fields=70, profile="full"),
@@ -447,15 +458,15 @@ def unified_manifest_card(
 
     return {
         "profile": "short",
-        "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 320),
-        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 300),
-        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 240),
-        "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 500),
-        "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 340),
-        "response_rules": (agent_config.get("response_rules") or [])[:12],
+        "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 360),
+        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 320),
+        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 260),
+        "routing_policy": clip_text_head_tail(agent_config.get("routing_policy", ""), 650),
+        "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 480),
+        "response_rules": (agent_config.get("response_rules") or [])[:14],
         "subagents": compact_subagents_for_manifest(agent_config),
         "tools": compact_tool_catalog(agent_config),
-        "variable_schema": summarize_schema_fields(schema, max_fields=32, profile="short"),
+        "variable_schema": summarize_schema_fields(schema, max_fields=36, profile="short"),
     }
 
 
@@ -465,7 +476,7 @@ def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[
         "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 450),
         "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 320),
         "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 650),
-        "response_rules": (agent_config.get("response_rules") or [])[:12],
+        "response_rules": (agent_config.get("response_rules") or [])[:14],
         "selected_subagent": {
             "id": selected_subagent.get("id", ""),
             "name": selected_subagent.get("name", ""),
@@ -504,7 +515,7 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "should_ask_question": manifest.get("should_ask_question", False),
         "question_goal": manifest.get("question_goal", ""),
         "should_offer_next_action": manifest.get("should_offer_next_action", False),
-        "response_strategy": clip_text(manifest.get("response_strategy", ""), 480),
+        "response_strategy": clip_text(manifest.get("response_strategy", ""), 520),
         "response_brief": manifest.get("response_brief", {}),
         "manifest_error": manifest.get("manifest_error", ""),
         "reasoning_summary": manifest.get("reasoning_summary", ""),
@@ -518,10 +529,10 @@ def compact_analysis(analysis: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "understanding": clip_text(analysis.get("understanding", ""), 450),
         "user_goal": clip_text(analysis.get("user_goal", ""), 280),
-        "facts_to_use": analysis.get("facts_to_use", [])[:6],
-        "facts_missing": analysis.get("facts_missing", [])[:6],
+        "facts_to_use": analysis.get("facts_to_use", [])[:8],
+        "facts_missing": analysis.get("facts_missing", [])[:8],
         "next_best_step": clip_text(analysis.get("next_best_step", ""), 360),
-        "response_constraints": analysis.get("response_constraints", [])[:8],
+        "response_constraints": analysis.get("response_constraints", [])[:10],
         "confidence": analysis.get("confidence", 0.0),
     }
 
@@ -545,40 +556,28 @@ def manifest_confidence(manifest: Dict[str, Any]) -> float:
         return 0.0
 
 
+def tool_result_exists(state: AgentState) -> bool:
+    result = state.get("tool_result")
+    return isinstance(result, dict) and bool(result)
+
+
 def should_use_simple_response(state: AgentState) -> bool:
-    """
-    Generic express-lane logic.
-
-    This is not domain hardcoding.
-    If the manifest says no external resources/tools are needed, risk is low,
-    confidence is acceptable, and there is no tool result to handle, then a
-    compact response path is safe.
-
-    We intentionally do NOT block on needs_subagent_reasoning here because the
-    express lane itself still uses the selected subagent instructions and the
-    manifest response_brief. This keeps simple turns smart and cheaper.
-    """
     manifest = state.get("manifest", {}) or {}
 
     if manifest.get("needs_tool"):
         return False
-
     if manifest.get("needs_knowledge"):
         return False
-
     if manifest.get("needs_memory"):
         return False
-
     if manifest.get("risk_level") in ["high", "medium"]:
         return False
-
-    if manifest_confidence(manifest) < 0.7:
+    if manifest_confidence(manifest) < 0.72:
+        return False
+    if tool_result_exists(state):
         return False
 
-    if state.get("tool_result"):
-        return False
-
-    return True
+    return bool(manifest.get("simple_response_mode"))
 
 
 def should_run_quality_guard(state: AgentState) -> bool:
@@ -592,22 +591,16 @@ def should_run_quality_guard(state: AgentState) -> bool:
 
     if manifest.get("needs_quality_guard"):
         return True
-
     if manifest.get("needs_style_repair"):
         return True
-
     if tool_result:
         return True
-
     if manifest.get("needs_tool"):
         return True
-
     if manifest.get("risk_level") in ["high", "medium"]:
         return True
-
     if "NO_CONFIDENT_KNOWLEDGE_FOUND" not in knowledge and knowledge.strip():
         return True
-
     if len(answer) > 700:
         return True
 
@@ -640,6 +633,18 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def unify_subagent_id(selected_id: str) -> str:
+    aliases = {
+        "booking_advisor": "booking",
+        "branch_locator": "location",
+        "diagnosis_advisor": "troubleshooting",
+        "general_support": "general",
+        "human_handoff": "handoff",
+    }
+    selected_id = str(selected_id or "").strip()
+    return aliases.get(selected_id, selected_id)
+
+
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -651,26 +656,22 @@ def unified_manifest_node(state: AgentState):
         (
             "system",
             "You are the Unified Manifest brain of a configurable multi-tenant agentic assistant engine. "
-            "Return ONLY a valid JSON object. No markdown. No prose. "
-            "Do not leave confidence at the default value. Use confidence 0.85-0.98 when the route and next step are clear. Use 0.6-0.75 only when uncertain. "
-            "Do not write the final user-facing answer. "
-            "Decide routing, variable updates, memory/knowledge/tool needs, risk, conversation stage, response brief, and whether simple response mode is appropriate. "
-            "Do not use hidden business rules. Use only the assistant manifest card, current variables, summary, tool result, and latest user message. "
-            "All domain behavior must come from the assistant config, subagents, tool catalog, variable schema, retrieved knowledge if requested, and conversation context. "
-            "Extract only clear durable variable updates from the latest message using the provided variable schema. Do not infer aggressively. "
-            "Use simple_response_mode only for low-risk messages that can be answered well from config/context without memory, knowledge, tools, subagent reasoning, or quality guard. "
-            "Do not use simple_response_mode when the message requires business facts, policy facts, tool results, external actions, high/medium risk handling, uncertain facts, or multi-step reasoning. "
-            "If the provided assistant manifest card is too compact to make a reliable decision, set needs_full_manifest=true and confidence below 0.7. "
-            "Never claim tool results, availability, prices, policies, IDs, or external facts unless they are present in tool_result, variables, conversation context, or retrieved knowledge. "
+            "Return ONLY valid JSON. No markdown. No prose. "
+            "You decide the next move. Do not write the final user-facing reply. "
+            "All domain behavior must come from the assistant manifest card, current variables, conversation summary, tool results, schema, and latest user message. "
+            "Do not use hidden business rules. "
+            "Decide selected_subagent_id, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, memory/knowledge needs, risk, conversation stage, extracted_updates, and response_brief. "
+            "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally. "
+            "If a tool can be called safely with current variables/message, set needs_tool=true and provide requested_tool_name plus tool_request_payload. "
+            "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, variables, conversation context, or retrieved knowledge. "
+            "For booking/availability/nearest-branch/branch-list actions, prefer needs_tool=true when inputs are available. "
+            "For symptom/problem reports, do not force a booking immediately; response_brief should guide a diagnostic response first unless user asks to book. "
             "The JSON object must use exactly these top-level keys: "
             "user_intent, selected_subagent_id, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
             "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
             "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, "
             "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
-            "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move. "
-            "extracted_updates and tool_request_payload must be JSON objects. extracted_deletions and missing_tool_inputs must be arrays. "
-            "Create a response_brief that guides the response LLM: tone, language, reply_length, must_do, must_not_do, and next_move. "
-            "For simple symptom or problem reports, response_brief.must_do should include: acknowledge the issue naturally, mention likely causes only if supported by assistant config or common diagnostic reasoning, then ask one specific follow-up.",
+            "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move.",
         ),
         (
             "user",
@@ -679,53 +680,53 @@ def unified_manifest_node(state: AgentState):
             "Current variables:\n{variables}\n\n"
             "Tool result if any:\n{tool_result}\n\n"
             "Latest user message:\n{message}\n\n"
-            "Return the manifest JSON. selected_subagent_id must be one of the configured subagent ids.",
+            "Return the manifest JSON. selected_subagent_id must be one configured subagent id when possible.",
         ),
     ])
 
     def invoke_manifest(profile: str) -> Dict[str, Any]:
-        manifest_card_max = 4600 if profile == "short" else 7600
+        manifest_card_max = 5200 if profile == "short" else 8400
 
         decision = (prompt | manifest_llm).invoke({
             "manifest_card": safe_json(
                 unified_manifest_card(agent_config, schema, profile=profile),
                 max_chars=manifest_card_max,
             ),
-            "summary": clip_text(state.get("summary", ""), 500),
-            "variables": safe_json(compact_variables(variables, schema), max_chars=1800),
-            "tool_result": safe_json(tool_result, max_chars=2200),
+            "summary": clip_text(state.get("summary", ""), 650),
+            "variables": safe_json(compact_variables(variables, schema), max_chars=2200),
+            "tool_result": safe_json(tool_result, max_chars=2600),
             "message": message,
         })
 
         parsed = parse_manifest_response(decision)
         parsed = normalize_json_manifest(parsed)
+        parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
         parsed["manifest_profile_used"] = profile
         return parsed
 
     try:
         manifest = invoke_manifest("short")
 
-        subagents = agent_config.get("subagents") or []
         known_subagent_ids = {
             s.get("id")
-            for s in subagents
+            for s in get_subagent_config_list(agent_config)
             if isinstance(s, dict) and s.get("id")
         }
 
         selected_id = manifest.get("selected_subagent_id", "")
-        selected_subagent_missing = bool(known_subagent_ids) and selected_id not in known_subagent_ids
+        selected_missing = bool(known_subagent_ids) and selected_id not in known_subagent_ids
 
         should_retry_full = (
             bool(manifest.get("needs_full_manifest"))
             or manifest_confidence(manifest) < 0.65
-            or selected_subagent_missing
+            or selected_missing
         )
 
         if should_retry_full:
             manifest = invoke_manifest("full")
 
     except Exception as exc:
-        subagents = agent_config.get("subagents") or [{"id": "general"}]
+        subagents = get_subagent_config_list(agent_config) or [{"id": "general"}]
         error_text = f"{type(exc).__name__}: {exc}"
 
         manifest = {
@@ -772,7 +773,7 @@ def unified_manifest_node(state: AgentState):
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
-    updated_variables = apply_variable_patch(
+    updated_variables = apply_subagent_variable_patch(
         variables,
         manifest.get("extracted_updates", {}) or {},
         manifest.get("extracted_deletions", []) or [],
@@ -797,6 +798,9 @@ def decide_after_manifest(state: AgentState) -> str:
 
     if manifest.get("needs_knowledge"):
         return "retrieve_knowledge"
+
+    if manifest.get("needs_tool"):
+        return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
         return "subagent_reasoning"
@@ -839,6 +843,9 @@ def decide_after_memory(state: AgentState) -> str:
 
     if manifest.get("needs_knowledge"):
         return "retrieve_knowledge"
+
+    if manifest.get("needs_tool"):
+        return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
         return "subagent_reasoning"
@@ -890,6 +897,159 @@ def retrieve_knowledge_node(state: AgentState):
 def decide_after_knowledge(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
+    if manifest.get("needs_tool"):
+        return "tool_execution"
+
+    if manifest.get("needs_subagent_reasoning"):
+        return "subagent_reasoning"
+
+    return "response"
+
+
+def subagent_history_from_messages(messages: Sequence[BaseMessage]) -> List[Dict[str, str]]:
+    output: List[Dict[str, str]] = []
+
+    for item in messages[-12:]:
+        if isinstance(item, HumanMessage):
+            output.append({"role": "user", "content": item.content})
+        elif isinstance(item, AIMessage):
+            output.append({"role": "assistant", "content": item.content})
+
+    return output
+
+
+def normalize_tool_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    if "arguments" in payload or "operation" in payload:
+        return payload
+
+    operation = payload.get("op") or payload.get("name") or payload.get("action") or ""
+    arguments = payload.get("args") or payload.get("payload") or {}
+
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    return {
+        "operation": operation,
+        "arguments": arguments,
+    }
+
+
+def tool_execution_node(state: AgentState):
+    manifest = state.get("manifest", {}) or {}
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    schema = state.get("schema", {}) or {}
+    message = last_user_message(state)
+    selected_id = unify_subagent_id(manifest.get("selected_subagent_id", ""))
+
+    tool_runner = ToolRunner(agent_config)
+    observations: List[Dict[str, Any]] = []
+
+    executor = SUBAGENT_EXECUTORS.get(selected_id)
+
+    if executor:
+        scoped_vars = get_subagent_variable_scope(
+            assistant_config=agent_config,
+            subagent_name=getattr(executor, "name", selected_id),
+            variables=variables,
+        )
+
+        context = SubagentContext(
+            assistant_config=agent_config,
+            schema=schema,
+            variables=scoped_vars,
+            user_message=message,
+            history=subagent_history_from_messages(state.get("messages", [])),
+            tool_runner=tool_runner,
+            observations=observations,
+            max_tool_calls=int(agent_config.get("max_tool_calls", 4)),
+        )
+
+        try:
+            result = executor.run(context)
+        except Exception as exc:
+            return {
+                "tool_result": {
+                    "ok": False,
+                    "subagent": selected_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "action": "reply",
+                }
+            }
+
+        if result.handled:
+            updated_variables = apply_subagent_variable_patch(
+                variables,
+                result.variable_updates or {},
+                result.clear_variables or [],
+            )
+
+            return {
+                "variables": updated_variables,
+                "tool_result": {
+                    "ok": True,
+                    "subagent": selected_id,
+                    "action": result.action,
+                    "answer_draft": result.answer,
+                    "notes": result.notes,
+                    "observations": result.observations or [],
+                    "tool_calls_used": result.tool_calls_used,
+                },
+            }
+
+    tool_name = manifest.get("requested_tool_name", "")
+    payload = normalize_tool_payload(manifest.get("tool_request_payload", {}) or {})
+    operation = payload.get("operation", "")
+    arguments = payload.get("arguments", {}) or {}
+
+    if tool_name and operation:
+        try:
+            raw_result = tool_runner.call(
+                tool_name=tool_name,
+                operation=operation,
+                arguments=arguments,
+            )
+        except Exception as exc:
+            raw_result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        updated_variables = apply_tool_update_rules(
+            assistant_config=agent_config,
+            variables=variables,
+            operation=operation,
+            arguments=arguments,
+            result=raw_result,
+        )
+
+        return {
+            "variables": updated_variables,
+            "tool_result": {
+                **raw_result,
+                "tool_name": tool_name,
+                "operation": operation,
+                "arguments": arguments,
+            }
+        }
+
+    return {
+        "tool_result": {
+            "ok": False,
+            "error": "Tool requested but no executable subagent/tool operation was available.",
+            "selected_subagent_id": selected_id,
+            "requested_tool_name": tool_name,
+            "tool_request_payload": payload,
+        }
+    }
+
+
+def decide_after_tool(state: AgentState) -> str:
+    manifest = state.get("manifest", {}) or {}
+
     if manifest.get("needs_subagent_reasoning"):
         return "subagent_reasoning"
 
@@ -935,13 +1095,13 @@ def subagent_reasoning_node(state: AgentState):
                 "instructions": clip_text_head_tail(subagent.get("instructions", ""), 850),
                 "allowed_actions": subagent.get("allowed_actions", []),
             }),
-            "manifest": safe_json(compact_manifest(manifest), max_chars=2200),
-            "context": safe_json(compact_agent_context(state.get("agent_config", {}) or {}, subagent), max_chars=2600),
+            "manifest": safe_json(compact_manifest(manifest), max_chars=2400),
+            "context": safe_json(compact_agent_context(state.get("agent_config", {}) or {}, subagent), max_chars=2800),
             "summary": clip_text(state.get("summary", ""), 520),
-            "variables": safe_json(compact_variables(state.get("variables", {}) or {}, schema), max_chars=1800),
+            "variables": safe_json(compact_variables(state.get("variables", {}) or {}, schema), max_chars=2200),
             "memories": compact_memories_for_final(state.get("memories", "")),
-            "knowledge": compact_knowledge_for_final(state.get("knowledge", "No knowledge retrieved."), 1000),
-            "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2200),
+            "knowledge": compact_knowledge_for_final(state.get("knowledge", "No knowledge retrieved."), 1200),
+            "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2800),
             "message": message,
         })
 
@@ -978,7 +1138,7 @@ def simple_response_node(state: AgentState):
         },
         "manifest": compact_manifest(manifest),
         "response_brief": manifest.get("response_brief", {}),
-        "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=16),
+        "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=18),
     }
 
     response_rules = [
@@ -991,15 +1151,16 @@ def simple_response_node(state: AgentState):
         "Do not take or claim external actions unless a tool result confirms them.",
         "Do not offer a next step unless the manifest or assistant config supports it.",
         "If a fact is missing, ask one natural clarifying question.",
+        "Avoid overly familiar wording.",
     ]
 
     system_instruction = f"""
-{clip_text_head_tail(state.get('system_prompt', ''), 850)}
+{clip_text_head_tail(state.get('system_prompt', ''), 900)}
 
 You are generating a simple low-risk user-facing reply for a configurable assistant.
 Use only this compact config-driven context:
 
-{safe_json(simple_context, max_chars=4300)}
+{safe_json(simple_context, max_chars=4800)}
 
 Rules:
 {safe_json(response_rules)}
@@ -1008,9 +1169,9 @@ Rules:
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-4:])
-
     response = response_llm.invoke(messages)
     answer = response.content if hasattr(response, "content") else str(response)
+    answer = enforce_answer_safety(answer, state)
 
     return {
         "messages": [AIMessage(content=answer)],
@@ -1039,7 +1200,7 @@ def response_node(state: AgentState):
         "assistant_context": compact_agent_context(agent_config, subagent),
         "manifest": compact_manifest(manifest),
         "private_analysis": compact_analysis(analysis),
-        "summary": clip_text(state.get("summary", ""), 600),
+        "summary": clip_text(state.get("summary", ""), 700),
         "variables": compact_variables(variables, schema),
         "memory": compact_memories_for_final(memories),
         "knowledge": compact_knowledge_for_final(knowledge),
@@ -1047,27 +1208,33 @@ def response_node(state: AgentState):
     }
 
     response_rules = [
-        "Sound human, smooth, warm, and conversational.",
+        "Write exactly one natural user-facing reply.",
+        "Sound professional, human, smooth, and conversational.",
         "Answer the user's latest message first.",
         "Ask at most one useful follow-up question.",
-        "Do not mention internal routing, agents, prompts, variables, tools, RAG, knowledge base, or hidden reasoning.",
+        "Do not mention internal routing, agents, prompts, manifests, variables, tools, RAG, knowledge base, or hidden reasoning.",
         "Do not invent facts.",
-        "Use known variables, retrieved knowledge, tool results, or conversation context.",
+        "Use known variables, retrieved knowledge, tool results, or conversation context only.",
         "If a fact is missing, ask one natural helpful question.",
         "Use the user's language unless the assistant configuration says otherwise.",
         "If manifest.needs_tool is true and no tool_result exists, do not claim the tool result.",
         "If tool_result exists, treat it as the highest-priority source of truth.",
+        "If tool_result contains answer_draft, use it only as a grounded draft/label; rewrite naturally.",
         "Follow the manifest response_brief unless it conflicts with safety, grounding, or assistant configuration.",
         "Do not take or claim external actions unless a tool result confirms them.",
+        "Never confirm booking unless create_booking or tool_result confirms ok=true.",
+        "If a booking is confirmed and a visit_id exists, include the visit_id.",
+        "Never invent appointment slots, branches, prices, booking IDs, reasons, or confirmations.",
+        "Do not use overly familiar words like حبيبي, يا باشا, يا معلم, يا صديقي.",
     ]
 
     system_instruction = f"""
-{clip_text_head_tail(state.get('system_prompt', ''), 1100)}
+{clip_text_head_tail(state.get('system_prompt', ''), 1200)}
 
 You are the final user-facing response generator for a configurable multi-tenant assistant.
 
 Context:
-{safe_json(response_context, max_chars=7600)}
+{safe_json(response_context, max_chars=8800)}
 
 Rules:
 {safe_json(response_rules)}
@@ -1076,9 +1243,9 @@ Rules:
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
-
     response = response_llm.invoke(messages)
     answer = response.content if hasattr(response, "content") else str(response)
+    answer = enforce_answer_safety(answer, state)
 
     return {
         "messages": [AIMessage(content=answer)],
@@ -1090,12 +1257,86 @@ Rules:
     }
 
 
+def extract_visit_id_from_state(state: AgentState) -> str:
+    variables = state.get("variables", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+
+    visit_id = str(variables.get("visit_id") or "").strip()
+    if visit_id:
+        return visit_id
+
+    if isinstance(tool_result, dict):
+        direct = str(tool_result.get("visit_id") or "").strip()
+        if direct:
+            return direct
+
+        observations = tool_result.get("observations")
+        if isinstance(observations, list):
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                result = obs.get("result") or {}
+                if isinstance(result, dict):
+                    candidate = str(result.get("visit_id") or "").strip()
+                    if candidate:
+                        return candidate
+
+    return ""
+
+
+def create_booking_confirmed(state: AgentState) -> bool:
+    tool_result = state.get("tool_result", {}) or {}
+    variables = state.get("variables", {}) or {}
+
+    status = str(variables.get("booking_status") or "").lower()
+    if status in {"confirmed", "booking_confirmed", "booked"}:
+        return True
+
+    if isinstance(tool_result, dict):
+        if tool_result.get("operation") == "create_booking" and tool_result.get("ok") is True:
+            return True
+
+        observations = tool_result.get("observations")
+        if isinstance(observations, list):
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                if obs.get("operation") != "create_booking":
+                    continue
+                result = obs.get("result") or {}
+                if isinstance(result, dict) and result.get("ok") is True:
+                    return True
+
+    return False
+
+
+def enforce_answer_safety(answer: str, state: AgentState) -> str:
+    text = str(answer or "").strip()
+
+    banned_terms = [
+        "حبيبي",
+        "يا باشا",
+        "يا معلم",
+        "يا صديقي",
+    ]
+
+    for term in banned_terms:
+        text = text.replace(term, "").strip()
+
+    text = re.sub(r"\s{2,}", " ", text).strip()
+
+    visit_id = extract_visit_id_from_state(state)
+    if create_booking_confirmed(state) and visit_id and visit_id not in text:
+        text = f"{text}\nرقم الزيارة: {visit_id}".strip()
+
+    return text
+
+
 def quality_guard_node(state: AgentState):
     if not should_run_quality_guard(state):
         return {"quality": {"pass_check": True, "skipped": True, "node": "quality_guard_skipped"}}
 
     answer = state.get("final_answer", "")
-    knowledge = state.get("knowledge", "")
     latest_user = last_user_message(state)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -1103,7 +1344,9 @@ def quality_guard_node(state: AgentState):
             "system",
             "Quality check the answer for a configurable assistant. "
             "It must be natural, grounded, in the right language, not reveal internals, ask at most one question, and not hallucinate facts. "
-            "If it fails, rewrite it without unsupported facts.",
+            "If it fails, rewrite it without unsupported facts. "
+            "Never remove a required visit_id from confirmed booking replies. "
+            "Reject overly familiar words like حبيبي, يا باشا, يا معلم, يا صديقي.",
         ),
         (
             "user",
@@ -1112,6 +1355,8 @@ def quality_guard_node(state: AgentState):
             "Context:\n{context}\n\n"
             "Analysis:\n{analysis}\n\n"
             "Knowledge:\n{knowledge}\n\n"
+            "Tool result:\n{tool_result}\n\n"
+            "Variables:\n{variables}\n\n"
             "Answer:\n{answer}",
         ),
     ])
@@ -1119,20 +1364,22 @@ def quality_guard_node(state: AgentState):
     try:
         decision = (prompt | quality_llm).invoke({
             "latest_user": latest_user,
-            "manifest": safe_json(compact_manifest(state.get("manifest", {}) or {}), max_chars=2200),
+            "manifest": safe_json(compact_manifest(state.get("manifest", {}) or {}), max_chars=2400),
             "context": safe_json(compact_agent_context(
                 state.get("agent_config", {}) or {},
                 state.get("selected_subagent", {}) or {},
-            ), max_chars=2600),
+            ), max_chars=2800),
             "analysis": safe_json(compact_analysis(state.get("subagent_analysis", {}) or {}), max_chars=1800),
-            "knowledge": clip_text(knowledge, 1000),
+            "knowledge": clip_text(state.get("knowledge", ""), 1200),
+            "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2600),
+            "variables": safe_json(compact_variables(state.get("variables", {}) or {}, state.get("schema", {}) or {}), max_chars=2200),
             "answer": answer,
         })
 
         data = decision.model_dump()
 
         if not decision.pass_check and decision.revised_answer.strip():
-            revised = decision.revised_answer.strip()
+            revised = enforce_answer_safety(decision.revised_answer.strip(), state)
             data["node"] = "quality_guard_revised"
             return {
                 "messages": [AIMessage(content=revised)],
@@ -1140,11 +1387,17 @@ def quality_guard_node(state: AgentState):
                 "quality": data,
             }
 
+        final_answer = enforce_answer_safety(answer, state)
         data["node"] = "quality_guard_passed"
-        return {"quality": data}
+        return {
+            "final_answer": final_answer,
+            "quality": data,
+        }
 
     except Exception as exc:
+        final_answer = enforce_answer_safety(answer, state)
         return {
+            "final_answer": final_answer,
             "quality": {
                 "pass_check": True,
                 "guard_error": str(exc),
@@ -1158,6 +1411,7 @@ workflow = StateGraph(AgentState)
 workflow.add_node("manifest", unified_manifest_node)
 workflow.add_node("retrieve_memory", retrieve_memory_node)
 workflow.add_node("retrieve_knowledge", retrieve_knowledge_node)
+workflow.add_node("tool_execution", tool_execution_node)
 workflow.add_node("subagent_reasoning", subagent_reasoning_node)
 workflow.add_node("simple_response", simple_response_node)
 workflow.add_node("response", response_node)
@@ -1172,6 +1426,7 @@ workflow.add_conditional_edges(
         "simple_response": "simple_response",
         "retrieve_memory": "retrieve_memory",
         "retrieve_knowledge": "retrieve_knowledge",
+        "tool_execution": "tool_execution",
         "subagent_reasoning": "subagent_reasoning",
         "response": "response",
     },
@@ -1182,6 +1437,7 @@ workflow.add_conditional_edges(
     decide_after_memory,
     {
         "retrieve_knowledge": "retrieve_knowledge",
+        "tool_execution": "tool_execution",
         "subagent_reasoning": "subagent_reasoning",
         "response": "response",
     },
@@ -1190,6 +1446,16 @@ workflow.add_conditional_edges(
 workflow.add_conditional_edges(
     "retrieve_knowledge",
     decide_after_knowledge,
+    {
+        "tool_execution": "tool_execution",
+        "subagent_reasoning": "subagent_reasoning",
+        "response": "response",
+    },
+)
+
+workflow.add_conditional_edges(
+    "tool_execution",
+    decide_after_tool,
     {
         "subagent_reasoning": "subagent_reasoning",
         "response": "response",
