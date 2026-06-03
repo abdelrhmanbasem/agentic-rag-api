@@ -15,7 +15,7 @@ class LookupSubagent:
     Lookup executor for the LangGraph architecture.
 
     Responsibilities:
-    - execute safe read-only lookup operations
+    - execute safe read-only lookup operations when a configured rule clearly matches
     - call configured lookup tools
     - apply tool update rules
     - return grounded observations
@@ -49,9 +49,6 @@ class LookupSubagent:
             rules=rules,
             normalization=normalization
         )
-
-        if not matched_rule:
-            matched_rule = self.find_auto_execute_rule(config, rules)
 
         if not matched_rule:
             return SubagentResult(handled=False)
@@ -134,29 +131,3 @@ class LookupSubagent:
                 return rule
 
         return {}
-
-    def find_auto_execute_rule(
-        self,
-        config: Dict[str, Any],
-        rules: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """
-        Optional graph-friendly behavior:
-        If LangGraph selected lookup and the domain has exactly one safe lookup rule,
-        the executor can run it even when phrase matching is imperfect.
-
-        Keep disabled unless the domain explicitly enables it.
-        """
-        if config.get("auto_execute_single_rule", False) is not True:
-            return {}
-
-        valid_rules = [
-            rule for rule in rules
-            if isinstance(rule, dict)
-            and rule.get("operation")
-        ]
-
-        if len(valid_rules) != 1:
-            return {}
-
-        return valid_rules[0]
