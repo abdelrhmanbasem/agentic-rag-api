@@ -4,83 +4,33 @@
     "model": "gpt-4o-mini",
     "temperature": 0.05,
     "max_tool_calls": 4,
-    "assistant_goal": "Help customers diagnose car service issues, explain likely causes, recommend inspection when needed, find suitable branches, check appointment availability, and book service visits only after explicit confirmation.",
-    "language_policy": "Reply in the same language and dialect as the customer. For Egyptian Arabic, use natural Egyptian Arabic.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, and natural. Do not expose internal logic. Do not mention tools, JSON, variables, operations, or schemas. Never invent branches, dates, slots, unavailable reasons, or booking confirmations. For symptom conversations, explain expected likely causes in the first two assistant messages before recommending a visit. Do not ask for location or suggest booking before the customer agrees to continue toward a visit.",
+    "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
+    "conversation_style": "Professional, helpful, natural, and conversational. Use the customer's language and dialect. For Egyptian Arabic, sound natural but not overly familiar. Do not use words like حبيبي, يا باشا, يا معلم, or يا صديقي. Avoid robotic repeated templates.",
+    "language_policy": "Reply in the same language and dialect as the customer. For Egyptian Arabic, use natural professional Egyptian Arabic.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch only when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking.",
+    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false, explain safely and do not hallucinate a successful result.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For symptom conversations, explain likely causes carefully and ask useful diagnostic questions before recommending a visit, unless the customer directly asks to book.",
     "response_rules": [
-      "For symptom cases, the first assistant message should mention the likely system and expected possible causes, then ask a diagnostic question.",
-      "The second troubleshooting assistant message should use the user's answer, explain a more specific expected reason, recommend inspection/visit if needed, and ask whether the customer wants the nearest branch.",
-      "Do not ask for the customer's location until the customer agrees that they want help finding the nearest branch or visit option.",
-      "Do not offer appointment slots immediately after the first symptom message.",
+      "The final user-facing answer must be written by the graph response node, not by subagent templates.",
+      "Subagent template values are internal labels or grounded draft signals only.",
+      "For symptom cases, the first assistant response should mention the likely affected system and possible causes, then ask one useful diagnostic question.",
+      "After at least one diagnostic answer, explain the more likely reason and recommend inspection if appropriate.",
+      "Do not ask for the customer's location until the customer agrees to find the nearest branch or asks for branch/visit help.",
+      "Do not offer appointment slots immediately after the first symptom message unless the customer directly asks for booking or available appointments.",
       "If the user asks for available branches, list branches; do not treat it as a booking request.",
-      "If the user asks for the nearest branch but did not provide location, ask for their area/location first.",
-      "A customer area is not a branch unless a tool confirms it.",
-      "Never invent slots, branches, booking IDs, dates, or unavailable reasons.",
+      "If the user asks for the nearest branch but did not provide location or coordinates, ask for their area/location first.",
+      "A customer area is not a branch unless find_nearest_branch confirms a branch.",
+      "Never invent slots, branches, booking IDs, dates, prices, or unavailable reasons.",
       "Never confirm booking unless create_booking returns ok=true.",
       "During an active booking flow, ask only for the next missing required information.",
-      "If the customer directly asks to book or asks for appointments, the booking flow can start immediately.",
-      "If the user says yes after being asked whether to check slots, ask for the day/date first unless date_text already exists.",
-      "When waiting for slot selection, do not call tools again unless the user provides a new date or asks to change the day.",
-      "When the user selects a time in Arabic words like عشرة الصبح, treat it as a slot selection if a matching available slot exists."
+      "If selected_branch exists and date_text is missing, ask only for the day/date.",
+      "If selected_branch and date_text both exist and the customer asks for available times, check slots.",
+      "If available slots exist and the user selects a time or ordinal, prepare booking.pending and ask for explicit confirmation.",
+      "When waiting for slot selection, do not call tools again unless the user asks for a different date or new availability.",
+      "When the user selects a time in Arabic words like عشرة الصبح, treat it as a slot selection if a matching returned slot exists.",
+      "If service_needed exists, show or use only slots matching service_needed.",
+      "If the user says thanks after a confirmed booking, close politely and do not repeat the full confirmation."
     ],
-    "response_composer": {
-      "enabled": true,
-      "model": "gpt-4o-mini",
-      "temperature": 0.45,
-      "system_prompt": "You are the final response writer for a car service center assistant. Use only the structured packet provided by the backend. Write one natural customer-facing reply in the same language/dialect as the user, usually Egyptian Arabic. Think about the current state, variables, tool results, and original subagent draft, then decide the best next response. Do not mention JSON, tools, variables, subagents, internal state, or system logic. Do not invent branches, appointment slots, dates, booking IDs, booking confirmations, prices, or unavailable reasons. If a required piece of information is missing, ask one clear natural question for it. If branch is already known, do not ask for branch again. If date is already known, do not ask for date again. If a tool returned branches or slots, present them naturally. If create_booking returned ok=true, confirm the booking and include the returned booking details. If create_booking did not return ok=true, do not say the booking is confirmed.",
-      "style_rules": [
-        "Use natural, flexible wording instead of repeating fixed templates.",
-        "Reply in the user's language and dialect.",
-        "Keep normal replies concise.",
-        "For booking confirmation, include the important details clearly.",
-        "Ask only one next question when information is missing.",
-        "Sound helpful and human, not scripted."
-      ],
-      "safety_rules": [
-        "Use only branches from variables or tool results.",
-        "Use only slots from tool results.",
-        "Use only booking IDs from create_booking tool results.",
-        "Never confirm booking unless create_booking returned ok=true.",
-        "Never ask for branch if selected_branch or location_branch exists.",
-        "Never ask for date if date_text exists.",
-        "Never ask for phone if customer_profile.phone exists.",
-        "Never ask for full name if customer_profile.full_name exists.",
-        "Never ask for plate number if customer_profile.plate_number exists.",
-        "If selected_branch exists and date_text is missing, ask only for the day/date.",
-        "If date_text exists and selected_branch exists, do not ask for date or branch again.",
-        "If tool result has slots_found=true, present only those returned slots.",
-        "If tool result has slots_found=false, say no slots are available for that date and ask if they want another day."
-      ],
-      "allowed_variable_paths": [
-        "customer_profile",
-        "booking",
-        "troubleshooting",
-        "location",
-        "user_area",
-        "selected_branch",
-        "nearest_branch",
-        "location_branch",
-        "date_text",
-        "appointment_date",
-        "appointment_time",
-        "service_needed",
-        "available_slots",
-        "available_slots_text",
-        "available_branches",
-        "available_branches_text",
-        "slots_found",
-        "booking_status",
-        "visit_id",
-        "customer_confirmed_booking"
-      ],
-      "allowed_observation_keys": [
-        "subagent",
-        "operation",
-        "arguments",
-        "result"
-      ],
-      "include_assistant_config_keys": []
-    },
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
       "max_tool_calls": "محتاج أتأكد من البيانات الأول. ممكن تعيد طلبك بشكل أوضح؟",
@@ -119,8 +69,8 @@
     },
     "subagent_order": [
       "handoff",
-      "location",
       "lookup",
+      "location",
       "booking",
       "troubleshooting"
     ],
@@ -128,7 +78,7 @@
       {
         "name": "service_center_sheet",
         "type": "http",
-        "description": "Fetch service center branches, slots, and bookings.",
+        "description": "Source-of-truth HTTP tool for service center branches, nearest branch lookup, appointment slots, and booking creation.",
         "url": "https://script.google.com/macros/s/AKfycbx_Au3LPLNiZZ2gxJRp8nZcC6Vo8XUTXvymHJQOsgfgBW67dBRGHPLExbA3CTdZXR8W/exec",
         "method": "POST",
         "timeout_seconds": 30,
@@ -141,10 +91,9 @@
             "optional": []
           },
           "find_nearest_branch": {
-            "required": [
-              "location"
-            ],
+            "required": [],
             "optional": [
+              "location",
               "latitude",
               "longitude"
             ]
@@ -190,7 +139,15 @@
     ],
     "subagents": {
       "handoff": {
+        "id": "handoff",
+        "name": "Human handoff executor",
         "enabled": true,
+        "goal": "Mark that the customer wants a human/support handoff.",
+        "when_to_use": "Use when the customer asks to speak to a human, employee, agent, or customer support representative.",
+        "instructions": "Do not write final customer-facing wording. Only update handoff_requested and return an internal label.",
+        "allowed_actions": [
+          "mark_handoff_requested"
+        ],
         "variable_scope": {
           "include": [
             "customer_profile",
@@ -211,22 +168,67 @@
         },
         "clear_variables": []
       },
-      "location": {
+      "lookup": {
+        "id": "lookup",
+        "name": "Read-only lookup executor",
         "enabled": true,
+        "goal": "Execute safe read-only lookups such as listing configured branches.",
+        "when_to_use": "Use when the customer asks what branches exist, asks for branch list, or asks general read-only service center information that is available through a configured lookup tool.",
+        "instructions": "Do not generate final customer-facing wording. Execute only clearly matched configured lookup rules and return grounded tool observations. If no rule clearly matches, do not guess.",
+        "allowed_actions": [
+          "list_branches"
+        ],
+        "default_tool_name": "service_center_sheet",
+        "variable_scope": {
+          "include": [
+            "available_branches",
+            "available_branches_text"
+          ]
+        },
+        "rules": [
+          {
+            "id": "list_branches",
+            "phrases": [
+              "الفروع",
+              "الفروع المتاحه",
+              "الفروع المتاحة",
+              "ايه الفروع",
+              "إيه الفروع",
+              "ايه الفروع المتاحة",
+              "إيه الفروع المتاحة",
+              "الفروع عندكم",
+              "فروعكم",
+              "كل الفروع",
+              "branches"
+            ],
+            "tool_name": "service_center_sheet",
+            "operation": "list_branches",
+            "arguments": {},
+            "success_template": "LOOKUP_BRANCH_LIST_RESULT",
+            "error_template": "LOOKUP_BRANCH_LIST_ERROR"
+          }
+        ]
+      },
+      "location": {
+        "id": "location",
+        "name": "Nearest branch executor",
+        "enabled": true,
+        "goal": "Resolve the nearest suitable branch from user-provided area/location text or coordinates.",
+        "when_to_use": "Use when the customer asks for the nearest branch, provides their area after being asked, or shares coordinates/location for branch matching.",
+        "instructions": "Do not write final customer-facing wording. Extract location or coordinates, call find_nearest_branch, and update branch variables only from the tool result. If location is missing during an active nearest-branch flow, return a location-needed label.",
+        "allowed_actions": [
+          "ask_for_location",
+          "find_nearest_branch"
+        ],
         "tool_name": "service_center_sheet",
         "operation": "find_nearest_branch",
         "location_argument": "location",
+        "location_intent_path": "location.intent",
         "user_area_path": "user_area",
         "nearest_branch_path": "nearest_branch",
         "location_branch_path": "location_branch",
         "selected_branch_path": "selected_branch",
         "set_selected_branch_on_match": true,
-        "diagnostic_count_path": "troubleshooting.diagnostic_count",
-        "min_diagnostic_turns_before_visit_offer": 2,
-        "on_branch_found_after_diagnostics_updates": {},
-        "on_branch_found_direct_booking_updates": {
-          "booking.stage": "awaiting_date"
-        },
         "on_nearest_branch_request_updates": {
           "location.intent": "nearest_branch"
         },
@@ -239,7 +241,14 @@
             "location_branch",
             "selected_branch",
             "booking",
-            "location"
+            "location",
+            "latitude",
+            "longitude",
+            "lat",
+            "lng",
+            "lon",
+            "user_location",
+            "user_coordinates"
           ]
         },
         "nearest_branch_request_phrases": [
@@ -284,65 +293,31 @@
           "في منطقة",
           "منطقة"
         ],
-        "direct_booking_phrases": [
-          "احجز",
-          "عايز احجز",
-          "أحجز",
-          "حجز",
-          "عايز معاد",
-          "عايز ميعاد",
-          "عايز موعد",
-          "مواعيد",
-          "المواعيد",
-          "book",
-          "appointment"
-        ],
         "templates": {
           "ask_location_for_nearest_branch": "LOCATION_NEEDED_FOR_NEAREST_BRANCH",
-          "branch_found": "NEAREST_BRANCH_FOUND",
-          "branch_found_no_visit_offer": "NEAREST_BRANCH_FOUND",
-          "branch_found_after_diagnostics": "NEAREST_BRANCH_FOUND_AFTER_DIAGNOSTICS",
-          "branch_found_direct_booking": "NEAREST_BRANCH_FOUND_DIRECT_BOOKING",
-          "branch_not_found": "BRANCH_NOT_FOUND",
+          "branch_found": "LOCATION_NEAREST_BRANCH_FOUND",
+          "branch_found_no_visit_offer": "LOCATION_NEAREST_BRANCH_FOUND",
+          "branch_found_after_diagnostics": "LOCATION_NEAREST_BRANCH_FOUND_AFTER_DIAGNOSTICS",
+          "branch_found_direct_booking": "LOCATION_NEAREST_BRANCH_FOUND_DIRECT_BOOKING",
+          "branch_not_found": "LOCATION_BRANCH_NOT_FOUND",
           "tool_error": "LOCATION_TOOL_ERROR",
           "fallback": "LOCATION_FALLBACK"
         }
       },
-      "lookup": {
-        "enabled": true,
-        "default_tool_name": "service_center_sheet",
-        "variable_scope": {
-          "include": [
-            "available_branches",
-            "available_branches_text"
-          ]
-        },
-        "rules": [
-          {
-            "id": "list_branches",
-            "phrases": [
-              "الفروع",
-              "الفروع المتاحه",
-              "الفروع المتاحة",
-              "ايه الفروع",
-              "إيه الفروع",
-              "ايه الفروع المتاحة",
-              "إيه الفروع المتاحة",
-              "الفروع عندكم",
-              "فروعكم",
-              "كل الفروع",
-              "branches"
-            ],
-            "tool_name": "service_center_sheet",
-            "operation": "list_branches",
-            "arguments": {},
-            "success_template": "BRANCH_LIST_RESULT",
-            "error_template": "BRANCH_LIST_ERROR"
-          }
-        ]
-      },
       "booking": {
+        "id": "booking",
+        "name": "Booking executor",
         "enabled": true,
+        "goal": "Safely check appointment slots, resolve selected slot, collect required customer details, and create bookings only after explicit confirmation.",
+        "when_to_use": "Use when the customer asks for appointments, available slots, booking, visit scheduling, or continues an active booking flow.",
+        "instructions": "Do not write final customer-facing wording. Maintain booking state, extract deterministic fields, call list_available_slots, resolve slot selection, ask for explicit confirmation, and call create_booking only when all required fields are present and customer_confirmed_booking is true. Never create duplicate bookings after a confirmed visit_id exists.",
+        "allowed_actions": [
+          "ask_for_missing_booking_input",
+          "list_available_slots",
+          "select_slot",
+          "confirm_slot",
+          "create_booking"
+        ],
         "tool_name": "service_center_sheet",
         "stage_path": "booking.stage",
         "pending_booking_path": "booking.pending",
@@ -376,6 +351,8 @@
             "service_needed",
             "customer_profile",
             "customer_confirmed_booking",
+            "booking_status",
+            "visit_id",
             "conversation_id",
             "user_id",
             "channel"
@@ -427,7 +404,8 @@
           "variables.booking.pending.section",
           "variables.customer_profile.full_name",
           "variables.customer_profile.phone",
-          "variables.customer_profile.plate_number"
+          "variables.customer_profile.plate_number",
+          "variables.customer_confirmed_booking"
         ],
         "field_labels": {
           "variables.selected_branch": "branch",
@@ -438,7 +416,8 @@
           "variables.booking.pending.section": "service section",
           "variables.customer_profile.full_name": "full name",
           "variables.customer_profile.phone": "phone",
-          "variables.customer_profile.plate_number": "plate number"
+          "variables.customer_profile.plate_number": "plate number",
+          "variables.customer_confirmed_booking": "booking confirmation"
         },
         "date_direct_terms": [
           "بكرة",
@@ -494,6 +473,27 @@
           "yes",
           "ok",
           "okay"
+        ],
+        "duplicate_confirmation_phrases": [
+          "اكد",
+          "أكد",
+          "اكيد",
+          "أكيد",
+          "confirm",
+          "confirmed",
+          "yes",
+          "ok",
+          "okay"
+        ],
+        "closing_phrases": [
+          "شكرا",
+          "شكرًا",
+          "متشكر",
+          "تمام شكرا",
+          "تمام شكرًا",
+          "تسلم",
+          "thanks",
+          "thank you"
         ],
         "rejection_phrases": [
           "لا",
@@ -645,14 +645,29 @@
           "repeat_confirmation": "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
           "slot_rejected": "BOOKING_SLOT_REJECTED",
           "booking_confirmed": "BOOKING_CONFIRMED",
-          "booking_failed": "BOOKING_FAILED"
+          "booking_failed": "BOOKING_FAILED",
+          "booking_completed_closing": "BOOKING_COMPLETED_CLOSING",
+          "booking_already_confirmed": "BOOKING_ALREADY_CONFIRMED"
         }
       },
       "troubleshooting": {
+        "id": "troubleshooting",
+        "name": "Troubleshooting state executor",
         "enabled": true,
+        "goal": "Classify vehicle symptoms into service categories and maintain lightweight diagnostic state for the final response LLM.",
+        "when_to_use": "Use when the customer describes a vehicle problem, symptom, noise, warning, weak performance, or safety concern, and is not directly asking to book.",
+        "instructions": "Do not write final diagnostic wording. Detect the problem category, update service_needed and troubleshooting metadata, store possible causes/recommended questions, and let the graph response node generate the natural explanation and next diagnostic question.",
+        "allowed_actions": [
+          "classify_symptom",
+          "update_diagnostic_state",
+          "mark_inspection_recommended"
+        ],
         "state_path": "troubleshooting.stage",
         "count_path": "troubleshooting.diagnostic_count",
         "selected_rule_path": "troubleshooting.selected_rule_id",
+        "metadata_path": "troubleshooting",
+        "inspection_recommended_path": "troubleshooting.inspection_recommended",
+        "max_diagnostic_turns_before_visit_offer": 2,
         "active_state": "active",
         "complete_state": "complete",
         "variable_scope": {
@@ -681,9 +696,17 @@
           "book",
           "appointment"
         ],
+        "templates": {
+          "started": "TROUBLESHOOTING_STARTED",
+          "continued": "TROUBLESHOOTING_CONTINUED",
+          "complete": "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
+          "default": "TROUBLESHOOTING_STATE_UPDATED"
+        },
         "rules": [
           {
             "id": "brake_symptom_diagnostics",
+            "category": "brakes",
+            "expected_system": "Brakes & Safety",
             "phrases": [
               "فرامل",
               "الفرامل",
@@ -697,23 +720,24 @@
             "variable_updates": {
               "service_needed": "Brakes & Safety"
             },
+            "possible_causes": [
+              "brake pad wear",
+              "disc/rotor friction or glazing",
+              "dust or debris around brake components",
+              "caliper or hardware noise"
+            ],
+            "recommended_questions": [
+              "Does the sound happen only while pressing the brakes?",
+              "Is there vibration or weak braking?",
+              "Does it happen more at low speed or after driving for a while?"
+            ],
+            "severity": "safety_related",
+            "safety_note": "Brake issues can affect safety, so inspection is recommended if the sound is strong, repeated, or paired with vibration or weak braking.",
             "clear_variables": [
               "booking",
               "available_slots",
               "appointment_time",
               "customer_confirmed_booking"
-            ],
-            "diagnostic_steps": [
-              {
-                "answer_template": "TROUBLESHOOTING_BRAKES_STEP_1"
-              },
-              {
-                "answer_template": "TROUBLESHOOTING_BRAKES_STEP_2"
-              },
-              {
-                "answer_template": "TROUBLESHOOTING_ASK_LOCATION_AFTER_VISIT_CONSENT",
-                "complete": true
-              }
             ]
           }
         ]
@@ -721,13 +745,6 @@
     },
     "tool_update_rules": {
       "list_branches": {
-        "clear": [
-          "selected_branch",
-          "nearest_branch",
-          "location_branch",
-          "available_slots",
-          "booking"
-        ],
         "set": {
           "available_branches": "result.branches",
           "available_branches_text": "result.branches_text"
@@ -884,6 +901,12 @@
       "location": {
         "type": "object"
       },
+      "user_location": {
+        "type": "object"
+      },
+      "user_coordinates": {
+        "type": "object"
+      },
       "conversation_id": {
         "type": "string"
       },
@@ -929,6 +952,9 @@
       "available_branches_text": {
         "type": "string"
       },
+      "slots_found": {
+        "type": "boolean"
+      },
       "booking_status": {
         "type": "string"
       },
@@ -944,16 +970,18 @@
     }
   },
   "domain_playbook": {
-    "version": "2.1",
+    "version": "3.0-langgraph",
+    "architecture": "LangGraph manifest decides; deterministic executors safely call tools/update state; graph response node writes final customer answer; quality guard validates.",
     "notes": [
-      "Final customer-facing wording is handled by ResponseComposer LLM.",
-      "Subagent templates are now intent labels/fallback hints, not scripted final replies.",
-      "BookingSubagent controls deterministic safety only: state, extraction, slot selection, required fields, and tool calls.",
-      "BookingSubagent does not contain customer-facing hardcoded Arabic replies.",
-      "ResponseComposer must use variables and tool observations to create natural answers.",
-      "Booking trigger phrases do not include broad words like المتاحة or متاح alone.",
-      "availability_request_terms can include broad availability terms only inside slot_selection context when branch and date already exist.",
-      "Lookup runs before booking so branch-list questions are not hijacked by booking.",
+      "Production /chat should use app_graph.invoke(), not AgenticBrain.",
+      "Final customer-facing wording is handled by graph.response_node.",
+      "Subagent templates are internal labels or fallback hints only.",
+      "No customer-facing scripted Arabic replies should live in subagents.",
+      "BookingSubagent controls deterministic safety only: state, extraction, slot selection, required fields, duplicate prevention, and tool calls.",
+      "LocationSubagent resolves location/coordinates through the nearest-branch tool only.",
+      "LookupSubagent performs safe read-only tool lookups.",
+      "TroubleshootingSubagent stores diagnostic metadata only; response LLM writes the explanation/question.",
+      "Tool results are the source of truth for branches, slots, and booking IDs.",
       "create_booking appends a row only after explicit confirmation and required details."
     ]
   }
