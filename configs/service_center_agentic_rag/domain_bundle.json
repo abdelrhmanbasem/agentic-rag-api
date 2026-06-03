@@ -12,6 +12,8 @@
       "The second troubleshooting assistant message should use the user's answer, explain a more specific expected reason, recommend inspection/visit if needed, and ask whether the customer wants the nearest branch.",
       "Do not ask for the customer's location until the customer agrees that they want help finding the nearest branch or visit option.",
       "Do not offer appointment slots immediately after the first symptom message.",
+      "If the user asks for available branches, list branches; do not treat it as a booking request.",
+      "If the user asks for the nearest branch but did not provide location, ask for their area/location first.",
       "A customer area is not a branch unless a tool confirms it.",
       "Never invent slots, branches, booking IDs, dates, or unavailable reasons.",
       "Never confirm booking unless create_booking returns ok=true.",
@@ -60,8 +62,8 @@
     "subagent_order": [
       "handoff",
       "location",
-      "booking",
       "lookup",
+      "booking",
       "troubleshooting"
     ],
     "tools": [
@@ -167,6 +169,9 @@
         "on_branch_found_direct_booking_updates": {
           "booking.stage": "awaiting_date"
         },
+        "on_nearest_branch_request_updates": {
+          "location.intent": "nearest_branch"
+        },
         "variable_scope": {
           "include": [
             "troubleshooting",
@@ -175,9 +180,24 @@
             "nearest_branch",
             "location_branch",
             "selected_branch",
-            "booking"
+            "booking",
+            "location"
           ]
         },
+        "nearest_branch_request_phrases": [
+          "اقرب فرع",
+          "أقرب فرع",
+          "حددلي اقرب فرع",
+          "حددلي أقرب فرع",
+          "حددي اقرب فرع",
+          "حددي أقرب فرع",
+          "عايز اقرب فرع",
+          "عايز أقرب فرع",
+          "فين اقرب فرع",
+          "فين أقرب فرع",
+          "nearest branch",
+          "closest branch"
+        ],
         "location_patterns": [
           {
             "regex": "(?:انا ساكن في|أنا ساكن في|ساكن في|مكاني في|مكانى في|انا في|أنا في|في منطقة|منطقة|location is|i am in|i live in)\\s+([^\\n،,.!?؟]+)",
@@ -220,6 +240,7 @@
           "appointment"
         ],
         "templates": {
+          "ask_location_for_nearest_branch": "تمام، ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
           "branch_found": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
           "branch_found_no_visit_offer": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
           "branch_found_after_diagnostics": "أقرب فرع مناسب ليك هو فرع {{result.branch}}. وبالنسبة للصوت، الأفضل يتكشف عليه في قسم الفرامل عشان نطمن على التيل والطنابير.",
@@ -228,6 +249,39 @@
           "tool_error": "حصلت مشكلة وأنا بحدد أقرب فرع. ممكن تجرب تاني؟",
           "fallback": "تمام، ممكن توضحلي منطقتك أكتر؟"
         }
+      },
+      "lookup": {
+        "enabled": true,
+        "default_tool_name": "service_center_sheet",
+        "variable_scope": {
+          "include": [
+            "available_branches",
+            "available_branches_text"
+          ]
+        },
+        "rules": [
+          {
+            "id": "list_branches",
+            "phrases": [
+              "الفروع",
+              "الفروع المتاحه",
+              "الفروع المتاحة",
+              "ايه الفروع",
+              "إيه الفروع",
+              "ايه الفروع المتاحة",
+              "إيه الفروع المتاحة",
+              "الفروع عندكم",
+              "فروعكم",
+              "كل الفروع",
+              "branches"
+            ],
+            "tool_name": "service_center_sheet",
+            "operation": "list_branches",
+            "arguments": {},
+            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
+            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
+          }
+        ]
       },
       "booking": {
         "enabled": true,
@@ -269,10 +323,6 @@
           "معاد",
           "ميعاد",
           "موعد",
-          "المتاح",
-          "المتاحة",
-          "متاح",
-          "متاحه",
           "بكرة لو متاح",
           "بكره لو متاح",
           "احجز",
@@ -522,34 +572,6 @@
           "booking_failed": "مش قادر أأكد الحجز حاليًا. السبب: {{result.error}}"
         }
       },
-      "lookup": {
-        "enabled": true,
-        "default_tool_name": "service_center_sheet",
-        "variable_scope": {
-          "include": [
-            "available_branches",
-            "available_branches_text"
-          ]
-        },
-        "rules": [
-          {
-            "id": "list_branches",
-            "phrases": [
-              "الفروع",
-              "الفروع المتاحه",
-              "الفروع المتاحة",
-              "ايه الفروع",
-              "إيه الفروع",
-              "branches"
-            ],
-            "tool_name": "service_center_sheet",
-            "operation": "list_branches",
-            "arguments": {},
-            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
-            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
-          }
-        ]
-      },
       "troubleshooting": {
         "enabled": true,
         "state_path": "troubleshooting.stage",
@@ -783,6 +805,9 @@
       "troubleshooting": {
         "type": "object"
       },
+      "location": {
+        "type": "object"
+      },
       "user_area": {
         "type": "string"
       },
@@ -834,10 +859,12 @@
     }
   },
   "domain_playbook": {
-    "version": "1.6",
+    "version": "1.7",
     "notes": [
-      "Troubleshooting now gives expected likely causes in the first two assistant messages.",
-      "Troubleshooting recommends a visit only after the second diagnostic response.",
+      "Lookup runs before booking so branch-list questions are not hijacked by booking availability triggers.",
+      "Booking trigger phrases no longer include broad words like المتاحة or متاح alone.",
+      "Location subagent handles nearest-branch requests without a location by asking for the user's area.",
+      "Troubleshooting gives expected likely causes in the first two assistant messages.",
       "Location is only requested after the customer agrees to find the nearest branch.",
       "Booking preserves date context when the user later asks for available slots again.",
       "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
