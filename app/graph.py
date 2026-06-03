@@ -1531,63 +1531,63 @@ def quality_guard_node(state: AgentState):
 
 workflow = StateGraph(AgentState)
 
-workflow.add_node("manifest", unified_manifest_node)
-workflow.add_node("retrieve_memory", retrieve_memory_node)
-workflow.add_node("retrieve_knowledge", retrieve_knowledge_node)
-workflow.add_node("tool_execution", tool_execution_node)
-workflow.add_node("subagent_reasoning", subagent_reasoning_node)
-workflow.add_node("simple_response", simple_response_node)
-workflow.add_node("response", response_node)
-workflow.add_node("quality_guard", quality_guard_node)
+workflow.add_node("manifest_node", unified_manifest_node)
+workflow.add_node("retrieve_memory_node", retrieve_memory_node)
+workflow.add_node("retrieve_knowledge_node", retrieve_knowledge_node)
+workflow.add_node("tool_execution_node", tool_execution_node)
+workflow.add_node("subagent_reasoning_node", subagent_reasoning_node)
+workflow.add_node("simple_response_node", simple_response_node)
+workflow.add_node("response_node", response_node)
+workflow.add_node("quality_guard_node", quality_guard_node)
 
-workflow.set_entry_point("manifest")
+workflow.set_entry_point("manifest_node")
 
 workflow.add_conditional_edges(
-    "manifest",
+    "manifest_node",
     decide_after_manifest,
     {
-        "simple_response": "simple_response",
-        "retrieve_memory": "retrieve_memory",
-        "retrieve_knowledge": "retrieve_knowledge",
-        "tool_execution": "tool_execution",
-        "subagent_reasoning": "subagent_reasoning",
-        "response": "response",
+        "simple_response": "simple_response_node",
+        "retrieve_memory": "retrieve_memory_node",
+        "retrieve_knowledge": "retrieve_knowledge_node",
+        "tool_execution": "tool_execution_node",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
     },
 )
 
 workflow.add_conditional_edges(
-    "retrieve_memory",
+    "retrieve_memory_node",
     decide_after_memory,
     {
-        "retrieve_knowledge": "retrieve_knowledge",
-        "tool_execution": "tool_execution",
-        "subagent_reasoning": "subagent_reasoning",
-        "response": "response",
+        "retrieve_knowledge": "retrieve_knowledge_node",
+        "tool_execution": "tool_execution_node",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
     },
 )
 
 workflow.add_conditional_edges(
-    "retrieve_knowledge",
+    "retrieve_knowledge_node",
     decide_after_knowledge,
     {
-        "tool_execution": "tool_execution",
-        "subagent_reasoning": "subagent_reasoning",
-        "response": "response",
+        "tool_execution": "tool_execution_node",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
     },
 )
 
 workflow.add_conditional_edges(
-    "tool_execution",
+    "tool_execution_node",
     decide_after_tool,
     {
-        "subagent_reasoning": "subagent_reasoning",
-        "response": "response",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
     },
 )
 
-workflow.add_edge("subagent_reasoning", "response")
-workflow.add_edge("response", "quality_guard")
-workflow.add_edge("simple_response", "quality_guard")
-workflow.add_edge("quality_guard", END)
+workflow.add_edge("subagent_reasoning_node", "response_node")
+workflow.add_edge("response_node", "quality_guard_node")
+workflow.add_edge("simple_response_node", "quality_guard_node")
+workflow.add_edge("quality_guard_node", END)
 
 app_graph = workflow.compile()
