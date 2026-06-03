@@ -1,9 +1,12 @@
+import copy
 import json
 import os
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from app.response_composer import ResponseComposer
 from app.tool_runner import ToolRunner
 from app.subagents.base import (
     SubagentContext,
@@ -25,6 +28,8 @@ OPENAI_MODEL = os.getenv("AGENTIC_BRAIN_MODEL", os.getenv("OPENAI_MODEL", "gpt-4
 class AgenticBrain:
     def __init__(self) -> None:
         self.client = OpenAI()
+        self.response_composer = ResponseComposer()
+
         self.subagents = [
             HandoffSubagent(),
             LocationSubagent(),
@@ -47,8 +52,17 @@ class AgenticBrain:
         if not isinstance(variables, dict):
             variables = {}
 
+        variables = copy.deepcopy(variables)
+
         if isinstance(incoming_variables, dict):
             variables = deep_merge(variables, incoming_variables)
+
+        variables = self.attach_conversation_metadata(
+            variables=variables,
+            conversation=conversation
+        )
+
+        state_before = copy.deepcopy(variables)
 
         history = self.extract_history(conversation)
         tool_runner = ToolRunner(assistant_config)
@@ -56,11 +70,12 @@ class AgenticBrain:
 
         trace: Dict[str, Any] = {
             "message": user_message,
-            "state_before": variables,
+            "state_before": copy.deepcopy(state_before),
             "subagent_attempts": [],
             "selected_subagent": "",
             "observations": [],
             "llm_decision": {},
+            "response_composer": {},
             "state_after": {},
             "final_answer": ""
         }
@@ -100,6 +115,7 @@ class AgenticBrain:
                         result.variable_updates,
                         result.clear_variables
                     )
+
                 continue
 
             variables = self.merge_subagent_result(
@@ -110,13 +126,30 @@ class AgenticBrain:
             if result.observations:
                 observations.extend(result.observations)
 
-            trace["selected_subagent"] = result.selected_subagent or subagent_name
+            selected_subagent = result.selected_subagent or subagent_name
+            state_after = copy.deepcopy(variables)
+
+            composer_output = self.compose_customer_answer(
+                assistant_config=assistant_config,
+                user_message=user_message,
+                variables_before=state_before,
+                variables_after=state_after,
+                subagent_result=result,
+                selected_subagent=selected_subagent,
+                observations=observations,
+                debug=bool(conversation.get("debug", False))
+            )
+
+            final_answer = composer_output.get("answer", "") or result.answer or ""
+
+            trace["selected_subagent"] = selected_subagent
             trace["observations"] = observations
-            trace["state_after"] = variables
-            trace["final_answer"] = result.answer
+            trace["response_composer"] = self.public_composer_trace(composer_output)
+            trace["state_after"] = state_after
+            trace["final_answer"] = final_answer
 
             return {
-                "answer": result.answer,
+                "answer": final_answer,
                 "variables": variables,
                 "action": result.action,
                 "tool_calls_used": result.tool_calls_used,
@@ -134,20 +167,101 @@ class AgenticBrain:
         )
 
         variables = fallback.get("variables", variables)
+        state_after = copy.deepcopy(variables)
+
+        fallback_result = SimpleNamespace(
+            handled=True,
+            action=fallback.get("action", "reply"),
+            answer=fallback.get("answer", ""),
+            variable_updates={},
+            clear_variables=[],
+            observations=fallback.get("observations", []),
+            selected_subagent="llm_fallback",
+            tool_calls_used=fallback.get("tool_calls_used", 0),
+            notes="llm fallback generated decision"
+        )
+
+        composer_output = self.compose_customer_answer(
+            assistant_config=assistant_config,
+            user_message=user_message,
+            variables_before=state_before,
+            variables_after=state_after,
+            subagent_result=fallback_result,
+            selected_subagent="llm_fallback",
+            observations=fallback.get("observations", []),
+            debug=bool(conversation.get("debug", False))
+        )
+
+        final_answer = composer_output.get("answer", "") or fallback.get("answer", "")
 
         trace["selected_subagent"] = "llm_fallback"
         trace["observations"] = fallback.get("observations", [])
         trace["llm_decision"] = fallback.get("decision", {})
-        trace["state_after"] = variables
-        trace["final_answer"] = fallback.get("answer", "")
+        trace["response_composer"] = self.public_composer_trace(composer_output)
+        trace["state_after"] = state_after
+        trace["final_answer"] = final_answer
 
         return {
-            "answer": fallback.get("answer", ""),
+            "answer": final_answer,
             "variables": variables,
             "action": fallback.get("action", "reply"),
             "tool_calls_used": fallback.get("tool_calls_used", 0),
             "trace": trace
         }
+
+    def compose_customer_answer(
+        self,
+        *,
+        assistant_config: Dict[str, Any],
+        user_message: str,
+        variables_before: Dict[str, Any],
+        variables_after: Dict[str, Any],
+        subagent_result: Any,
+        selected_subagent: str,
+        observations: List[Dict[str, Any]],
+        debug: bool
+    ) -> Dict[str, Any]:
+        return self.response_composer.compose(
+            assistant_config=assistant_config,
+            user_message=user_message,
+            variables_before=copy.deepcopy(variables_before),
+            variables_after=copy.deepcopy(variables_after),
+            subagent_result=subagent_result,
+            selected_subagent=selected_subagent,
+            observations=copy.deepcopy(observations),
+            llm_client=None,
+            debug=debug
+        )
+
+    @staticmethod
+    def public_composer_trace(composer_output: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(composer_output, dict):
+            return {}
+
+        output = {
+            "used": composer_output.get("used_composer"),
+            "reason": composer_output.get("reason")
+        }
+
+        if composer_output.get("composer_packet") is not None:
+            output["packet"] = composer_output.get("composer_packet")
+
+        return output
+
+    @staticmethod
+    def attach_conversation_metadata(
+        variables: Dict[str, Any],
+        conversation: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        variables = copy.deepcopy(variables)
+
+        for key in ["conversation_id", "user_id", "channel"]:
+            value = conversation.get(key)
+
+            if value and not variables.get(key):
+                variables[key] = value
+
+        return variables
 
     @staticmethod
     def merge_subagent_result(variables: Dict[str, Any], result: Any) -> Dict[str, Any]:
@@ -163,7 +277,7 @@ class AgenticBrain:
     def ordered_subagents(self, assistant_config: Dict[str, Any]) -> List[Any]:
         configured_order = (
             assistant_config.get("subagent_order")
-            or ["handoff", "location", "booking", "lookup", "troubleshooting"]
+            or ["handoff", "location", "lookup", "booking", "troubleshooting"]
         )
 
         by_name = {
@@ -271,6 +385,7 @@ class AgenticBrain:
 
             observations.append({
                 "source": "llm_fallback",
+                "subagent": "llm_fallback",
                 "tool_name": tool_name,
                 "operation": operation,
                 "arguments": arguments,
@@ -372,6 +487,8 @@ Rules:
 - If a tool observation says branch_found=false, do not invent or choose a branch.
 - If a tool observation says slots_found=false, do not invent slots.
 - Do not suggest checking appointment slots too early unless the user directly asks to book.
+- The final customer-facing wording may be rewritten later by the response composer.
+- Focus on correct reasoning, state, action, and tool usage.
 
 Assistant goal:
 {assistant_config.get("assistant_goal", "")}
@@ -397,7 +514,7 @@ Available tools:
 Return valid JSON only:
 {{
   "action": "reply" | "ask_user" | "call_tool",
-  "answer": "customer-facing answer",
+  "answer": "short draft answer only; final wording will be handled by response composer",
   "tool_name": "tool name when calling tool",
   "operation": "operation name when calling tool",
   "arguments": {{}},
