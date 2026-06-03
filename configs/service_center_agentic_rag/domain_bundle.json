@@ -23,6 +23,64 @@
       "When waiting for slot selection, do not call tools again unless the user provides a new date or asks to change the day.",
       "When the user selects a time in Arabic words like عشرة الصبح, treat it as a slot selection if a matching available slot exists."
     ],
+    "response_composer": {
+      "enabled": true,
+      "model": "gpt-4o-mini",
+      "temperature": 0.45,
+      "system_prompt": "You are the final response writer for a car service center assistant. Use only the structured packet provided by the backend. Write one natural customer-facing reply in the same language/dialect as the user, usually Egyptian Arabic. Think about the current state, variables, tool results, and original subagent draft, then decide the best next response. Do not mention JSON, tools, variables, subagents, internal state, or system logic. Do not invent branches, appointment slots, dates, booking IDs, booking confirmations, prices, or unavailable reasons. If a required piece of information is missing, ask one clear natural question for it. If branch is already known, do not ask for branch again. If date is already known, do not ask for date again. If a tool returned branches or slots, present them naturally. If create_booking returned ok=true, confirm the booking and include the returned booking details. If create_booking did not return ok=true, do not say the booking is confirmed.",
+      "style_rules": [
+        "Use natural, flexible wording instead of repeating fixed templates.",
+        "Reply in the user's language and dialect.",
+        "Keep normal replies concise.",
+        "For booking confirmation, include the important details clearly.",
+        "Ask only one next question when information is missing.",
+        "Sound helpful and human, not scripted."
+      ],
+      "safety_rules": [
+        "Use only branches from variables or tool results.",
+        "Use only slots from tool results.",
+        "Use only booking IDs from create_booking tool results.",
+        "Never confirm booking unless create_booking returned ok=true.",
+        "Never ask for branch if selected_branch or location_branch exists.",
+        "Never ask for date if date_text exists.",
+        "Never ask for phone if customer_profile.phone exists.",
+        "Never ask for full name if customer_profile.full_name exists.",
+        "Never ask for plate number if customer_profile.plate_number exists.",
+        "If selected_branch exists and date_text is missing, ask only for the day/date.",
+        "If date_text exists and selected_branch exists, do not ask for date or branch again.",
+        "If tool result has slots_found=true, present only those returned slots.",
+        "If tool result has slots_found=false, say no slots are available for that date and ask if they want another day."
+      ],
+      "allowed_variable_paths": [
+        "customer_profile",
+        "booking",
+        "troubleshooting",
+        "location",
+        "user_area",
+        "selected_branch",
+        "nearest_branch",
+        "location_branch",
+        "date_text",
+        "appointment_date",
+        "appointment_time",
+        "service_needed",
+        "available_slots",
+        "available_slots_text",
+        "available_branches",
+        "available_branches_text",
+        "slots_found",
+        "booking_status",
+        "visit_id",
+        "customer_confirmed_booking"
+      ],
+      "allowed_observation_keys": [
+        "subagent",
+        "operation",
+        "arguments",
+        "result"
+      ],
+      "include_assistant_config_keys": []
+    },
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
       "max_tool_calls": "محتاج أتأكد من البيانات الأول. ممكن تعيد طلبك بشكل أوضح؟",
@@ -147,7 +205,7 @@
           "human",
           "agent"
         ],
-        "answer_template": "تمام، هحوّلك لحد من الفريق يساعدك.",
+        "answer_template": "HANDOFF_REQUESTED",
         "variable_updates": {
           "handoff_requested": true
         },
@@ -240,14 +298,14 @@
           "appointment"
         ],
         "templates": {
-          "ask_location_for_nearest_branch": "تمام، ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
-          "branch_found": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
-          "branch_found_no_visit_offer": "أقرب فرع مناسب ليك هو فرع {{result.branch}}.",
-          "branch_found_after_diagnostics": "أقرب فرع مناسب ليك هو فرع {{result.branch}}. وبالنسبة للصوت، الأفضل يتكشف عليه في قسم الفرامل عشان نطمن على التيل والطنابير.",
-          "branch_found_direct_booking": "أقرب فرع مناسب ليك هو فرع {{result.branch}}. تحب الحجز في يوم إيه؟",
-          "branch_not_found": "مش لاقي فرع مطابق لمنطقتك بشكل مؤكد. الفروع المتاحة:\n{{result.branches_text}}\nتحب تختار أنهي فرع؟",
-          "tool_error": "حصلت مشكلة وأنا بحدد أقرب فرع. ممكن تجرب تاني؟",
-          "fallback": "تمام، ممكن توضحلي منطقتك أكتر؟"
+          "ask_location_for_nearest_branch": "LOCATION_NEEDED_FOR_NEAREST_BRANCH",
+          "branch_found": "NEAREST_BRANCH_FOUND",
+          "branch_found_no_visit_offer": "NEAREST_BRANCH_FOUND",
+          "branch_found_after_diagnostics": "NEAREST_BRANCH_FOUND_AFTER_DIAGNOSTICS",
+          "branch_found_direct_booking": "NEAREST_BRANCH_FOUND_DIRECT_BOOKING",
+          "branch_not_found": "BRANCH_NOT_FOUND",
+          "tool_error": "LOCATION_TOOL_ERROR",
+          "fallback": "LOCATION_FALLBACK"
         }
       },
       "lookup": {
@@ -278,8 +336,8 @@
             "tool_name": "service_center_sheet",
             "operation": "list_branches",
             "arguments": {},
-            "success_template": "الفروع المتاحة:\n{{result.branches_text}}",
-            "error_template": "مش قادر أجيب الفروع حاليًا. ممكن تجرب تاني؟"
+            "success_template": "BRANCH_LIST_RESULT",
+            "error_template": "BRANCH_LIST_ERROR"
           }
         ]
       },
@@ -290,6 +348,20 @@
         "pending_booking_path": "booking.pending",
         "available_slots_path": "available_slots",
         "date_text_path": "date_text",
+        "availability_request_terms": [
+          "مواعيد",
+          "المواعيد",
+          "معاد",
+          "ميعاد",
+          "موعد",
+          "المتاح",
+          "المتاحه",
+          "المتاحة",
+          "متاح",
+          "slots",
+          "available",
+          "availability"
+        ],
         "variable_scope": {
           "include": [
             "booking",
@@ -303,7 +375,10 @@
             "appointment_time",
             "service_needed",
             "customer_profile",
-            "customer_confirmed_booking"
+            "customer_confirmed_booking",
+            "conversation_id",
+            "user_id",
+            "channel"
           ]
         },
         "stages": {
@@ -355,15 +430,15 @@
           "variables.customer_profile.plate_number"
         ],
         "field_labels": {
-          "variables.selected_branch": "الفرع",
-          "variables.date_text": "اليوم أو التاريخ",
-          "variables.booking.pending.branch": "الفرع",
-          "variables.booking.pending.date_text": "اليوم أو التاريخ",
-          "variables.booking.pending.time": "الوقت",
-          "variables.booking.pending.section": "نوع الخدمة",
-          "variables.customer_profile.full_name": "اسمك",
-          "variables.customer_profile.phone": "رقم الموبايل",
-          "variables.customer_profile.plate_number": "رقم اللوحة"
+          "variables.selected_branch": "branch",
+          "variables.date_text": "date",
+          "variables.booking.pending.branch": "branch",
+          "variables.booking.pending.date_text": "date",
+          "variables.booking.pending.time": "time",
+          "variables.booking.pending.section": "service section",
+          "variables.customer_profile.full_name": "full name",
+          "variables.customer_profile.phone": "phone",
+          "variables.customer_profile.plate_number": "plate number"
         },
         "date_direct_terms": [
           "بكرة",
@@ -556,20 +631,21 @@
         ],
         "slots_found_result_path": "slots_found",
         "templates": {
-          "missing_fields": "تمام، باقيلي {{missing_fields}} عشان أأكد الحجز.",
-          "missing_date": "تمام، تحب أراجعلك المواعيد في يوم إيه؟",
-          "missing_full_name": "تمام، ممكن تقولي اسمك بالكامل عشان أأكد الحجز؟",
-          "missing_plate_number": "تمام يا {{variables.customer_profile.full_name}}، محتاج رقم اللوحة عشان أأكد الحجز.",
-          "missing_name_and_plate": "تمام، باقيلي اسمك ورقم اللوحة عشان أأكد الحجز.",
-          "slots_found": "المواعيد المتاحة:\n{{result.available_slots_text}}\nتحب أنهي معاد؟",
-          "choose_slot_again": "تحب تختار أنهي معاد من المواعيد اللي فوق؟",
-          "no_slots": "مش لاقي مواعيد متاحة في اليوم ده. تحب أراجعلك يوم تاني؟",
-          "tool_error": "حصلت مشكلة وأنا براجع المواعيد. ممكن تجرب تاني؟",
-          "confirm_slot": "تمام، أقدر أأكدلك الحجز في فرع {{pending.branch}} يوم {{pending.date_text}} الساعة {{pending.time}} لقسم {{pending.section}}. أأكد المعاد ده؟",
-          "repeat_confirmation": "محتاج تأكيدك على نفس المعاد قبل ما أكمل الحجز.",
-          "slot_rejected": "تمام، مش هأكد الحجز. تحب تختار معاد تاني؟",
-          "booking_confirmed": "تم تأكيد الحجز يا {{variables.customer_profile.full_name}} ✅\nالفرع: {{result.branch}}\nالقسم: {{result.section}}\nاليوم: {{result.date_text}}\nالساعة: {{result.time}}\nرقم اللوحة: {{result.booking.plate_number}}\nرقم الزيارة: {{result.visit_id}}",
-          "booking_failed": "مش قادر أأكد الحجز حاليًا. السبب: {{result.error}}"
+          "missing_fields": "BOOKING_MISSING_FIELDS",
+          "missing_branch": "BOOKING_MISSING_BRANCH",
+          "missing_date": "BOOKING_MISSING_DATE",
+          "missing_full_name": "BOOKING_MISSING_FULL_NAME",
+          "missing_plate_number": "BOOKING_MISSING_PLATE_NUMBER",
+          "missing_name_and_plate": "BOOKING_MISSING_NAME_AND_PLATE",
+          "slots_found": "BOOKING_SLOTS_FOUND",
+          "choose_slot_again": "BOOKING_SLOT_SELECTION_UNCLEAR",
+          "no_slots": "BOOKING_NO_SLOTS",
+          "tool_error": "BOOKING_TOOL_ERROR",
+          "confirm_slot": "BOOKING_CONFIRM_SELECTED_SLOT",
+          "repeat_confirmation": "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
+          "slot_rejected": "BOOKING_SLOT_REJECTED",
+          "booking_confirmed": "BOOKING_CONFIRMED",
+          "booking_failed": "BOOKING_FAILED"
         }
       },
       "troubleshooting": {
@@ -629,13 +705,13 @@
             ],
             "diagnostic_steps": [
               {
-                "answer_template": "غالبًا الصوت مرتبط بتيل الفرامل أو احتكاك في الطنابير، وده بيبان أكتر وقت الدوس على الفرامل أو التهدئة. الصوت بيظهر وقت الدوس على الفرامل بس، ولا كمان وإنت ماشي من غير فرامل؟ وهل في رعشة أو ضعف في الفرامل؟"
+                "answer_template": "TROUBLESHOOTING_BRAKES_STEP_1"
               },
               {
-                "answer_template": "ده غالبًا ممكن يكون من تآكل تيل الفرامل أو سخونية/احتكاك في الطنابير، خصوصًا لو الصوت بيظهر مع التهدئة أو بعد سرعة. الأفضل تعمل كشف على قسم الفرامل عشان نطمن على التيل والطنابير ونستبعد أي مشكلة أمان. تحب أحددلك أقرب فرع مناسب؟"
+                "answer_template": "TROUBLESHOOTING_BRAKES_STEP_2"
               },
               {
-                "answer_template": "تمام، ممكن تقولي منطقتك أو ساكن فين عشان أحددلك أقرب فرع مناسب؟",
+                "answer_template": "TROUBLESHOOTING_ASK_LOCATION_AFTER_VISIT_CONSENT",
                 "complete": true
               }
             ]
@@ -808,6 +884,15 @@
       "location": {
         "type": "object"
       },
+      "conversation_id": {
+        "type": "string"
+      },
+      "user_id": {
+        "type": "string"
+      },
+      "channel": {
+        "type": "string"
+      },
       "user_area": {
         "type": "string"
       },
@@ -859,18 +944,17 @@
     }
   },
   "domain_playbook": {
-    "version": "1.7",
+    "version": "2.1",
     "notes": [
-      "Lookup runs before booking so branch-list questions are not hijacked by booking availability triggers.",
-      "Booking trigger phrases no longer include broad words like المتاحة or متاح alone.",
-      "Location subagent handles nearest-branch requests without a location by asking for the user's area.",
-      "Troubleshooting gives expected likely causes in the first two assistant messages.",
-      "Location is only requested after the customer agrees to find the nearest branch.",
-      "Booking preserves date context when the user later asks for available slots again.",
-      "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
-      "Arabic plates like ب ج ١٧٩ are captured as customer_profile.plate_number.",
-      "Arabic time words like عشرة الصبح are handled by booking_subagent.py.",
-      "create_booking appends a row to the Bookings sheet only after explicit confirmation and required booking details."
+      "Final customer-facing wording is handled by ResponseComposer LLM.",
+      "Subagent templates are now intent labels/fallback hints, not scripted final replies.",
+      "BookingSubagent controls deterministic safety only: state, extraction, slot selection, required fields, and tool calls.",
+      "BookingSubagent does not contain customer-facing hardcoded Arabic replies.",
+      "ResponseComposer must use variables and tool observations to create natural answers.",
+      "Booking trigger phrases do not include broad words like المتاحة or متاح alone.",
+      "availability_request_terms can include broad availability terms only inside slot_selection context when branch and date already exist.",
+      "Lookup runs before booking so branch-list questions are not hijacked by booking.",
+      "create_booking appends a row only after explicit confirmation and required details."
     ]
   }
 }
