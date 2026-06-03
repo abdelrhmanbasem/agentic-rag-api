@@ -14,11 +14,7 @@ class TroubleshootingSubagent:
     name = "troubleshooting"
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
-        return (
-            assistant_config
-            .get("subagents", {})
-            .get(self.name, {})
-        )
+        return assistant_config.get("subagents", {}).get(self.name, {})
 
     def run(self, context: SubagentContext) -> SubagentResult:
         config = self.get_config(context.assistant_config)
@@ -29,22 +25,23 @@ class TroubleshootingSubagent:
         variables = dict(context.variables or {})
         normalization = context.assistant_config.get("normalization", {})
 
-        direct_booking_phrases = config.get("direct_booking_phrases", [])
-
-        if matches_any(context.user_message, direct_booking_phrases, normalization):
+        if matches_any(
+            context.user_message,
+            config.get("direct_booking_phrases", []),
+            normalization
+        ):
             return SubagentResult(handled=False)
 
-        skip_if_paths_exist = config.get("skip_if_paths_exist", [])
-
-        for path in skip_if_paths_exist:
+        for path in config.get("skip_if_paths_exist", []):
             current = deep_get(variables, path)
+
             if current not in [None, "", [], {}]:
                 return SubagentResult(handled=False)
 
-        active_state = config.get("active_state", "active")
         state_path = config.get("state_path", "troubleshooting.stage")
         count_path = config.get("count_path", "troubleshooting.diagnostic_count")
         selected_rule_path = config.get("selected_rule_path", "troubleshooting.selected_rule_id")
+        active_state = config.get("active_state", "active")
 
         current_state = deep_get(variables, state_path, "")
         current_count = deep_get(variables, count_path, 0)
@@ -73,6 +70,9 @@ class TroubleshootingSubagent:
             return SubagentResult(handled=False)
 
         for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+
             phrases = rule.get("phrases", [])
 
             if not isinstance(phrases, list):
@@ -107,8 +107,14 @@ class TroubleshootingSubagent:
         if not isinstance(steps, list) or not steps:
             updates = dict(rule.get("variable_updates", {}))
 
+            patched = apply_variable_patch(
+                variables=variables,
+                updates=updates,
+                clear=rule.get("clear_variables", [])
+            )
+
             answer = render_template(rule.get("answer_template", ""), {
-                "variables": apply_variable_patch(variables, updates, []),
+                "variables": patched,
                 "message": context.user_message
             })
 
@@ -131,8 +137,14 @@ class TroubleshootingSubagent:
         updates[count_path] = 1
         updates[selected_rule_path] = rule.get("id", "")
 
+        patched = apply_variable_patch(
+            variables=variables,
+            updates=updates,
+            clear=rule.get("clear_variables", [])
+        )
+
         answer = render_template(step.get("answer_template", ""), {
-            "variables": apply_variable_patch(variables, updates, []),
+            "variables": patched,
             "message": context.user_message
         })
 
@@ -183,8 +195,14 @@ class TroubleshootingSubagent:
         else:
             updates[state_path] = config.get("active_state", "active")
 
+        patched = apply_variable_patch(
+            variables=variables,
+            updates=updates,
+            clear=step.get("clear_variables", [])
+        )
+
         answer = render_template(step.get("answer_template", ""), {
-            "variables": apply_variable_patch(variables, updates, []),
+            "variables": patched,
             "message": context.user_message
         })
 
