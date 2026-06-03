@@ -112,6 +112,19 @@ class BookingSubagent:
             )
 
         if stage == "slot_selection":
+            if self.is_new_availability_request(
+                context=context,
+                config=config,
+                variables=variables
+            ):
+                return self.handle_booking_request(
+                    context=context,
+                    config=config,
+                    variables=variables,
+                    observations=observations,
+                    tool_calls_used=tool_calls_used
+                )
+
             answer = render_template(
                 config.get("templates", {}).get(
                     "choose_slot_again",
@@ -432,8 +445,8 @@ class BookingSubagent:
             "message": context.user_message
         })
 
-        arguments["conversation_id"] = getattr(context, "conversation_id", "") or deep_get(variables, "conversation_id", "")
-        arguments["user_id"] = getattr(context, "user_id", "") or deep_get(variables, "user_id", "")
+        arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
+        arguments["user_id"] = deep_get(variables, "user_id", "")
 
         tool_result = context.tool_runner.call(
             tool_name=tool_name,
@@ -671,6 +684,41 @@ class BookingSubagent:
         stage = deep_get(variables, stage_path, "")
 
         return stage in config.get("active_request_stages", [])
+
+    def is_new_availability_request(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any]
+    ) -> bool:
+        normalization = context.assistant_config.get("normalization", {})
+        message = normalize_text(context.user_message, normalization)
+
+        availability_terms = [
+            "مواعيد",
+            "المواعيد",
+            "المتاح",
+            "المتاحه",
+            "المتاحه",
+            "المتاحة",
+            "متاح",
+            "slots",
+            "available",
+            "availability"
+        ]
+
+        has_availability_intent = any(
+            normalize_text(term, normalization) in message
+            for term in availability_terms
+        )
+
+        if not has_availability_intent:
+            return False
+
+        branch = deep_get(variables, "selected_branch") or deep_get(variables, "location_branch")
+        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+
+        return bool(branch and date_text)
 
     def render_missing_question(self, config: Dict[str, Any], variables: Dict[str, Any], missing: List[str]) -> str:
         templates = config.get("templates", {})
