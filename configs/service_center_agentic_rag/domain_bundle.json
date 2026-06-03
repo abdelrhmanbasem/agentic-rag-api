@@ -15,7 +15,9 @@
       "Never confirm booking unless create_booking returns ok=true.",
       "During an active booking flow, ask only for the next missing required information.",
       "If the customer directly asks to book or asks for appointments, the booking flow can start immediately.",
-      "If the user says yes after being asked whether to check slots, ask for the day/date first unless date_text already exists."
+      "If the user says yes after being asked whether to check slots, ask for the day/date first unless date_text already exists.",
+      "When waiting for slot selection, do not call tools again unless the user provides a new date or asks to change the day.",
+      "When the user selects a time in Arabic words like عشرة الصبح, treat it as a slot selection if a matching available slot exists."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -116,7 +118,10 @@
               "plate_number",
               "customer_confirmed_booking"
             ],
-            "optional": []
+            "optional": [
+              "conversation_id",
+              "user_id"
+            ]
           }
         }
       }
@@ -342,11 +347,13 @@
           "أكيد",
           "اوكي",
           "أوكي",
+          "أكد",
+          "اكد",
+          "confirm",
+          "confirmed",
           "yes",
           "ok",
-          "okay",
-          "confirm",
-          "confirmed"
+          "okay"
         ],
         "rejection_phrases": [
           "لا",
@@ -398,10 +405,12 @@
             "صباحا": "am",
             "صباحًا": "am",
             "الصبح": "am",
+            "صباح": "am",
             "مساء": "pm",
             "مساءا": "pm",
             "مساءً": "pm",
             "بالليل": "pm",
+            "الليل": "pm",
             "الظهر": "pm"
           }
         },
@@ -479,6 +488,7 @@
         "templates": {
           "missing_fields": "تمام، محتاج {{missing_fields}} عشان أكمل.",
           "slots_found": "المواعيد المتاحة:\n{{result.available_slots_text}}\nتحب أنهي معاد؟",
+          "choose_slot_again": "تحب تختار أنهي معاد من المواعيد اللي فوق؟",
           "no_slots": "مش لاقي مواعيد متاحة في اليوم ده. تحب أراجعلك يوم تاني؟",
           "tool_error": "حصلت مشكلة وأنا براجع المواعيد. ممكن تجرب تاني؟",
           "confirm_slot": "تمام، أقدر أأكدلك الحجز في فرع {{pending.branch}} يوم {{pending.date_text}} الساعة {{pending.time}} لقسم {{pending.section}}. أأكد المعاد ده؟",
@@ -794,14 +804,16 @@
     }
   },
   "domain_playbook": {
-    "version": "1.3",
+    "version": "1.4",
     "notes": [
       "This file is GitHub-managed. Do not edit assistant/schema config on the server with nano for production.",
       "Location resolution is handled by the location subagent.",
       "For symptom flows, the first two assistant turns are diagnostic/discovery before suggesting visit slots unless the customer directly asks to book.",
       "If the user says yes after being asked whether to check slots, booking.stage=awaiting_date ensures the bot asks for the day/date first.",
+      "When booking.stage=slot_selection, unresolved user messages should ask the user to choose a slot again instead of calling tools repeatedly.",
       "Booking customer detail extraction only runs while booking.stage is awaiting_customer_details.",
       "The booking flow uses customer_profile.plate_number instead of plate_digits so Arabic plates like ب د ج ١٥٦ can be captured.",
+      "Arabic time words like عشرة الصبح are handled by booking_subagent.py.",
       "Lookup requests should not populate customer_profile.full_name.",
       "create_booking appends a row to the Bookings sheet only after explicit confirmation and required booking details.",
       "Update this file, commit, push, deploy, then clear test conversation memory before retesting."
