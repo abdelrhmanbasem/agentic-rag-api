@@ -4,7 +4,6 @@ from app.subagents.base import (
     SubagentContext,
     SubagentResult,
     apply_tool_update_rules,
-    build_object_from_mapping,
     compact_dict,
     matches_any,
     render_template
@@ -15,10 +14,7 @@ class LookupSubagent:
     name = "lookup"
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
-        return (
-            assistant_config.get("subagents", {})
-            .get(self.name, {})
-        )
+        return assistant_config.get("subagents", {}).get(self.name, {})
 
     def run(self, context: SubagentContext) -> SubagentResult:
         config = self.get_config(context.assistant_config)
@@ -27,50 +23,65 @@ class LookupSubagent:
             return SubagentResult(handled=False)
 
         normalization = context.assistant_config.get("normalization", {})
+        variables = dict(context.variables or {})
+        observations: List[Dict[str, Any]] = []
+
         rules = config.get("rules", [])
 
         if not isinstance(rules, list):
             return SubagentResult(handled=False)
 
         for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+
             phrases = rule.get("phrases", [])
+
+            if not isinstance(phrases, list):
+                continue
 
             if not matches_any(context.user_message, phrases, normalization):
                 continue
 
             tool_name = rule.get("tool_name") or config.get("default_tool_name", "")
             operation = rule.get("operation", "")
-            arguments = build_object_from_mapping(rule.get("arguments", {}), {
-                "variables": context.variables,
-                "message": context.user_message
-            })
+            arguments = rule.get("arguments", {})
 
-            result = context.tool_runner.call(
+            if not isinstance(arguments, dict):
+                arguments = {}
+
+            tool_result = context.tool_runner.call(
                 tool_name=tool_name,
                 operation=operation,
                 arguments=compact_dict(arguments)
             )
 
-            observations: List[Dict[str, Any]] = [{
+            observations.append({
                 "subagent": self.name,
                 "operation": operation,
                 "arguments": arguments,
-                "result": result
-            }]
+                "result": tool_result
+            })
 
             updated_variables = apply_tool_update_rules(
                 assistant_config=context.assistant_config,
-                variables=context.variables,
+                variables=variables,
                 operation=operation,
                 arguments=arguments,
-                result=result
+                result=tool_result
             )
 
-            template_key = "success_template" if result.get("ok") is True else "error_template"
-            answer = render_template(rule.get(template_key, ""), {
+            template = (
+                rule.get("success_template", "")
+                if tool_result.get("ok") is not False
+                else rule.get("error_template", "")
+            )
+
+            answer = render_template(template, {
                 "variables": updated_variables,
-                "result": result,
-                "arguments": arguments
+                "result": tool_result,
+                "arguments": arguments,
+                "message": context.user_message
             })
 
             return SubagentResult(
