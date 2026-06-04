@@ -5,7 +5,27 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from app.subagents.base import compact_dict
+
+
+class TransientToolHTTPError(Exception):
+    def __init__(self, status_code: int, raw: str = "") -> None:
+        self.status_code = status_code
+        self.raw = raw
+        super().__init__(f"Transient HTTP {status_code}")
+
+
+class TransientToolNetworkError(Exception):
+    def __init__(self, reason: Any) -> None:
+        self.reason = reason
+        super().__init__(str(reason))
 
 
 class ToolRunner:
@@ -16,6 +36,7 @@ class ToolRunner:
     - execute only configured tools and operations
     - validate required inputs before execution
     - normalize success/error results
+    - retry transient HTTP/network failures
     - preserve source-of-truth tool metadata
     - never convert malformed/non-JSON tool responses into fake success
 
@@ -286,37 +307,59 @@ class ToolRunner:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                status_code = int(getattr(response, "status", 200) or 200)
-                content_type = response.headers.get("Content-Type", "")
-                raw = response.read().decode("utf-8", errors="replace")
+            status_code, content_type, raw = self.execute_http_request(
+                request=request,
+                timeout=timeout
+            )
 
-                parsed, parse_error = self.parse_json_response(raw)
+            parsed, parse_error = self.parse_json_response(raw)
 
-                if parse_error:
-                    return self.error_result(
-                        error_type="non_json_tool_response",
-                        error="Tool returned a non-JSON response",
-                        tool_name=tool_name,
-                        operation=operation,
-                        arguments=arguments,
-                        extra={
-                            "http_status": status_code,
-                            "content_type": content_type,
-                            "raw_text_preview": self.preview_raw(raw)
-                        }
-                    )
-
-                normalized = self.normalize_success_result(
-                    parsed=parsed,
+            if parse_error:
+                return self.error_result(
+                    error_type="non_json_tool_response",
+                    error="Tool returned a non-JSON response",
                     tool_name=tool_name,
                     operation=operation,
                     arguments=arguments,
-                    http_status=status_code,
-                    content_type=content_type
+                    extra={
+                        "http_status": status_code,
+                        "content_type": content_type,
+                        "raw_text_preview": self.preview_raw(raw)
+                    }
                 )
 
-                return normalized
+            normalized = self.normalize_success_result(
+                parsed=parsed,
+                tool_name=tool_name,
+                operation=operation,
+                arguments=arguments,
+                http_status=status_code,
+                content_type=content_type
+            )
+
+            return normalized
+
+        except TransientToolHTTPError as exc:
+            return self.error_result(
+                error_type="http_error_after_retries",
+                error=f"HTTP {exc.status_code} after retries",
+                tool_name=tool_name,
+                operation=operation,
+                arguments=arguments,
+                extra={
+                    "http_status": exc.status_code,
+                    "raw_text_preview": self.preview_raw(exc.raw)
+                }
+            )
+
+        except TransientToolNetworkError as exc:
+            return self.error_result(
+                error_type="network_error_after_retries",
+                error=str(exc.reason),
+                tool_name=tool_name,
+                operation=operation,
+                arguments=arguments
+            )
 
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
@@ -350,6 +393,67 @@ class ToolRunner:
                 operation=operation,
                 arguments=arguments
             )
+
+    @retry(
+        retry=retry_if_exception_type((TransientToolHTTPError, TransientToolNetworkError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True
+    )
+    def execute_http_request(
+        self,
+        request: urllib.request.Request,
+        timeout: int
+    ) -> Tuple[int, str, str]:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                status_code = int(getattr(response, "status", 200) or 200)
+                content_type = response.headers.get("Content-Type", "")
+                raw = response.read().decode("utf-8", errors="replace")
+
+                return status_code, content_type, raw
+
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            status_code = int(getattr(exc, "code", 0) or 0)
+
+            if self.is_retryable_http_status(status_code):
+                raise TransientToolHTTPError(status_code=status_code, raw=raw) from exc
+
+            raise
+
+        except urllib.error.URLError as exc:
+            if self.is_retryable_url_error(exc):
+                raise TransientToolNetworkError(reason=exc.reason) from exc
+
+            raise
+
+    @staticmethod
+    def is_retryable_http_status(status_code: int) -> bool:
+        return status_code in {408, 425, 429, 500, 502, 503, 504}
+
+    @staticmethod
+    def is_retryable_url_error(exc: urllib.error.URLError) -> bool:
+        reason = getattr(exc, "reason", "")
+
+        if reason is None:
+            return True
+
+        reason_text = str(reason).lower()
+
+        retryable_markers = [
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "temporary failure",
+            "connection reset",
+            "connection aborted",
+            "connection refused",
+            "remote end closed",
+            "service unavailable"
+        ]
+
+        return any(marker in reason_text for marker in retryable_markers)
 
     @staticmethod
     def parse_json_response(raw: str) -> Tuple[Any, bool]:
