@@ -184,7 +184,10 @@ class LocationSubagent:
             )
 
             if user_area:
-                updates[config.get("user_area_path", "user_area")] = user_area
+                updates[config.get("user_area_path", "user_area")] = self.cleanup_location(
+                    user_area,
+                    config
+                )
 
             if coordinates:
                 updates["user_coordinates.latitude"] = coordinates.get("latitude")
@@ -318,13 +321,77 @@ class LocationSubagent:
     def cleanup_location(location: str, config: Dict[str, Any]) -> str:
         value = str(location or "").strip()
 
-        stop_phrases = config.get("location_cleanup_phrases", [])
+        if not value:
+            return ""
 
-        if isinstance(stop_phrases, list):
-            for phrase in stop_phrases:
-                value = value.replace(str(phrase), " ")
+        cleanup_phrases = config.get("location_cleanup_phrases", [])
+        stop_phrases = config.get("location_stop_phrases", [])
+        max_words = config.get("location_max_words", 4)
 
-        value = re.sub(r"[،,.!?؟]+", " ", value)
+        if not isinstance(cleanup_phrases, list):
+            cleanup_phrases = []
+
+        if not isinstance(stop_phrases, list):
+            stop_phrases = []
+
+        try:
+            max_words_int = int(max_words)
+        except Exception:
+            max_words_int = 4
+
+        if max_words_int <= 0:
+            max_words_int = 4
+
+        # Remove leading location trigger phrases, e.g. "انا ساكن في العبور" -> "العبور".
+        for phrase in cleanup_phrases:
+            phrase_text = str(phrase or "").strip()
+
+            if not phrase_text:
+                continue
+
+            value = re.sub(
+                re.escape(phrase_text),
+                " ",
+                value,
+                flags=re.IGNORECASE
+            )
+
+        # Cut everything after configured stop phrases.
+        # Example:
+        # "العبور قولي اقرب فرع ليا وايه المواعيد المتاحه يوم الاحد الجاي"
+        # -> "العبور"
+        earliest_stop_index = None
+
+        for phrase in stop_phrases:
+            phrase_text = str(phrase or "").strip()
+
+            if not phrase_text:
+                continue
+
+            match = re.search(
+                re.escape(phrase_text),
+                value,
+                flags=re.IGNORECASE
+            )
+
+            if not match:
+                continue
+
+            if earliest_stop_index is None or match.start() < earliest_stop_index:
+                earliest_stop_index = match.start()
+
+        if earliest_stop_index is not None:
+            value = value[:earliest_stop_index]
+
+        # Remove obvious separators/noise after stop trimming.
+        value = re.sub(r"[،,.!?؟:;؛]+", " ", value)
         value = re.sub(r"\s+", " ", value).strip()
+
+        # If the extracted value is still too long, keep only the first few words.
+        # The exact limit is controlled by domain_bundle.json through location_max_words.
+        words = value.split()
+
+        if len(words) > max_words_int:
+            value = " ".join(words[:max_words_int]).strip()
 
         return value
