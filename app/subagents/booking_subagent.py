@@ -31,6 +31,7 @@ class BookingSubagent:
     - resolve canonical branch from stored branch state or configured branch aliases
     - resolve normalized appointment dates from natural date phrases
     - resolve slot selection
+    - collect customer details without asking repeatedly for already captured fields
     - call list_available_slots
     - call create_booking only after explicit confirmation and required details
     - protect against duplicate booking
@@ -155,15 +156,14 @@ class BookingSubagent:
         extracted: Dict[str, Any] = {}
 
         if should_extract_customer_details:
-            extracted = extract_by_patterns(
+            extracted = self.extract_customer_details(
                 message=context.user_message,
-                patterns=config.get("extraction_patterns", []),
+                config=config,
                 variables=variables,
-                normalization_config=normalization
+                normalization=normalization
             )
 
             if extracted:
-                extracted = self.post_process_extracted_fields(extracted, normalization)
                 variables = apply_variable_patch(variables, extracted, [])
 
         stage = deep_get(variables, stage_path, stage)
@@ -318,6 +318,16 @@ class BookingSubagent:
                 notes="pending booking rejected"
             )
 
+        details = self.extract_customer_details(
+            message=context.user_message,
+            config=config,
+            variables=variables,
+            normalization=normalization
+        )
+
+        if details:
+            variables = apply_variable_patch(variables, details, [])
+
         if not matches_any(context.user_message, confirmation_phrases, normalization):
             answer = render_template(
                 config.get("templates", {}).get(
@@ -347,10 +357,7 @@ class BookingSubagent:
             []
         )
 
-        missing = get_missing_paths(
-            config.get("required_before_create", []),
-            variables
-        )
+        missing = self.get_missing_required_create_fields(config, variables)
 
         if missing:
             answer = self.render_missing_question(config, variables, missing, context.user_message)
@@ -369,7 +376,7 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes="confirmed slot but missing customer details"
+                notes=f"confirmed slot but missing customer details: {missing}"
             )
 
         return self.call_create_booking(
@@ -388,6 +395,8 @@ class BookingSubagent:
         observations: List[Dict[str, Any]],
         tool_calls_used: int
     ) -> SubagentResult:
+        normalization = context.assistant_config.get("normalization", {})
+
         if self.is_booking_completed(variables):
             answer = render_template(
                 config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
@@ -408,10 +417,17 @@ class BookingSubagent:
                 notes="booking already confirmed; customer details ignored"
             )
 
-        missing = get_missing_paths(
-            config.get("required_before_create", []),
-            variables
+        details = self.extract_customer_details(
+            message=context.user_message,
+            config=config,
+            variables=variables,
+            normalization=normalization
         )
+
+        if details:
+            variables = apply_variable_patch(variables, details, [])
+
+        missing = self.get_missing_required_create_fields(config, variables)
 
         if missing:
             answer = self.render_missing_question(config, variables, missing, context.user_message)
@@ -424,7 +440,7 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes="still missing customer details"
+                notes=f"still missing customer details after extraction: {missing}"
             )
 
         return self.call_create_booking(
@@ -461,8 +477,12 @@ class BookingSubagent:
         if pending.get("date_text") in [None, ""]:
             pending["date_text"] = deep_get(variables, config.get("date_text_path", "date_text"), "")
 
+        if pending.get("branch") in [None, ""]:
+            pending["branch"] = self.get_known_branch(variables)
+
         updates = dict(config.get("on_slot_selected_updates", {}))
         updates[pending_booking_path] = pending
+        updates["booking.pending_summary"] = self.build_pending_summary(pending)
 
         patched = apply_variable_patch(variables, updates, [])
 
@@ -483,7 +503,7 @@ class BookingSubagent:
             variable_updates=patched,
             clear_variables=config.get("on_slot_selected_clear", []),
             selected_subagent=self.name,
-            notes="slot selected"
+            notes="slot selected; pending booking prepared"
         )
 
     def handle_booking_request(
@@ -550,7 +570,7 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes="booking request missing required inputs"
+                notes=f"booking request missing required inputs: {missing}"
             )
 
         operations = config.get("operations", {})
@@ -1483,6 +1503,28 @@ class BookingSubagent:
 
         return bool(branch and (appointment_date or date_text))
 
+    def get_missing_required_create_fields(
+        self,
+        config: Dict[str, Any],
+        variables: Dict[str, Any]
+    ) -> List[str]:
+        missing = get_missing_paths(
+            config.get("required_before_create", []),
+            variables
+        )
+
+        return [path for path in missing if not self.is_ignorable_create_missing(path, variables)]
+
+    def is_ignorable_create_missing(self, path: str, variables: Dict[str, Any]) -> bool:
+        if path == "variables.customer_profile.phone":
+            return bool(
+                deep_get(variables, "customer_profile.phone")
+                or deep_get(variables, "phone")
+                or deep_get(variables, "customer_phone")
+            )
+
+        return False
+
     def render_missing_question(
         self,
         config: Dict[str, Any],
@@ -1501,6 +1543,8 @@ class BookingSubagent:
             template_key = "missing_branch"
         elif missing_set == {"variables.customer_profile.full_name"}:
             template_key = "missing_full_name"
+        elif missing_set == {"variables.customer_profile.phone"}:
+            template_key = "missing_phone"
         elif missing_set == {"variables.customer_profile.plate_number"}:
             template_key = "missing_plate_number"
         elif missing_set == {
@@ -1508,6 +1552,22 @@ class BookingSubagent:
             "variables.customer_profile.plate_number"
         }:
             template_key = "missing_name_and_plate"
+        elif missing_set == {
+            "variables.customer_profile.full_name",
+            "variables.customer_profile.phone"
+        }:
+            template_key = "missing_name_and_phone"
+        elif missing_set == {
+            "variables.customer_profile.phone",
+            "variables.customer_profile.plate_number"
+        }:
+            template_key = "missing_phone_and_plate"
+        elif missing_set == {
+            "variables.customer_profile.full_name",
+            "variables.customer_profile.phone",
+            "variables.customer_profile.plate_number"
+        }:
+            template_key = "missing_name_phone_and_plate"
 
         labels = config.get("field_labels", {})
         missing_text = format_missing_fields(missing, labels)
@@ -1521,6 +1581,208 @@ class BookingSubagent:
                 "message": message
             }
         )
+
+    def extract_customer_details(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        extracted = extract_by_patterns(
+            message=message,
+            patterns=config.get("extraction_patterns", []),
+            variables=variables,
+            normalization_config=normalization
+        )
+
+        if not isinstance(extracted, dict):
+            extracted = {}
+
+        fallback = self.extract_customer_details_fallback(
+            message=message,
+            variables=variables,
+            normalization=normalization
+        )
+
+        for key, value in fallback.items():
+            if key not in extracted or extracted.get(key) in [None, "", [], {}]:
+                extracted[key] = value
+
+        if not extracted:
+            return {}
+
+        return self.post_process_extracted_fields(extracted, normalization)
+
+    def extract_customer_details_fallback(
+        self,
+        message: str,
+        variables: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        output: Dict[str, Any] = {}
+        text = str(message or "").strip()
+        normalized = normalize_text(text, normalization)
+
+        if not deep_get(variables, "customer_profile.phone"):
+            phone_match = re.search(r"(01\d{9}|\+?20\d{10,11})", normalize_digits(text, normalization.get("digit_map", {})))
+            if phone_match:
+                output["customer_profile.phone"] = phone_match.group(1).strip()
+
+        if not deep_get(variables, "customer_profile.full_name"):
+            name_match = re.search(
+                r"(?:اسمي|انا اسمي|الإسم|الاسم|name is|my name is)\s+([^،,.!?؟\n]+)",
+                text,
+                flags=re.IGNORECASE
+            )
+
+            if name_match:
+                name = self.clean_name(name_match.group(1))
+                if self.looks_like_person_name(name):
+                    output["customer_profile.full_name"] = name
+
+        if not deep_get(variables, "customer_profile.plate_number"):
+            plate = self.extract_plate_fallback(text, normalization)
+
+            if plate:
+                output["customer_profile.plate_number"] = plate
+
+        if not output:
+            return output
+
+        # If a message starts with "اسمي", never let the generic plate/name patterns overwrite the name.
+        if "اسمي" in normalized or "انا اسمي" in normalized:
+            if output.get("customer_profile.full_name"):
+                output.pop("customer_profile.plate_number", None)
+
+        return output
+
+    def clean_name(self, value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(
+            r"\s+(?:ورقم|و رقم|وتليفوني|و تليفوني|وتلفوني|و تلفوني|وموبايل|و موبايل|ولوحتي|و لوحتي|واللوحة|و اللوحة).*$",
+            "",
+            text
+        ).strip()
+        return text
+
+    def looks_like_person_name(self, value: str) -> bool:
+        text = str(value or "").strip()
+
+        if not text:
+            return False
+
+        if re.search(r"\d", text):
+            return False
+
+        blocked = [
+            "العربية",
+            "العربيه",
+            "اللوحة",
+            "اللوحه",
+            "رقم",
+            "موبايل",
+            "تليفون",
+            "تلفون",
+            "فرع",
+            "ميعاد",
+            "معاد",
+            "موعد",
+            "الحجز"
+        ]
+
+        normalized = text.replace("ة", "ه").replace("ى", "ي")
+
+        if any(word in normalized for word in blocked):
+            return False
+
+        parts = [part for part in text.split() if part.strip()]
+
+        return 1 <= len(parts) <= 6 and all(len(part) >= 2 for part in parts)
+
+    def extract_plate_fallback(self, text: str, normalization: Dict[str, Any]) -> str:
+        digit_map = normalization.get("digit_map", {})
+        normalized_digits = normalize_digits(str(text or ""), digit_map)
+
+        labelled = re.search(
+            r"(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\D*([^\n،,.!?؟]{2,30})",
+            normalized_digits,
+            flags=re.IGNORECASE
+        )
+
+        if labelled:
+            candidate = labelled.group(1).strip()
+            candidate = self.normalize_plate_number(candidate, normalization)
+            if self.looks_like_plate_number(candidate):
+                return candidate
+
+        standalone = self.normalize_plate_number(normalized_digits, normalization)
+
+        if self.looks_like_plate_number(standalone):
+            return standalone
+
+        return ""
+
+    def looks_like_plate_number(self, value: str) -> bool:
+        text = str(value or "").strip()
+
+        if not text:
+            return False
+
+        has_digit = bool(re.search(r"\d", text))
+        has_letter = bool(re.search(r"[A-Za-z\u0600-\u06FF]", text))
+
+        if not has_digit:
+            return False
+
+        if len(text) < 2 or len(text) > 30:
+            return False
+
+        blocked = [
+            "اسمي",
+            "الاسم",
+            "الإسم",
+            "موبايل",
+            "تليفون",
+            "تلفون",
+            "موعد",
+            "ميعاد",
+            "معاد",
+            "فرع"
+        ]
+
+        normalized = text.replace("ة", "ه").replace("ى", "ي")
+
+        if any(word in normalized for word in blocked):
+            return False
+
+        return has_digit or has_letter
+
+    def build_pending_summary(self, pending: Dict[str, Any]) -> str:
+        if not isinstance(pending, dict):
+            return ""
+
+        parts = []
+
+        branch = str(pending.get("branch") or "").strip()
+        date = str(pending.get("date_text") or pending.get("date") or "").strip()
+        time = str(pending.get("time") or "").strip()
+        section = str(pending.get("section") or "").strip()
+
+        if branch:
+            parts.append(f"branch={branch}")
+
+        if date:
+            parts.append(f"date={date}")
+
+        if time:
+            parts.append(f"time={time}")
+
+        if section:
+            parts.append(f"section={section}")
+
+        return " | ".join(parts)
 
     def filter_slots_by_service_needed(
         self,
@@ -1640,18 +1902,36 @@ class BookingSubagent:
         plate = output.get("customer_profile.plate_number")
 
         if plate:
-            output["customer_profile.plate_number"] = self.normalize_plate_number(
+            plate_text = self.normalize_plate_number(
                 str(plate),
                 normalization
             )
 
+            if self.looks_like_plate_number(plate_text):
+                output["customer_profile.plate_number"] = plate_text
+            else:
+                output.pop("customer_profile.plate_number", None)
+
         full_name = output.get("customer_profile.full_name")
 
         if full_name:
-            output["customer_profile.full_name"] = re.sub(
-                r"\s+",
-                " ",
-                str(full_name).strip()
+            clean = self.clean_name(str(full_name))
+
+            if self.looks_like_person_name(clean):
+                output["customer_profile.full_name"] = re.sub(
+                    r"\s+",
+                    " ",
+                    clean.strip()
+                )
+            else:
+                output.pop("customer_profile.full_name", None)
+
+        phone = output.get("customer_profile.phone")
+
+        if phone:
+            output["customer_profile.phone"] = normalize_digits(
+                str(phone).strip(),
+                normalization.get("digit_map", {})
             )
 
         return output
