@@ -7,9 +7,9 @@
     "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
-    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists.",
-    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection.",
+    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal.",
     "branch_aliases": {
       "Nasr City": [
         "Nasr City",
@@ -336,7 +336,17 @@
       "For BOOKING_CONFIRM_SELECTED_SLOT, use wording like اخترتلك المعاد ده, then ask the customer to confirm. Do not say ده ملخص الحجز and do not say هاحجز لك.",
       "If booking.pending exists and customer_confirmed_booking is false, allowed wording includes: اخترتلك المعاد ده، تأكدلي أكمل الحجز؟، ممكن تأكدلي الحجز؟",
       "If booking.pending exists and customer_confirmed_booking is false, banned wording includes: هاحجز لك، حجزتلك، تم الحجز، اتأكد الحجز، حجزك اتعمل، موعدك اتسجل، ده ملخص الحجز.",
-      "When asking for missing customer details after slot selection, keep the selected appointment wording short and ask only for missing fields."
+      "When asking for missing customer details after slot selection, keep the selected appointment wording short and ask only for missing fields.",
+      "When available slots are returned, list the slots exactly and ask the customer to choose a time. Never choose, recommend, prefer, suggest, or preselect any slot for the customer.",
+      "Do not say اخترتلك المعاد, المعاد المختار, تأكد الحجز, or ممكن تأكد الحجز immediately after listing slots. These phrases are only allowed after the customer explicitly selects a slot.",
+      "If the customer only says خد وقتك or any waiting phrase after a pending availability lookup, continue or complete the availability lookup; do not select the first slot for them.",
+      "After BOOKING_SLOTS_FOUND, the correct next question is تحب تختار أنهي معاد؟ or أنهي معاد يناسبك؟",
+      "Quality guard must not rewrite a slots list into a selected slot, recommended slot, or confirmation request.",
+      "Quality guard must not introduce a time that the customer did not choose.",
+      "If available_slots exist and the customer says a time-only phrase like الساعة 12, الساعه 12, معاد 12, or اتناشر, treat it as slot selection from available_slots, not as date_text.",
+      "Do not store phrases like الساعة 12 هيكون مناسب as date_text. Time-only phrases during slot_selection are appointment_time/slot selections.",
+      "Never ask for branch after a slot selection if available_branches/user_area can infer the branch or any known branch path exists.",
+      "If user_area contains extra words after the area, use location_stop_phrases to keep only the area before nearest-branch lookup."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -586,6 +596,10 @@
         ],
         "location_patterns": [
           {
+            "regex": "(?:انا ساكن في|أنا ساكن في|ساكن في|مكاني في|مكانى في|انا في|أنا في|في منطقة|منطقة|location is|i am in|i live in)\\s+(.+?)(?=\\s+(?:قولي|قوللي|قولى|وايه|و ايه|وإيه|ايه|إيه|المواعيد|مواعيد|يوم|بكرة|بكره|الأحد|الاحد|الاثنين|الاتنين|الثلاثاء|التلات|الأربعاء|الاربعاء|الخميس|الجمعة|الجمعه|السبت)\\b|[،,.!?؟]|$)",
+            "group": 1
+          },
+          {
             "regex": "(?:اقرب فرع ليا|أقرب فرع ليا|اعرف اقرب فرع ليا|اعرف أقرب فرع ليا|عايز اعرف اقرب فرع ليا|عايز أعرف أقرب فرع ليا).*?(?:انا ساكن في|أنا ساكن في|ساكن في|في)\\s+([^\\n،,.!?؟]+)",
             "group": 1
           },
@@ -633,7 +647,60 @@
           "branch_not_found": "LOCATION_BRANCH_NOT_FOUND",
           "tool_error": "LOCATION_TOOL_ERROR",
           "fallback": "LOCATION_FALLBACK"
-        }
+        },
+        "location_stop_phrases": [
+          "قولي",
+          "قوللي",
+          "قولى",
+          "قول لي",
+          "قولى لي",
+          "اقرب فرع",
+          "أقرب فرع",
+          "فرع ليا",
+          "فرع لي",
+          "وايه",
+          "و ايه",
+          "وإيه",
+          "و إيه",
+          "ايه",
+          "إيه",
+          "المواعيد",
+          "مواعيد",
+          "المتاحه",
+          "المتاحة",
+          "المتاح",
+          "يوم",
+          "بكرة",
+          "بكره",
+          "بعد بكرة",
+          "بعد بكره",
+          "النهارده",
+          "انهارده",
+          "الأحد",
+          "الاحد",
+          "الاثنين",
+          "الاتنين",
+          "الثلاثاء",
+          "التلات",
+          "الأربعاء",
+          "الاربعاء",
+          "الخميس",
+          "الجمعة",
+          "الجمعه",
+          "السبت",
+          "عايز",
+          "عاوز",
+          "حابب",
+          "محتاج",
+          "لو",
+          "فيه",
+          "في",
+          "available",
+          "availability",
+          "slots",
+          "appointment"
+        ],
+        "location_max_words": 4
       },
       "booking": {
         "id": "booking",
@@ -688,7 +755,10 @@
             "visit_id",
             "conversation_id",
             "user_id",
-            "channel"
+            "channel",
+            "available_branches",
+            "available_branches_text",
+            "user_area"
           ]
         },
         "stages": {
@@ -867,8 +937,9 @@
             "group": 1
           },
           {
-            "regex": "(?:يوم|ميعاد|معاد|تاريخ|مواعيد|المواعيد المتاحة|المواعيد المتاحه|المتاحه|المتاحة)\\s+([^\\n،,.!?؟]+)",
-            "group": 1
+            "regex": "(?:يوم|تاريخ|مواعيد يوم|المواعيد يوم|المواعيد المتاحة يوم|المواعيد المتاحه يوم|المتاحه يوم|المتاحة يوم)\\s+([^\\n،,.!?؟]+)",
+            "group": 1,
+            "note": "Do not include معاد/ميعاد alone here, because phrases like معاد الساعة 12 are slot selections, not date phrases."
           }
         ],
         "confirmation_phrases": [
@@ -1544,6 +1615,19 @@
         "selected_branch",
         "location_branch",
         "nearest_branch"
+      ],
+      "never_preselect_slot_for_customer": true,
+      "never_recommend_first_slot": true,
+      "slots_found_must_ask_customer_to_choose": true,
+      "banned_slot_preselection_phrases": [
+        "اخترتلك المعاد 10:00",
+        "اخترتلك المعاد ١٠",
+        "اخترتلك أول معاد",
+        "اخترتلك اول معاد",
+        "ممكن أساعدك في تأكيد المعاد 10:00",
+        "ممكن اساعدك في تأكيد المعاد 10:00",
+        "تأكد الحجز؟",
+        "تحب تأكد الحجز؟"
       ]
     },
     "private_structured_analysis_policy": {
@@ -1593,7 +1677,8 @@
           "include branch/date/time/section when available",
           "ask for explicit confirmation",
           "do not imply the booking has been created",
-          "reuse selected_branch/location_branch/nearest_branch and never ask for branch again when present"
+          "reuse selected_branch/location_branch/nearest_branch and never ask for branch again when present",
+          "only use this template after the customer explicitly selected a slot"
         ],
         "safe_examples": [
           "تمام، اخترتلك المعاد ده: فرع مدينة نصر، الأحد الجاي الساعة 10:00، قسم الفرامل والسلامة. تأكدلي أكمل الحجز؟",
@@ -1605,6 +1690,10 @@
           "حجزتلك المعاد",
           "ده ملخص الحجز قبل التأكيد",
           "إيه الفرع اللي تفضله؟"
+        ],
+        "must_not_do": [
+          "do not use this template immediately after showing slots",
+          "do not select the first available slot automatically"
         ]
       },
       "BOOKING_AWAITING_EXPLICIT_CONFIRMATION": {
@@ -1641,6 +1730,33 @@
           "do not list all branches",
           "do not ask إيه الفرع اللي تفضله when selected_branch/nearest_branch/location_branch exists"
         ]
+      },
+      "BOOKING_SLOTS_FOUND": {
+        "state": "slots_list_waiting_for_customer_choice",
+        "must_do": [
+          "list only returned available slots",
+          "include the known branch/date if available",
+          "ask the customer which slot they prefer",
+          "do not choose any slot for the customer",
+          "do not ask for booking confirmation yet"
+        ],
+        "must_not_do": [
+          "do not say اخترتلك",
+          "do not recommend 10:00 or the first slot",
+          "do not ask تحب تأكد الحجز",
+          "do not imply a slot has been selected",
+          "do not ask for branch again when known"
+        ],
+        "safe_examples": [
+          "أقرب فرع ليك هو فرع مدينة نصر. المواعيد المتاحة يوم الأحد الجاي: 1) 10:00 صباحًا 2) 12:00 ظهرًا 3) 2:00 ظهرًا. تحب تختار أنهي معاد؟",
+          "المواعيد المتاحة في فرع مدينة نصر يوم الأحد الجاي هي: 10:00 صباحًا، 12:00 ظهرًا، و2:00 ظهرًا. أنهي معاد يناسبك؟"
+        ],
+        "banned_examples": [
+          "اخترتلك المعاد 10:00 صباحًا. تحب تأكد الحجز؟",
+          "ممكن أساعدك في تأكيد المعاد 10:00؟",
+          "أفضل معاد هو 10:00",
+          "هنمشي على أول معاد"
+        ]
       }
     },
     "slot_context_carryover_policy": {
@@ -1667,7 +1783,31 @@
         "10:00",
         "الساعة عشرة",
         "العشرة",
-        "معاد 10"
+        "معاد 10",
+        "معاد الساعة 12",
+        "معاد الساعه 12",
+        "الساعة 12",
+        "الساعه 12",
+        "12",
+        "12:00",
+        "اتناشر",
+        "اتناشر الظهر",
+        "12 الظهر",
+        "معاد 12",
+        "ميعاد 12",
+        "الساعة اتناشر",
+        "الساعه اتناشر",
+        "معاد الساعة 10",
+        "معاد الساعه 10",
+        "الساعة 10",
+        "الساعه 10",
+        "10",
+        "العشرة الصبح",
+        "2",
+        "2:00",
+        "الساعة 2",
+        "الساعه 2",
+        "اتنين الظهر"
       ],
       "must_do": [
         "Treat slot/time/ordinal selections as referring to the current available_slots list.",
@@ -1679,8 +1819,14 @@
         "Do not ask which branch the customer prefers when a known branch exists.",
         "Do not list all branches after a slot selection if available_slots already exist.",
         "Do not treat a customer area as a branch unless find_nearest_branch returned a branch.",
-        "Do not say ده ملخص الحجز."
-      ]
+        "Do not say ده ملخص الحجز.",
+        "Do not choose, suggest, recommend, or preselect the first slot for the customer.",
+        "Do not say اخترتلك المعاد 10:00 unless the customer explicitly selected 10:00.",
+        "Do not move from slots_found directly to confirmation unless the customer selected a slot."
+      ],
+      "never_preselect_slots": true,
+      "slot_list_response_rule": "When showing available_slots, list only the returned slots and ask the customer to choose one. Never choose, suggest, recommend, or preselect a slot.",
+      "slot_selection_response_rule": "Only say اخترتلك المعاد ده after the customer explicitly selected a slot by time or ordinal."
     }
   },
   "schema": {
@@ -1784,7 +1930,7 @@
     }
   },
   "domain_playbook": {
-    "version": "4.2-expert-context-carryover-slot-selection-wording",
+    "version": "4.3-expert-location-cleanup-no-slot-preselection",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer; quality guard validates; memory writer runs best-effort after response.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -1820,7 +1966,11 @@
       "For BOOKING_CONFIRM_SELECTED_SLOT, final wording should say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز.",
       "If a branch exists in selected_branch, location_branch, nearest_branch, or booking.pending.branch, the assistant must not ask which branch the customer prefers.",
       "After nearest-branch plus slots flows, later time or ordinal selections refer to the returned slots for that nearest branch.",
-      "Slot selection should preserve slot.branch; if missing, fallback to selected_branch, location_branch, then nearest_branch."
+      "Slot selection should preserve slot.branch; if missing, fallback to selected_branch, location_branch, then nearest_branch.",
+      "LocationSubagent must use location_stop_phrases and location_max_words to clean user_area before find_nearest_branch.",
+      "Booking responses must never recommend or preselect a slot after listing availability.",
+      "Time-only messages during slot_selection, such as الساعة 12, are slot selections, not date_text.",
+      "BOOKING_SLOTS_FOUND must ask the customer to choose a slot and must not ask for confirmation."
     ]
   }
 }
