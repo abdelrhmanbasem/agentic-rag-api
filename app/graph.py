@@ -79,10 +79,14 @@ def llm(model: str, temperature: float = 0.0, max_tokens: Optional[int] = None):
 class SubagentAnalysis(BaseModel):
     understanding: str = ""
     user_goal: str = ""
+    detected_intents: List[str] = Field(default_factory=list)
     facts_to_use: List[str] = Field(default_factory=list)
     facts_missing: List[str] = Field(default_factory=list)
+    variable_updates_to_consider: Dict[str, Any] = Field(default_factory=dict)
     next_best_step: str = ""
     response_constraints: List[str] = Field(default_factory=list)
+    should_chain: bool = False
+    recommended_chained_subagent_id: str = ""
     confidence: float = 0.7
 
 
@@ -199,6 +203,9 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     defaults = {
         "user_intent": "",
         "selected_subagent_id": "",
+        "chained_subagent_id": "",
+        "chained_subagent_reason": "",
+        "detected_intents": [],
         "conversation_stage": "",
         "workflow_stage": "",
         "customer_emotion": "",
@@ -251,6 +258,15 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
     if not isinstance(out.get("extracted_deletions"), list):
         out["extracted_deletions"] = []
+
+    if not isinstance(out.get("detected_intents"), list):
+        out["detected_intents"] = []
+
+    out["selected_subagent_id"] = unify_subagent_id(out.get("selected_subagent_id", ""))
+    out["chained_subagent_id"] = unify_subagent_id(out.get("chained_subagent_id", ""))
+
+    if out.get("chained_subagent_id") == out.get("selected_subagent_id"):
+        out["chained_subagent_id"] = ""
 
     if not isinstance(out.get("response_brief"), dict):
         out["response_brief"] = defaults["response_brief"]
@@ -579,6 +595,9 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "user_intent": manifest.get("user_intent", ""),
         "selected_subagent_id": manifest.get("selected_subagent_id", ""),
+        "chained_subagent_id": manifest.get("chained_subagent_id", ""),
+        "chained_subagent_reason": manifest.get("chained_subagent_reason", ""),
+        "detected_intents": manifest.get("detected_intents", [])[:8],
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
         "customer_emotion": manifest.get("customer_emotion", ""),
@@ -617,10 +636,14 @@ def compact_analysis(analysis: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "understanding": clip_text(analysis.get("understanding", ""), 450),
         "user_goal": clip_text(analysis.get("user_goal", ""), 280),
+        "detected_intents": analysis.get("detected_intents", [])[:8],
         "facts_to_use": analysis.get("facts_to_use", [])[:8],
         "facts_missing": analysis.get("facts_missing", [])[:8],
+        "variable_updates_to_consider": analysis.get("variable_updates_to_consider", {}),
         "next_best_step": clip_text(analysis.get("next_best_step", ""), 360),
         "response_constraints": analysis.get("response_constraints", [])[:10],
+        "should_chain": analysis.get("should_chain", False),
+        "recommended_chained_subagent_id": analysis.get("recommended_chained_subagent_id", ""),
         "confidence": analysis.get("confidence", 0.0),
     }
 
@@ -699,6 +722,9 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "user_intent": manifest.get("user_intent", ""),
         "selected_subagent_id": manifest.get("selected_subagent_id", ""),
+        "chained_subagent_id": manifest.get("chained_subagent_id", ""),
+        "chained_subagent_reason": manifest.get("chained_subagent_reason", ""),
+        "detected_intents": manifest.get("detected_intents", []),
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
         "needs_knowledge": manifest.get("needs_knowledge", False),
@@ -968,7 +994,9 @@ def unified_manifest_node(state: AgentState):
             "You decide the next move. Do not write the final user-facing reply. "
             "All domain behavior must come from the assistant manifest card, current variables, conversation summary, tool results, schema, and latest user message. "
             "Do not use hidden business rules. "
-            "Decide selected_subagent_id, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, memory/knowledge needs, risk, conversation stage, extracted_updates, and response_brief. "
+            "Decide selected_subagent_id, optional chained_subagent_id, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, memory/knowledge needs, risk, conversation stage, detected_intents, extracted_updates, and response_brief. "
+            "If the latest message clearly contains two sequential needs where the second depends on the first, set selected_subagent_id to the first executor and chained_subagent_id to the second executor. "
+            "Example: nearest branch plus availability in one message should run location first and booking second. Only chain when the second executor genuinely needs variables from the first executor. "
             "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally. "
             "If a tool can be called safely with current variables/message, set needs_tool=true and provide requested_tool_name plus tool_request_payload. "
             "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, variables, conversation context, or retrieved knowledge. "
@@ -976,7 +1004,7 @@ def unified_manifest_node(state: AgentState):
             "For symptom/problem reports, do not force a booking immediately; response_brief should guide a diagnostic response first unless user asks to book. "
             "The manifest may extract soft user info only. Source-of-truth operational state must come from tool/subagent execution, not manifest extracted_updates. "
             "The JSON object must use exactly these top-level keys: "
-            "user_intent, selected_subagent_id, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
+            "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
             "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
             "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, "
             "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
@@ -1030,12 +1058,17 @@ def unified_manifest_node(state: AgentState):
         }
 
         selected_id = manifest.get("selected_subagent_id", "")
-        selected_missing = bool(known_subagent_ids) and selected_id not in known_subagent_ids
+        chained_id = manifest.get("chained_subagent_id", "")
+        selected_missing = bool(known_subagent_ids) and selected_id and selected_id not in known_subagent_ids
+        chained_missing = bool(known_subagent_ids) and chained_id and chained_id not in known_subagent_ids
 
         should_retry_full = (
             bool(manifest.get("needs_full_manifest"))
             or manifest_confidence(manifest) < 0.65
             or selected_missing
+            or chained_missing
+            or (manifest.get("needs_tool") and not manifest.get("requested_tool_name") and not manifest.get("selected_subagent_id"))
+            or (manifest.get("chained_subagent_id") and not manifest.get("selected_subagent_id"))
         )
 
         if should_retry_full:
@@ -1048,6 +1081,9 @@ def unified_manifest_node(state: AgentState):
         manifest = {
             "user_intent": "unknown",
             "selected_subagent_id": subagents[0].get("id", "general"),
+            "chained_subagent_id": "",
+            "chained_subagent_reason": "",
+            "detected_intents": [],
             "conversation_stage": "unknown",
             "workflow_stage": "unknown",
             "customer_emotion": "unknown",
@@ -1384,25 +1420,13 @@ def get_tool_operation_required_fields(
 
         break
 
-    forced_required = {
-        "list_available_slots": ["branch", "date"],
-        "check_availability": ["branch", "date", "time"],
-        "create_booking": [
-            "branch",
-            "date",
-            "date_text",
-            "time",
-            "section",
-            "full_name",
-            "phone",
-            "plate_number",
-            "customer_confirmed_booking",
-        ],
-    }
+    overrides = agent_config.get("tool_required_field_overrides") or {}
 
-    for field in forced_required.get(str(operation), []):
-        if field not in required:
-            required.append(field)
+    if isinstance(overrides, dict):
+        for field in overrides.get(str(operation), []) or []:
+            field_text = str(field or "").strip()
+            if field_text and field_text not in required:
+                required.append(field_text)
 
     return required
 
@@ -1553,18 +1577,24 @@ def tool_execution_node(state: AgentState):
     variables = state.get("variables", {}) or {}
     schema = state.get("schema", {}) or {}
     message = last_user_message(state)
+
     selected_id = unify_subagent_id(manifest.get("selected_subagent_id", ""))
+    chained_id = unify_subagent_id(manifest.get("chained_subagent_id", ""))
 
     tool_runner = ToolRunner(agent_config)
-    observations: List[Dict[str, Any]] = []
+    all_observations: List[Dict[str, Any]] = []
 
-    executor = SUBAGENT_EXECUTORS.get(selected_id)
+    def run_executor(exec_id: str, vars_in: Dict[str, Any]):
+        exec_id = unify_subagent_id(exec_id)
+        executor = SUBAGENT_EXECUTORS.get(exec_id)
 
-    if executor:
+        if not executor:
+            return None, vars_in, []
+
         scoped_vars = get_subagent_variable_scope(
             assistant_config=agent_config,
-            subagent_name=getattr(executor, "name", selected_id),
-            variables=variables,
+            subagent_name=getattr(executor, "name", exec_id),
+            variables=vars_in,
         )
 
         context = SubagentContext(
@@ -1574,44 +1604,83 @@ def tool_execution_node(state: AgentState):
             user_message=message,
             history=subagent_history_from_messages(state.get("messages", [])),
             tool_runner=tool_runner,
-            observations=observations,
+            observations=[],
             max_tool_calls=int(agent_config.get("max_tool_calls", 4)),
         )
 
         try:
             result = executor.run(context)
         except Exception as exc:
-            return {
-                "tool_result": {
-                    "ok": False,
-                    "subagent": selected_id,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "action": "reply",
+            return None, vars_in, [{
+                "subagent": exec_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            }]
+
+        if not result.handled:
+            return None, vars_in, result.observations or []
+
+        updated_variables = apply_subagent_variable_patch(
+            vars_in,
+            result.variable_updates or {},
+            result.clear_variables or [],
+        )
+
+        return result, updated_variables, result.observations or []
+
+    primary_result = None
+
+    if selected_id:
+        primary_result, variables, obs1 = run_executor(selected_id, variables)
+        all_observations.extend(obs1)
+
+    if primary_result and primary_result.handled:
+        if chained_id and chained_id != selected_id:
+            chained_result, variables, obs2 = run_executor(chained_id, variables)
+            all_observations.extend(obs2)
+
+            if chained_result and chained_result.handled:
+                return {
+                    "variables": variables,
+                    "tool_result": {
+                        "ok": subagent_observations_are_ok(all_observations),
+                        "subagent": f"{selected_id}+{chained_id}",
+                        "primary_subagent": selected_id,
+                        "chained_subagent": chained_id,
+                        "chained": True,
+                        "action": chained_result.action,
+                        "answer_draft": chained_result.answer,
+                        "primary_answer_draft": primary_result.answer,
+                        "notes": "Executed chained subagents sequentially.",
+                        "primary_notes": primary_result.notes,
+                        "chained_notes": chained_result.notes,
+                        "observations": all_observations,
+                        "tool_calls_used": (primary_result.tool_calls_used or 0) + (chained_result.tool_calls_used or 0),
+                    },
                 }
+
+        return {
+            "variables": variables,
+            "tool_result": {
+                "ok": subagent_observations_are_ok(all_observations),
+                "subagent": selected_id,
+                "action": primary_result.action,
+                "answer_draft": primary_result.answer,
+                "notes": primary_result.notes,
+                "observations": all_observations,
+                "tool_calls_used": primary_result.tool_calls_used,
+            },
+        }
+
+    if selected_id and all_observations:
+        return {
+            "tool_result": {
+                "ok": False,
+                "subagent": selected_id,
+                "error": "Subagent execution failed or was not handled.",
+                "action": "reply",
+                "observations": all_observations,
             }
-
-        if result.handled:
-            updated_variables = apply_subagent_variable_patch(
-                variables,
-                result.variable_updates or {},
-                result.clear_variables or [],
-            )
-
-            subagent_observations = result.observations or []
-            subagent_ok = subagent_observations_are_ok(subagent_observations)
-
-            return {
-                "variables": updated_variables,
-                "tool_result": {
-                    "ok": subagent_ok,
-                    "subagent": selected_id,
-                    "action": result.action,
-                    "answer_draft": result.answer,
-                    "notes": result.notes,
-                    "observations": subagent_observations,
-                    "tool_calls_used": result.tool_calls_used,
-                },
-            }
+        }
 
     tool_name = manifest.get("requested_tool_name", "")
     payload = normalize_tool_payload(manifest.get("tool_request_payload", {}) or {})
@@ -1676,11 +1745,11 @@ def tool_execution_node(state: AgentState):
             "ok": False,
             "error": "Tool requested but no executable subagent/tool operation was available.",
             "selected_subagent_id": selected_id,
+            "chained_subagent_id": chained_id,
             "requested_tool_name": tool_name,
             "tool_request_payload": payload,
         }
     }
-
 
 def decide_after_tool(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
@@ -1701,6 +1770,7 @@ def subagent_reasoning_node(state: AgentState):
         (
             "system",
             "You are the selected subagent's private analysis brain inside a configurable multi-tenant assistant engine. "
+            "Reason privately, but return only the structured SubagentAnalysis fields. Do not expose chain-of-thought. "
             "Do not write the final user-facing reply. "
             "Prepare concise guidance for the final response. "
             "Use the manifest response brief as the main direction. "
@@ -1747,10 +1817,14 @@ def subagent_reasoning_node(state: AgentState):
             "subagent_analysis": {
                 "understanding": "Subagent analysis failed.",
                 "user_goal": "",
+                "detected_intents": [],
                 "facts_to_use": [],
                 "facts_missing": [],
+                "variable_updates_to_consider": {},
                 "next_best_step": "Answer carefully and avoid unsupported facts.",
                 "response_constraints": [f"Subagent error: {exc}"],
+                "should_chain": False,
+                "recommended_chained_subagent_id": "",
                 "confidence": 0.4,
             }
         }
@@ -1831,9 +1905,15 @@ def response_node(state: AgentState):
     memories = state.get("memories", "No relevant memories retrieved.")
     tool_result = state.get("tool_result", {}) or {}
 
+    effective_manifest = compact_manifest(manifest)
+    tool_response_brief = tool_result.get("response_brief") if isinstance(tool_result, dict) else None
+
+    if isinstance(tool_response_brief, dict) and tool_response_brief:
+        effective_manifest["response_brief"] = tool_response_brief
+
     response_context = {
         "assistant_context": compact_agent_context(agent_config, subagent),
-        "manifest": compact_manifest(manifest),
+        "manifest": effective_manifest,
         "private_analysis": compact_analysis(analysis),
         "summary": clip_text(state.get("summary", ""), 700),
         "variables": compact_variables(variables, schema),
@@ -1947,25 +2027,33 @@ def create_booking_confirmed(state: AgentState) -> bool:
 
 def enforce_answer_safety(answer: str, state: AgentState) -> str:
     text = str(answer or "").strip()
+    agent_config = state.get("agent_config", {}) or {}
+    safety_config = agent_config.get("answer_safety", {}) or {}
 
-    banned_terms = [
+    banned_terms = safety_config.get("banned_terms", [
         "حبيبي",
         "يا باشا",
         "يا معلم",
         "يا صديقي",
-    ]
+    ])
+
+    if not isinstance(banned_terms, list):
+        banned_terms = []
 
     for term in banned_terms:
-        text = text.replace(term, "").strip()
+        term_text = str(term or "").strip()
+        if term_text:
+            text = text.replace(term_text, "").strip()
 
     text = re.sub(r"\s{2,}", " ", text).strip()
 
+    append_visit_id = safety_config.get("append_visit_id_on_confirmed_booking", True)
     visit_id = extract_visit_id_from_state(state)
-    if create_booking_confirmed(state) and visit_id and visit_id not in text:
+
+    if append_visit_id and create_booking_confirmed(state) and visit_id and visit_id not in text:
         text = f"{text}\nرقم الزيارة: {visit_id}".strip()
 
     return text
-
 
 def quality_guard_node(state: AgentState):
     if not should_run_quality_guard(state):
@@ -2050,6 +2138,35 @@ def quality_guard_node(state: AgentState):
         }
 
 
+
+def memory_writer_node(state: AgentState):
+    """
+    Best-effort post-turn memory writer. It never blocks the user response.
+    """
+    try:
+        from app.memory import decide_and_write_long_term_memories
+        from app.db import get_recent_messages
+
+        recent_messages = get_recent_messages(
+            state.get("conversation_id", ""),
+            limit=6,
+        )
+
+        decide_and_write_long_term_memories(
+            assistant_id=state.get("assistant_id", ""),
+            user_id=state.get("user_id", ""),
+            conversation_id=state.get("conversation_id", ""),
+            summary=state.get("summary", ""),
+            recent_messages=recent_messages,
+            variables=state.get("variables", {}) or {},
+            agent_config=state.get("agent_config", {}) or {},
+        )
+    except Exception:
+        pass
+
+    return {}
+
+
 workflow = StateGraph(AgentState)
 
 workflow.add_node("manifest_node", unified_manifest_node)
@@ -2060,6 +2177,7 @@ workflow.add_node("subagent_reasoning_node", subagent_reasoning_node)
 workflow.add_node("simple_response_node", simple_response_node)
 workflow.add_node("response_node", response_node)
 workflow.add_node("quality_guard_node", quality_guard_node)
+workflow.add_node("memory_writer_node", memory_writer_node)
 
 workflow.set_entry_point("manifest_node")
 
@@ -2109,6 +2227,7 @@ workflow.add_conditional_edges(
 workflow.add_edge("subagent_reasoning_node", "response_node")
 workflow.add_edge("response_node", "quality_guard_node")
 workflow.add_edge("simple_response_node", "quality_guard_node")
-workflow.add_edge("quality_guard_node", END)
+workflow.add_edge("quality_guard_node", "memory_writer_node")
+workflow.add_edge("memory_writer_node", END)
 
 app_graph = workflow.compile()
