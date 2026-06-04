@@ -56,7 +56,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 # LangGraph model roles:
 # - planner/manifest decides intent, subagent, tool need, and next move
-# - subagent produces private guidance only
+# - subagent produces private structured guidance only
 # - response writes the final user-facing answer
 # - quality validates hallucination, tone, and required facts
 MODEL_PLANNER = os.getenv("MODEL_PLANNER", "gpt-4o").strip()
@@ -87,6 +87,25 @@ MEMORY_MIN_SCORE = env_float("MEMORY_MIN_SCORE", 0.35)
 
 KNOWLEDGE_COMPRESS_MAX_CHARS = env_int("KNOWLEDGE_COMPRESS_MAX_CHARS", 1000)
 
+# Expert architecture Batch 5:
+# Character-based chunking gives more predictable approximate token budgets,
+# especially for Arabic and mixed Arabic/English documents.
+CHUNK_CHARS = env_int("CHUNK_CHARS", 2600)
+CHUNK_OVERLAP_CHARS = env_int("CHUNK_OVERLAP_CHARS", 300)
+
+# Safety bounds so bad env values do not create huge/empty chunks.
+if CHUNK_CHARS < 300:
+    CHUNK_CHARS = 300
+
+if CHUNK_CHARS > 12000:
+    CHUNK_CHARS = 12000
+
+if CHUNK_OVERLAP_CHARS < 0:
+    CHUNK_OVERLAP_CHARS = 0
+
+if CHUNK_OVERLAP_CHARS > CHUNK_CHARS // 2:
+    CHUNK_OVERLAP_CHARS = CHUNK_CHARS // 2
+
 MAX_OUTPUT_TOKENS = env_int("MAX_OUTPUT_TOKENS", 750)
 
 # In the expert architecture, quality guard should be enabled by default.
@@ -110,6 +129,18 @@ def validate_runtime_config() -> None:
 
     if not QDRANT_URL:
         missing.append("QDRANT_URL")
+
+    if VECTOR_SIZE <= 0:
+        missing.append("VECTOR_SIZE")
+
+    if CHUNK_CHARS <= 0:
+        missing.append("CHUNK_CHARS")
+
+    if CHUNK_OVERLAP_CHARS < 0:
+        missing.append("CHUNK_OVERLAP_CHARS")
+
+    if CHUNK_OVERLAP_CHARS >= CHUNK_CHARS:
+        raise RuntimeError("CHUNK_OVERLAP_CHARS must be smaller than CHUNK_CHARS.")
 
     if is_production():
         if MOCK_MODE:
@@ -149,7 +180,11 @@ def runtime_config_summary() -> dict:
         "memory_top_k": MEMORY_TOP_K,
         "rag_min_score": RAG_MIN_SCORE,
         "memory_min_score": MEMORY_MIN_SCORE,
+        "knowledge_compress_max_chars": KNOWLEDGE_COMPRESS_MAX_CHARS,
+        "chunk_chars": CHUNK_CHARS,
+        "chunk_overlap_chars": CHUNK_OVERLAP_CHARS,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "estimate_chars_per_token": ESTIMATE_CHARS_PER_TOKEN,
         "has_app_secret": bool(APP_SECRET),
         "has_openai_api_key": bool(OPENAI_API_KEY),
         "has_postgres_password": bool(POSTGRES_PASSWORD)
