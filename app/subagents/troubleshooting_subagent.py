@@ -5,6 +5,7 @@ from app.subagents.base import (
     SubagentResult,
     apply_variable_patch,
     deep_get,
+    get_subagent_config,
     matches_any,
     render_template
 )
@@ -28,7 +29,7 @@ class TroubleshootingSubagent:
     name = "troubleshooting"
 
     def get_config(self, assistant_config: Dict[str, Any]) -> Dict[str, Any]:
-        return assistant_config.get("subagents", {}).get(self.name, {})
+        return get_subagent_config(assistant_config, self.name)
 
     def run(self, context: SubagentContext) -> SubagentResult:
         config = self.get_config(context.assistant_config)
