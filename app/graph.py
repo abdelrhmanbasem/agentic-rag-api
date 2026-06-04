@@ -63,6 +63,7 @@ class AgentState(TypedDict, total=False):
 
     final_answer: str
     quality: Dict[str, Any]
+    memory_writer: Dict[str, Any]
 
 
 def llm(model: str, temperature: float = 0.0, max_tokens: Optional[int] = None):
@@ -2139,32 +2140,84 @@ def quality_guard_node(state: AgentState):
 
 
 
+def compact_graph_messages_for_memory(messages: Sequence[BaseMessage], limit: int = 14) -> List[Dict[str, str]]:
+    """
+    Convert current graph messages into compact role/content dictionaries for memory maintenance.
+    This avoids depending only on DB reads because the current turn may not be saved until after app_graph.invoke().
+    """
+    output: List[Dict[str, str]] = []
+
+    for item in list(messages or [])[-limit:]:
+        role = ""
+        content = ""
+
+        if isinstance(item, HumanMessage):
+            role = "user"
+            content = str(item.content or "")
+        elif isinstance(item, AIMessage):
+            role = "assistant"
+            content = str(item.content or "")
+        elif isinstance(item, SystemMessage):
+            continue
+        elif hasattr(item, "content"):
+            role = str(getattr(item, "type", "") or "message")
+            content = str(getattr(item, "content", "") or "")
+
+        content = content.strip()
+
+        if role and content:
+            output.append({
+                "role": role,
+                "content": clip_text(content, 1600)
+            })
+
+    return output
+
+
 def memory_writer_node(state: AgentState):
     """
-    Best-effort post-turn memory writer. It never blocks the user response.
+    Best-effort post-turn memory maintenance node.
+
+    Expert architecture goal:
+    - run after quality_guard_node
+    - never block or change the user-facing answer
+    - update rolling summary and durable memories conservatively
+    - return only compact operational metadata for debug traces
+    - never expose or store chain-of-thought
     """
     try:
-        from app.memory import decide_and_write_long_term_memories
-        from app.db import get_recent_messages
+        from app.memory import run_memory_maintenance_best_effort
 
-        recent_messages = get_recent_messages(
-            state.get("conversation_id", ""),
-            limit=6,
-        )
-
-        decide_and_write_long_term_memories(
+        result = run_memory_maintenance_best_effort(
             assistant_id=state.get("assistant_id", ""),
             user_id=state.get("user_id", ""),
             conversation_id=state.get("conversation_id", ""),
-            summary=state.get("summary", ""),
-            recent_messages=recent_messages,
             variables=state.get("variables", {}) or {},
             agent_config=state.get("agent_config", {}) or {},
+            recent_messages=compact_graph_messages_for_memory(state.get("messages", []), limit=14),
+            existing_summary=state.get("summary", "") or "",
         )
-    except Exception:
-        pass
 
-    return {}
+        if not isinstance(result, dict):
+            result = {
+                "ok": False,
+                "skipped": True,
+                "reason": "invalid_memory_writer_result",
+            }
+
+        return {
+            "memory_writer": result
+        }
+
+    except Exception as exc:
+        return {
+            "memory_writer": {
+                "ok": False,
+                "skipped": True,
+                "reason": "memory_writer_node_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        }
 
 
 workflow = StateGraph(AgentState)
