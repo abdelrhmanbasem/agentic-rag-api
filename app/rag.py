@@ -26,6 +26,8 @@ from app.config import (
     RAG_MIN_SCORE,
     MEMORY_MIN_SCORE,
     KNOWLEDGE_COMPRESS_MAX_CHARS,
+    CHUNK_CHARS,
+    CHUNK_OVERLAP_CHARS,
 )
 
 
@@ -102,34 +104,200 @@ def clean_words(text):
     )
 
 
-def chunk_text(text, chunk_size=650, overlap=90):
-    text = (text or "").replace("\r\n", "\n").strip()
+def normalize_document_text(text: str) -> str:
+    """
+    Normalize text before chunking.
+
+    Keep paragraph boundaries, but remove noisy repeated whitespace.
+    This works better for Arabic and mixed Arabic/English documents than
+    word-count chunking because character count gives more predictable token size.
+    """
+    value = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if not value:
+        return ""
+
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+
+    return value.strip()
+
+
+def split_long_text_by_chars(text: str, max_chars: int, overlap_chars: int) -> List[str]:
+    """
+    Split a long text block by characters with overlap.
+
+    Prefer ending chunks at natural boundaries near the target size:
+    paragraph break, newline, sentence punctuation, then space.
+    """
+    text = str(text or "").strip()
 
     if not text:
         return []
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    chunks = []
+    if len(text) <= max_chars:
+        return [text]
 
-    for paragraph in paragraphs:
-        words = paragraph.split()
+    max_chars = max(300, int(max_chars or 2600))
+    overlap_chars = max(0, min(int(overlap_chars or 300), max_chars // 2))
 
-        if len(words) <= chunk_size:
-            chunks.append(paragraph)
-            continue
+    chunks: List[str] = []
+    start = 0
+    text_len = len(text)
 
-        i = 0
-        step = max(1, chunk_size - overlap)
+    while start < text_len:
+        hard_end = min(start + max_chars, text_len)
 
-        while i < len(words):
-            piece = " ".join(words[i:i + chunk_size]).strip()
-
+        if hard_end >= text_len:
+            piece = text[start:text_len].strip()
             if piece:
                 chunks.append(piece)
+            break
 
-            i += step
+        window = text[start:hard_end]
+        split_at = find_best_split_index(window)
+
+        if split_at <= 0:
+            split_at = len(window)
+
+        end = start + split_at
+        piece = text[start:end].strip()
+
+        if piece:
+            chunks.append(piece)
+
+        next_start = max(end - overlap_chars, start + 1)
+
+        if next_start <= start:
+            next_start = end
+
+        start = next_start
 
     return chunks
+
+
+def find_best_split_index(window: str) -> int:
+    """
+    Find a natural split point inside a chunk window.
+    Returns an index relative to window.
+    """
+    if not window:
+        return 0
+
+    min_index = max(1, int(len(window) * 0.55))
+
+    boundary_patterns = [
+        "\n\n",
+        "\n",
+        "۔ ",
+        "؟ ",
+        "! ",
+        ". ",
+        "؛ ",
+        "، ",
+        ", ",
+        " ",
+    ]
+
+    for boundary in boundary_patterns:
+        index = window.rfind(boundary, min_index)
+
+        if index != -1:
+            return index + len(boundary)
+
+    return len(window)
+
+
+def chunk_text(text, chunk_size=None, overlap=None):
+    """
+    Character-based RAG chunking.
+
+    The previous word-based chunker made chunk size unpredictable for Arabic and
+    mixed-language documents. Character-based chunking gives a more stable
+    approximate token budget.
+
+    Defaults:
+    - CHUNK_CHARS from config/env, default intended around 2600 chars
+    - CHUNK_OVERLAP_CHARS from config/env, default intended around 300 chars
+    """
+    normalized = normalize_document_text(text)
+
+    if not normalized:
+        return []
+
+    max_chars = int(chunk_size or CHUNK_CHARS or 2600)
+    overlap_chars = int(overlap or CHUNK_OVERLAP_CHARS or 300)
+
+    max_chars = max(300, max_chars)
+    overlap_chars = max(0, min(overlap_chars, max_chars // 2))
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()]
+
+    if not paragraphs:
+        return split_long_text_by_chars(normalized, max_chars, overlap_chars)
+
+    chunks: List[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            if current.strip():
+                chunks.append(current.strip())
+                current = ""
+
+            chunks.extend(
+                split_long_text_by_chars(
+                    text=paragraph,
+                    max_chars=max_chars,
+                    overlap_chars=overlap_chars
+                )
+            )
+            continue
+
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        current = paragraph
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    if overlap_chars > 0 and len(chunks) > 1:
+        chunks = add_chunk_overlap(chunks, overlap_chars, max_chars)
+
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def add_chunk_overlap(chunks: List[str], overlap_chars: int, max_chars: int) -> List[str]:
+    """
+    Add previous-tail overlap to each chunk after the first, while keeping chunks bounded.
+    """
+    if not chunks:
+        return []
+
+    output = [chunks[0]]
+
+    for index in range(1, len(chunks)):
+        previous_tail = chunks[index - 1][-overlap_chars:].strip()
+        current = chunks[index].strip()
+
+        if previous_tail:
+            combined = f"{previous_tail}\n\n{current}".strip()
+        else:
+            combined = current
+
+        if len(combined) > max_chars + overlap_chars:
+            combined = combined[-(max_chars + overlap_chars):].strip()
+
+        output.append(combined)
+
+    return output
 
 
 def document_filter(assistant_id, document_id):
@@ -212,6 +380,8 @@ def ingest_document(assistant_id, document_id, title, text, metadata=None):
                     "chunk_index": index,
                     "text": chunk,
                     "metadata": metadata,
+                    "chunk_chars": len(chunk),
+                    "chunking_strategy": "character",
                 },
             )
         )
