@@ -757,38 +757,119 @@ def has_known_branch(variables: Dict[str, Any]) -> bool:
     )
 
 
+def get_config_path_value(config: Dict[str, Any], path: str, default: Any = None) -> Any:
+    current: Any = config
+
+    for part in str(path or "").split("."):
+        if not part:
+            continue
+
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return default
+
+        if current is None:
+            return default
+
+    return current
+
+
+def collect_configured_phrases(
+    agent_config: Dict[str, Any],
+    paths: List[str]
+) -> List[str]:
+    phrases: List[str] = []
+
+    for path in paths or []:
+        value = get_config_path_value(agent_config, str(path), [])
+
+        if isinstance(value, list):
+            phrases.extend([str(item) for item in value if str(item or "").strip()])
+        elif isinstance(value, str) and value.strip():
+            phrases.append(value)
+
+    return phrases
+
+
+def has_visit_intent_context(
+    variables: Dict[str, Any],
+    guardrail_config: Dict[str, Any]
+) -> bool:
+    context_paths = guardrail_config.get("context_paths", [
+        "troubleshooting.stage",
+        "troubleshooting.inspection_recommended",
+        "service_needed",
+    ])
+
+    context_stage_values = {
+        str(value).strip()
+        for value in guardrail_config.get("context_stage_values", ["active", "complete"])
+        if str(value).strip()
+    }
+
+    for path in context_paths:
+        value = deep_get(variables, str(path), None)
+
+        if value in [None, "", [], {}]:
+            continue
+
+        if isinstance(value, bool) and value:
+            return True
+
+        value_text = str(value).strip()
+
+        if value_text and not context_stage_values:
+            return True
+
+        if value_text in context_stage_values:
+            return True
+
+        if str(path) not in {"troubleshooting.stage"} and value_text:
+            return True
+
+    return False
+
+
 def has_configured_visit_intent(
     message: str,
     agent_config: Dict[str, Any],
     variables: Dict[str, Any]
 ) -> bool:
     normalization = agent_config.get("normalization", {}) or {}
-    subagents = agent_config.get("subagents", {}) or {}
-
-    booking_config = subagents.get("booking", {}) or {}
-    troubleshooting_config = subagents.get("troubleshooting", {}) or {}
-
-    visit_phrases: List[str] = []
-    visit_phrases.extend(booking_config.get("trigger_phrases", []) or [])
-    visit_phrases.extend(troubleshooting_config.get("direct_booking_phrases", []) or [])
-
-    phrase_match = matches_any(message, visit_phrases, normalization)
-
-    troubleshooting_stage = str(
-        deep_get(variables, "troubleshooting.stage", "") or ""
-    ).strip()
-
-    inspection_recommended = bool(
-        deep_get(variables, "troubleshooting.inspection_recommended", False)
+    guardrail_config = (
+        agent_config.get("routing_guardrails", {})
+        .get("visit_intent", {})
     )
 
-    has_troubleshooting_context = (
-        troubleshooting_stage in {"active", "complete"}
-        or inspection_recommended is True
-        or bool(deep_get(variables, "service_needed", ""))
-    )
+    if not isinstance(guardrail_config, dict) or not guardrail_config.get("enabled", False):
+        subagents = agent_config.get("subagents", {}) or {}
+        booking_config = subagents.get("booking", {}) or {}
+        troubleshooting_config = subagents.get("troubleshooting", {}) or {}
 
-    return bool(phrase_match and has_troubleshooting_context)
+        fallback_phrases: List[str] = []
+        fallback_phrases.extend(booking_config.get("trigger_phrases", []) or [])
+        fallback_phrases.extend(troubleshooting_config.get("direct_booking_phrases", []) or [])
+
+        return bool(
+            matches_any(message, fallback_phrases, normalization)
+            and has_visit_intent_context(variables, {})
+        )
+
+    strong_phrases = guardrail_config.get("strong_phrases", []) or []
+    if matches_any(message, strong_phrases, normalization):
+        return True
+
+    contextual_paths = guardrail_config.get("contextual_phrases_from", []) or []
+    contextual_phrases = collect_configured_phrases(agent_config, contextual_paths)
+
+    if not matches_any(message, contextual_phrases, normalization):
+        return False
+
+    if guardrail_config.get("requires_context_for_contextual_phrases", True):
+        return has_visit_intent_context(variables, guardrail_config)
+
+    return True
 
 
 def apply_routing_guardrails(
@@ -1190,6 +1271,266 @@ def normalize_tool_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def is_present(value: Any) -> bool:
+    return value not in [None, "", [], {}]
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if is_present(value):
+            return value
+    return ""
+
+
+def get_known_branch_from_variables(variables: Dict[str, Any]) -> str:
+    return str(first_present(
+        deep_get(variables, "selected_branch", ""),
+        deep_get(variables, "location_branch", ""),
+        deep_get(variables, "nearest_branch", ""),
+    ) or "").strip()
+
+
+def normalize_direct_tool_arguments(
+    operation: str,
+    arguments: Dict[str, Any],
+    variables: Dict[str, Any]
+) -> Dict[str, Any]:
+    op = str(operation or "").strip()
+    args = dict(arguments or {})
+
+    if op in {"list_available_slots", "check_availability", "create_booking"}:
+        branch = first_present(
+            args.get("branch"),
+            get_known_branch_from_variables(variables),
+        )
+
+        if branch:
+            args["branch"] = branch
+
+        date_value = first_present(
+            args.get("date"),
+            args.get("appointment_date"),
+            deep_get(variables, "appointment_date", ""),
+            deep_get(variables, "date", ""),
+        )
+
+        if date_value:
+            args["date"] = date_value
+
+        date_text = first_present(
+            args.get("date_text"),
+            deep_get(variables, "date_text", ""),
+        )
+
+        if date_text:
+            args["date_text"] = date_text
+
+    if op in {"check_availability", "create_booking"}:
+        time_value = first_present(
+            args.get("time"),
+            deep_get(variables, "appointment_time", ""),
+            deep_get(variables, "booking.pending.time", ""),
+        )
+
+        if time_value:
+            args["time"] = time_value
+
+    if op == "create_booking":
+        pending = deep_get(variables, "booking.pending", {})
+        if isinstance(pending, dict):
+            for key in ["branch", "date", "date_text", "time", "section"]:
+                if not is_present(args.get(key)) and is_present(pending.get(key)):
+                    args[key] = pending.get(key)
+
+        profile = deep_get(variables, "customer_profile", {})
+        if isinstance(profile, dict):
+            if not is_present(args.get("full_name")) and is_present(profile.get("full_name")):
+                args["full_name"] = profile.get("full_name")
+            if not is_present(args.get("phone")) and is_present(profile.get("phone")):
+                args["phone"] = profile.get("phone")
+            if not is_present(args.get("plate_number")) and is_present(profile.get("plate_number")):
+                args["plate_number"] = profile.get("plate_number")
+
+        if not is_present(args.get("customer_confirmed_booking")):
+            confirmed = deep_get(variables, "customer_confirmed_booking", None)
+            if confirmed is not None:
+                args["customer_confirmed_booking"] = confirmed
+
+    return args
+
+
+def get_tool_operation_required_fields(
+    agent_config: Dict[str, Any],
+    tool_name: str,
+    operation: str
+) -> List[str]:
+    required: List[str] = []
+
+    for tool in agent_config.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+
+        if str(tool.get("name", "")) != str(tool_name):
+            continue
+
+        operation_config = (tool.get("operations") or {}).get(operation, {})
+
+        if isinstance(operation_config, dict):
+            required = [
+                str(item)
+                for item in operation_config.get("required", []) or []
+                if str(item or "").strip()
+            ]
+
+        break
+
+    forced_required = {
+        "list_available_slots": ["branch", "date"],
+        "check_availability": ["branch", "date", "time"],
+        "create_booking": [
+            "branch",
+            "date",
+            "date_text",
+            "time",
+            "section",
+            "full_name",
+            "phone",
+            "plate_number",
+            "customer_confirmed_booking",
+        ],
+    }
+
+    for field in forced_required.get(str(operation), []):
+        if field not in required:
+            required.append(field)
+
+    return required
+
+
+def missing_required_tool_inputs(
+    operation: str,
+    arguments: Dict[str, Any],
+    required_fields: List[str]
+) -> List[str]:
+    missing: List[str] = []
+
+    for field in required_fields:
+        value = arguments.get(field)
+
+        if field == "date":
+            value = arguments.get("date")
+
+        if field == "customer_confirmed_booking":
+            if value is not True:
+                missing.append(field)
+            continue
+
+        if not is_present(value):
+            missing.append(field)
+
+    return missing
+
+
+def blocked_tool_call_result(
+    tool_name: str,
+    operation: str,
+    arguments: Dict[str, Any],
+    missing_inputs: List[str]
+) -> Dict[str, Any]:
+    if "date" in missing_inputs:
+        answer_draft = "BOOKING_MISSING_DATE"
+        next_move = "Ask the customer which day/date they want before checking appointment availability."
+    elif "branch" in missing_inputs:
+        answer_draft = "BOOKING_MISSING_BRANCH"
+        next_move = "Ask the customer which branch or area they want before checking appointment availability."
+    else:
+        answer_draft = "BOOKING_MISSING_FIELDS"
+        next_move = "Ask for the next missing booking detail before calling the tool."
+
+    return {
+        "ok": True,
+        "blocked_tool_call": True,
+        "action": "ask_user",
+        "tool_name": tool_name,
+        "operation": operation,
+        "arguments": arguments,
+        "missing_inputs": missing_inputs,
+        "answer_draft": answer_draft,
+        "notes": "Tool call was safely blocked because required inputs were missing.",
+        "response_brief": {
+            "tone": "natural professional Egyptian Arabic",
+            "language": "same as user",
+            "reply_length": "short",
+            "next_move": next_move,
+            "must_do": [
+                "ask for the missing input",
+                "do not call availability tools without branch and normalized date",
+                "ask only one question"
+            ],
+            "must_not_do": [
+                "do not say there are no available slots",
+                "do not invent slots",
+                "do not invent dates",
+                "do not claim a tool result was checked"
+            ]
+        }
+    }
+
+
+def validate_direct_tool_request(
+    tool_name: str,
+    operation: str,
+    arguments: Dict[str, Any],
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    normalized_arguments = normalize_direct_tool_arguments(
+        operation=operation,
+        arguments=arguments,
+        variables=variables,
+    )
+
+    required_fields = get_tool_operation_required_fields(
+        agent_config=agent_config,
+        tool_name=tool_name,
+        operation=operation,
+    )
+
+    missing_inputs = missing_required_tool_inputs(
+        operation=operation,
+        arguments=normalized_arguments,
+        required_fields=required_fields,
+    )
+
+    if not missing_inputs:
+        return {
+            "ok": True,
+            "arguments": normalized_arguments,
+            "missing_inputs": [],
+            "variable_updates": {},
+            "tool_result": {},
+        }
+
+    variable_updates: Dict[str, Any] = {}
+
+    if operation == "list_available_slots" and "date" in missing_inputs:
+        variable_updates["booking.stage"] = "awaiting_date"
+
+    return {
+        "ok": False,
+        "arguments": normalized_arguments,
+        "missing_inputs": missing_inputs,
+        "variable_updates": variable_updates,
+        "tool_result": blocked_tool_call_result(
+            tool_name=tool_name,
+            operation=operation,
+            arguments=normalized_arguments,
+            missing_inputs=missing_inputs,
+        ),
+    }
+
+
+
 def subagent_observations_are_ok(observations: List[Dict[str, Any]]) -> bool:
     if not isinstance(observations, list):
         return True
@@ -1278,6 +1619,28 @@ def tool_execution_node(state: AgentState):
     arguments = payload.get("arguments", {}) or {}
 
     if tool_name and operation:
+        validation = validate_direct_tool_request(
+            tool_name=tool_name,
+            operation=operation,
+            arguments=arguments,
+            variables=variables,
+            agent_config=agent_config,
+        )
+
+        arguments = validation.get("arguments", arguments)
+
+        if not validation.get("ok", False):
+            updated_variables = apply_subagent_variable_patch(
+                variables,
+                validation.get("variable_updates", {}) or {},
+                [],
+            )
+
+            return {
+                "variables": updated_variables,
+                "tool_result": validation.get("tool_result", {}),
+            }
+
         try:
             raw_result = tool_runner.call(
                 tool_name=tool_name,
