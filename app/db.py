@@ -90,6 +90,21 @@ def init_db():
             """)
 
             cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversations_state (
+                conversation_id TEXT PRIMARY KEY,
+                assistant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                channel TEXT DEFAULT '',
+                state JSONB NOT NULL DEFAULT '{}',
+                variables JSONB NOT NULL DEFAULT '{}',
+                summary TEXT NOT NULL DEFAULT '',
+                message_count INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            cur.execute("""
             CREATE TABLE IF NOT EXISTS knowledge_documents (
                 assistant_id TEXT NOT NULL,
                 document_id TEXT NOT NULL,
@@ -138,9 +153,19 @@ def init_db():
             cur.execute("ALTER TABLE conversation_summaries ADD COLUMN IF NOT EXISTS message_count INT DEFAULT 0;")
             cur.execute("ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';")
 
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT '';")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS state JSONB NOT NULL DEFAULT '{}';")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS variables JSONB NOT NULL DEFAULT '{}';")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS message_count INT DEFAULT 0;")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();")
+            cur.execute("ALTER TABLE conversations_state ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();")
+
             cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages (conversation_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages (conversation_id, created_at DESC);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_long_term_memories_user ON long_term_memories (assistant_id, user_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_conversations_state_assistant_user ON conversations_state (assistant_id, user_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_conversations_state_updated ON conversations_state (updated_at DESC);")
 
 
 def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -155,6 +180,26 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
 
 def normalize_agent_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return deep_merge(DEFAULT_AGENT_CONFIG, config or {})
+
+
+def safe_json_obj(value: Any, default: Any = None) -> Any:
+    if default is None:
+        default = {}
+
+    if value is None:
+        return default
+
+    if isinstance(value, (dict, list)):
+        return value
+
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if parsed is not None else default
+        except Exception:
+            return default
+
+    return default
 
 
 def estimate_tokens_from_text(text):
@@ -177,7 +222,11 @@ def ensure_conversation(conversation_id, assistant_id, user_id, channel):
                 INSERT INTO conversations (id, assistant_id, user_id, channel, updated_at)
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (id)
-                DO UPDATE SET updated_at = NOW()
+                DO UPDATE SET
+                    assistant_id = EXCLUDED.assistant_id,
+                    user_id = EXCLUDED.user_id,
+                    channel = EXCLUDED.channel,
+                    updated_at = NOW()
             """, (conversation_id, assistant_id, user_id, channel))
 
 
@@ -295,8 +344,150 @@ def save_variables(conversation_id, assistant_id, user_id, variables):
                 INSERT INTO conversation_variables (conversation_id, assistant_id, user_id, variables, updated_at)
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (conversation_id)
-                DO UPDATE SET variables = EXCLUDED.variables, updated_at = NOW()
+                DO UPDATE SET
+                    assistant_id = EXCLUDED.assistant_id,
+                    user_id = EXCLUDED.user_id,
+                    variables = EXCLUDED.variables,
+                    updated_at = NOW()
             """, (conversation_id, assistant_id, user_id, json.dumps(variables or {}, ensure_ascii=False)))
+
+
+def load_conversation_state(conversation_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT conversation_id, assistant_id, user_id, channel, state, variables, summary, message_count, updated_at
+                FROM conversations_state
+                WHERE conversation_id = %s
+            """, (conversation_id,))
+            row = cur.fetchone()
+
+    if not row:
+        return {}
+
+    return {
+        "conversation_id": row[0],
+        "assistant_id": row[1],
+        "user_id": row[2],
+        "channel": row[3] or "",
+        "state": safe_json_obj(row[4], {}),
+        "variables": safe_json_obj(row[5], {}),
+        "summary": row[6] or "",
+        "message_count": int(row[7] or 0),
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def save_conversation_state(
+    conversation_id,
+    assistant_id,
+    user_id,
+    channel="",
+    state=None,
+    variables=None,
+    summary="",
+    message_count=None
+):
+    state_obj = state if isinstance(state, dict) else {}
+    variables_obj = variables if isinstance(variables, dict) else {}
+
+    if message_count is None:
+        try:
+            message_count = count_messages(conversation_id)
+        except Exception:
+            message_count = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO conversations_state
+                (conversation_id, assistant_id, user_id, channel, state, variables, summary, message_count, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (conversation_id)
+                DO UPDATE SET
+                    assistant_id = EXCLUDED.assistant_id,
+                    user_id = EXCLUDED.user_id,
+                    channel = EXCLUDED.channel,
+                    state = EXCLUDED.state,
+                    variables = EXCLUDED.variables,
+                    summary = EXCLUDED.summary,
+                    message_count = EXCLUDED.message_count,
+                    updated_at = NOW()
+            """, (
+                conversation_id,
+                assistant_id,
+                user_id,
+                channel or "",
+                json.dumps(state_obj, ensure_ascii=False),
+                json.dumps(variables_obj, ensure_ascii=False),
+                summary or "",
+                int(message_count or 0),
+            ))
+
+
+def patch_conversation_state(
+    conversation_id,
+    assistant_id,
+    user_id,
+    channel="",
+    state_patch=None,
+    variables_patch=None,
+    summary=None,
+    message_count=None
+):
+    existing = load_conversation_state(conversation_id)
+
+    existing_state = existing.get("state", {}) if isinstance(existing, dict) else {}
+    existing_variables = existing.get("variables", {}) if isinstance(existing, dict) else {}
+
+    merged_state = deep_merge(existing_state, state_patch or {})
+    merged_variables = deep_merge(existing_variables, variables_patch or {})
+
+    final_summary = existing.get("summary", "") if isinstance(existing, dict) else ""
+    if summary is not None:
+        final_summary = summary
+
+    final_message_count = existing.get("message_count", 0) if isinstance(existing, dict) else 0
+    if message_count is not None:
+        final_message_count = message_count
+
+    save_conversation_state(
+        conversation_id=conversation_id,
+        assistant_id=assistant_id,
+        user_id=user_id,
+        channel=channel or existing.get("channel", "") if isinstance(existing, dict) else channel,
+        state=merged_state,
+        variables=merged_variables,
+        summary=final_summary,
+        message_count=final_message_count
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "assistant_id": assistant_id,
+        "user_id": user_id,
+        "channel": channel or existing.get("channel", "") if isinstance(existing, dict) else channel,
+        "state": merged_state,
+        "variables": merged_variables,
+        "summary": final_summary,
+        "message_count": final_message_count,
+    }
+
+
+def delete_conversation_state(conversation_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM conversations_state WHERE conversation_id = %s", (conversation_id,))
+
+
+def clear_conversation_data(conversation_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conversation_id,))
+            cur.execute("DELETE FROM conversation_summaries WHERE conversation_id = %s", (conversation_id,))
+            cur.execute("DELETE FROM conversation_variables WHERE conversation_id = %s", (conversation_id,))
+            cur.execute("DELETE FROM conversations_state WHERE conversation_id = %s", (conversation_id,))
+            cur.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
 
 
 def get_summary(conversation_id):
@@ -315,7 +506,12 @@ def save_summary(conversation_id, assistant_id, user_id, summary):
                 INSERT INTO conversation_summaries (conversation_id, assistant_id, user_id, summary, message_count, updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (conversation_id)
-                DO UPDATE SET summary = EXCLUDED.summary, message_count = EXCLUDED.message_count, updated_at = NOW()
+                DO UPDATE SET
+                    assistant_id = EXCLUDED.assistant_id,
+                    user_id = EXCLUDED.user_id,
+                    summary = EXCLUDED.summary,
+                    message_count = EXCLUDED.message_count,
+                    updated_at = NOW()
             """, (conversation_id, assistant_id, user_id, summary or "", message_count))
 
 
