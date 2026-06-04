@@ -7,7 +7,7 @@
     "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
-    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn.",
     "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result.",
     "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer.",
     "branch_aliases": {
@@ -239,6 +239,43 @@
             ]
           }
         }
+      },
+      "multi_intent_chaining": {
+        "enabled": true,
+        "description": "Config guidance for manifest/action chaining. Graph executes selected_subagent_id first, then chained_subagent_id if present.",
+        "patterns": [
+          {
+            "id": "nearest_branch_then_slots",
+            "when_user_intents_include": [
+              "nearest_branch",
+              "availability"
+            ],
+            "required_message_or_state": [
+              "area_or_location",
+              "date_text_or_appointment_date"
+            ],
+            "selected_subagent_id": "location",
+            "chained_subagent_id": "booking",
+            "reason": "Booking needs the branch returned by location."
+          },
+          {
+            "id": "known_branch_then_slots",
+            "when_user_intents_include": [
+              "availability"
+            ],
+            "required_state": [
+              "selected_branch_or_location_branch_or_nearest_branch",
+              "date_text_or_appointment_date"
+            ],
+            "selected_subagent_id": "booking",
+            "chained_subagent_id": "",
+            "reason": "Branch is already known, so only booking executor is needed."
+          }
+        ],
+        "must_not_chain_when": [
+          "the second action is missing required inputs that cannot be extracted from the message or current variables",
+          "the first action failed and no safe fallback variable exists"
+        ]
       }
     },
     "response_rules": [
@@ -276,7 +313,13 @@
       "If tool_result.ok is false because missing_inputs contains date or appointment_date, ask for the preferred day/date.",
       "If tool_result.ok is false because missing_inputs contains branch, ask for the customer's area or branch.",
       "If tool_result.ok is false due to missing required inputs, do not apologize as if the service failed and do not say no appointments are available.",
-      "If the user says thanks after a confirmed booking, close politely and do not repeat the full confirmation."
+      "If the user says thanks after a confirmed booking, close politely and do not repeat the full confirmation.",
+      "If the user asks for nearest branch and available slots in one message and provides area plus date, chain location then booking in the same turn when possible.",
+      "If chained execution completes multiple actions, summarize both completed actions naturally in one reply.",
+      "If chained execution completes the first action but the second action is missing inputs, mention the completed result and ask only for the missing input.",
+      "Use detected_intents for long messages with multiple requests; do not ignore a second clear intent.",
+      "Use private structured analysis only; never expose or mention chain-of-thought or internal reasoning.",
+      "For blocked tool calls caused by missing required inputs, follow tool_result.response_brief over the original manifest response_brief."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -1006,7 +1049,11 @@
           "booking_confirmed": "BOOKING_CONFIRMED",
           "booking_failed": "BOOKING_FAILED",
           "booking_completed_closing": "BOOKING_COMPLETED_CLOSING",
-          "booking_already_confirmed": "BOOKING_ALREADY_CONFIRMED"
+          "booking_already_confirmed": "BOOKING_ALREADY_CONFIRMED",
+          "missing_phone": "BOOKING_MISSING_PHONE",
+          "missing_name_and_phone": "BOOKING_MISSING_NAME_AND_PHONE",
+          "missing_phone_and_plate": "BOOKING_MISSING_PHONE_AND_PLATE",
+          "missing_name_phone_and_plate": "BOOKING_MISSING_NAME_PHONE_AND_PLATE"
         }
       },
       "troubleshooting": {
@@ -1282,6 +1329,197 @@
           }
         ]
       }
+    },
+    "tool_catalog": [
+      {
+        "name": "service_center_sheet.list_branches",
+        "description": "List the available service center branches from the sheet source of truth.",
+        "operation": "list_branches",
+        "executor": "lookup",
+        "required_inputs": [],
+        "optional_inputs": [],
+        "result_fields": [
+          "branches",
+          "branches_text"
+        ],
+        "source_of_truth": true,
+        "result_policy": "Use only returned branches. Do not invent branches."
+      },
+      {
+        "name": "service_center_sheet.find_nearest_branch",
+        "description": "Find the nearest service-center branch from a user area/location or coordinates.",
+        "operation": "find_nearest_branch",
+        "executor": "location",
+        "required_inputs": [
+          "location or latitude/longitude"
+        ],
+        "optional_inputs": [
+          "location",
+          "latitude",
+          "longitude"
+        ],
+        "result_fields": [
+          "branch_found",
+          "branch",
+          "user_area",
+          "branches",
+          "branches_text"
+        ],
+        "source_of_truth": true,
+        "result_policy": "If branch_found is true, store branch as selected_branch/location_branch/nearest_branch. If false, ask for clearer area or show returned options."
+      },
+      {
+        "name": "service_center_sheet.list_available_slots",
+        "description": "List available appointment slots for a canonical branch and normalized ISO date.",
+        "operation": "list_available_slots",
+        "executor": "booking",
+        "required_inputs": [
+          "branch",
+          "date"
+        ],
+        "optional_inputs": [
+          "date_text",
+          "section",
+          "limit"
+        ],
+        "result_fields": [
+          "branch",
+          "date",
+          "date_text",
+          "available_slots",
+          "available_slots_text",
+          "slots_found"
+        ],
+        "source_of_truth": true,
+        "result_policy": "Call only with canonical branch and normalized date. If date is missing, ask for date. If branch is missing, ask for branch/area. Never say no slots unless this tool was called successfully."
+      },
+      {
+        "name": "service_center_sheet.check_availability",
+        "description": "Check a specific appointment time at a branch/date.",
+        "operation": "check_availability",
+        "executor": "booking",
+        "required_inputs": [
+          "branch",
+          "date",
+          "time"
+        ],
+        "optional_inputs": [
+          "date_text",
+          "section"
+        ],
+        "result_fields": [
+          "exact_slot_available",
+          "requested_slot",
+          "nearest_slots",
+          "unavailable_reason"
+        ],
+        "source_of_truth": true,
+        "result_policy": "Use exact_slot_available only from tool result. Do not invent unavailable reasons."
+      },
+      {
+        "name": "service_center_sheet.create_booking",
+        "description": "Create a service visit booking after the user explicitly confirms and all customer details are present.",
+        "operation": "create_booking",
+        "executor": "booking",
+        "required_inputs": [
+          "branch",
+          "date",
+          "date_text",
+          "time",
+          "section",
+          "full_name",
+          "phone",
+          "plate_number",
+          "customer_confirmed_booking"
+        ],
+        "optional_inputs": [
+          "conversation_id",
+          "user_id"
+        ],
+        "result_fields": [
+          "ok",
+          "booking_status",
+          "visit_id",
+          "booking"
+        ],
+        "source_of_truth": true,
+        "result_policy": "Never confirm booking unless ok=true. Always include visit_id when returned."
+      }
+    ],
+    "tool_required_field_overrides": {
+      "list_available_slots": [
+        "branch",
+        "date"
+      ],
+      "check_availability": [
+        "branch",
+        "date",
+        "time"
+      ],
+      "create_booking": [
+        "branch",
+        "date",
+        "date_text",
+        "time",
+        "section",
+        "full_name",
+        "phone",
+        "plate_number",
+        "customer_confirmed_booking"
+      ]
+    },
+    "answer_safety": {
+      "banned_terms": [
+        "حبيبي",
+        "يا باشا",
+        "يا معلم",
+        "يا صديقي",
+        "باشا",
+        "معلم",
+        "صاحبي"
+      ],
+      "append_visit_id_on_confirmed_booking": true,
+      "never_claim_checked_availability_without_tool_result": true,
+      "never_confirm_booking_without_create_booking_ok": true
+    },
+    "private_structured_analysis_policy": {
+      "enabled": true,
+      "description": "Models should reason privately but return only compact structured JSON summaries for downstream nodes. Do not expose or store chain-of-thought.",
+      "allowed_fields": [
+        "understanding",
+        "user_goal",
+        "detected_intents",
+        "facts_to_use",
+        "facts_missing",
+        "variable_updates_to_consider",
+        "next_best_step",
+        "response_constraints",
+        "should_chain",
+        "recommended_chained_subagent_id",
+        "confidence"
+      ],
+      "must_not_store": [
+        "chain_of_thought",
+        "hidden_reasoning",
+        "step_by_step_private_reasoning"
+      ]
+    },
+    "memory_policy": {
+      "enabled": true,
+      "write_after_response": true,
+      "non_blocking": true,
+      "remember_only": [
+        "stable customer preferences",
+        "recurring service needs",
+        "important vehicle constraints",
+        "unresolved issues that matter in future turns"
+      ],
+      "do_not_remember": [
+        "small talk",
+        "temporary slot lists",
+        "one-time tool traces",
+        "sensitive data unless required by assistant config"
+      ]
     }
   },
   "schema": {
@@ -1378,12 +1616,15 @@
       },
       "handoff_requested": {
         "type": "boolean"
+      },
+      "booking_pending_summary": {
+        "type": "string"
       }
     }
   },
   "domain_playbook": {
-    "version": "3.6-missing-date-tool-guardrails",
-    "architecture": "LangGraph manifest decides; deterministic executors safely call tools/update state; graph response node writes final customer answer; quality guard validates.",
+    "version": "4.0-expert-batch1-chained-execution-config-safety",
+    "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer; quality guard validates; memory writer runs best-effort after response.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
       "Final customer-facing wording is handled by graph.response_node.",
@@ -1404,7 +1645,15 @@
       "LookupSubagent performs safe read-only tool lookups.",
       "TroubleshootingSubagent stores diagnostic metadata only; response LLM writes the explanation/question.",
       "Tool results are the source of truth for branches, slots, and booking IDs.",
-      "create_booking appends a row only after explicit confirmation and required details."
+      "create_booking appends a row only after explicit confirmation and required details.",
+      "Batch 1 applies the code expert architecture for chained execution and config-driven graph safeguards.",
+      "Manifest can return detected_intents, selected_subagent_id, chained_subagent_id, and chained_subagent_reason.",
+      "For nearest branch plus slots in one message, manifest should run location first and booking second.",
+      "tool_required_field_overrides owns operation required fields that were previously hardcoded in graph.py.",
+      "answer_safety owns banned user-facing terms and visit_id append behavior.",
+      "Subagent reasoning must use private reasoning internally and return only compact structured JSON summary fields.",
+      "tool_result.response_brief can override manifest.response_brief when a tool call is blocked or a tool result provides more precise next-step guidance.",
+      "memory_writer_node is best-effort and must never block the user response."
     ]
   }
 }
