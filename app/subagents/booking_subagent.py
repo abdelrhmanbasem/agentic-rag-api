@@ -76,6 +76,25 @@ class BookingSubagent:
             normalization=normalization
         )
 
+        # Critical slot-selection guard:
+        # In slot_selection stage, a message like "الساعة 12" or "معاد 12"
+        # must be resolved against the existing available_slots before any
+        # date extraction runs. Otherwise it can be misclassified as date_text.
+        if stage == "slot_selection":
+            selected_slot_before_date = self.resolve_slot_selection(
+                context=context,
+                config=config,
+                variables=variables
+            )
+
+            if selected_slot_before_date:
+                return self.handle_slot_selected(
+                    context=context,
+                    config=config,
+                    variables=variables,
+                    selected_slot=selected_slot_before_date
+                )
+
         if self.is_booking_completed(variables):
             if self.is_polite_closing(context.user_message, config, normalization):
                 answer = render_template(
@@ -1123,6 +1142,17 @@ class BookingSubagent:
         raw_message = normalize_digits(str(message or ""), normalization.get("digit_map", {})).strip()
         normalized = normalize_text(raw_message, normalization)
 
+        # Do not let time-only slot selections become date_text.
+        # Example during slot_selection:
+        # "لا معاد الساعة 12 هيكون مناسب معايا اكتر"
+        # should resolve to a slot time, not date_text="الساعة 12..."
+        if self.looks_like_time_only_slot_selection_text(
+            message=raw_message,
+            config=config,
+            normalization=normalization
+        ):
+            return ""
+
         direct = self.extract_direct_date_term(
             normalized_message=normalized,
             config=config,
@@ -1158,6 +1188,82 @@ class BookingSubagent:
                     return value
 
         return ""
+
+    def looks_like_time_only_slot_selection_text(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        raw_message = str(message or "").strip()
+
+        if not raw_message:
+            return False
+
+        normalized = normalize_text(raw_message, normalization)
+
+        # If the message contains a real date term, it is not time-only.
+        date_terms = config.get("date_direct_terms", [])
+
+        if isinstance(date_terms, list):
+            ambiguous_booking_words = {
+                "معاد",
+                "ميعاد",
+                "موعد",
+                "مواعيد",
+                "المواعيد",
+                "appointment",
+                "slots"
+            }
+
+            for term in date_terms:
+                term_text = str(term or "").strip()
+
+                if not term_text:
+                    continue
+
+                if normalize_text(term_text, normalization) in ambiguous_booking_words:
+                    continue
+
+                normalized_term = normalize_text(term_text, normalization)
+
+                if normalized_term and normalized_term in normalized:
+                    return False
+
+        if self.extract_explicit_date_phrase(raw_message):
+            return False
+
+        requested_time = self.extract_time(raw_message, config, normalization)
+
+        if not requested_time:
+            return False
+
+        time_markers = [
+            "الساعة",
+            "الساعه",
+            "ساعة",
+            "ساعه",
+            "الصبح",
+            "صباح",
+            "صباحا",
+            "صباحًا",
+            "الظهر",
+            "ظهرا",
+            "ظهرًا",
+            "مساء",
+            "مساءا",
+            "مساءً",
+            "بالليل",
+            "am",
+            "pm"
+        ]
+
+        if any(marker in normalized for marker in time_markers):
+            return True
+
+        # Bare numeric choices can be slot times during slot selection, but avoid
+        # treating very long numbers as time.
+        return bool(re.search(r"(^|\D)(\d{1,2})(?::\d{2})?(\D|$)", normalized))
 
     def extract_direct_date_term(
         self,
