@@ -28,6 +28,7 @@ class BookingSubagent:
     Responsibilities:
     - maintain booking state
     - extract deterministic fields
+    - resolve canonical branch from stored branch state or configured branch aliases
     - resolve normalized appointment dates from natural date phrases
     - resolve slot selection
     - call list_available_slots
@@ -57,6 +58,13 @@ class BookingSubagent:
 
         stage_path = config.get("stage_path", "booking.stage")
         stage = deep_get(variables, stage_path, "")
+
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
 
         if self.is_booking_completed(variables):
             if self.is_polite_closing(context.user_message, config, normalization):
@@ -443,6 +451,16 @@ class BookingSubagent:
             "message": context.user_message
         })
 
+        if pending.get("date") in [None, ""]:
+            pending["date"] = (
+                deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+                or deep_get(variables, "date")
+                or pending.get("date_text")
+            )
+
+        if pending.get("date_text") in [None, ""]:
+            pending["date_text"] = deep_get(variables, config.get("date_text_path", "date_text"), "")
+
         updates = dict(config.get("on_slot_selected_updates", {}))
         updates[pending_booking_path] = pending
 
@@ -496,10 +514,19 @@ class BookingSubagent:
                 notes="booking already confirmed; new booking request blocked"
             )
 
+        normalization = context.assistant_config.get("normalization", {})
+
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         variables = self.ensure_resolved_date_from_existing_state(
             variables=variables,
             config=config,
-            normalization=context.assistant_config.get("normalization", {}),
+            normalization=normalization,
             message=context.user_message
         )
 
@@ -543,6 +570,15 @@ class BookingSubagent:
 
         date_text = deep_get(variables, config.get("date_text_path", "date_text"))
 
+        branch = self.resolve_canonical_branch(
+            value=str(arguments.get("branch") or ""),
+            assistant_config=context.assistant_config,
+            normalization=normalization
+        ) or self.get_known_branch(variables)
+
+        if branch:
+            arguments["branch"] = branch
+
         if appointment_date:
             arguments["date"] = appointment_date
 
@@ -577,15 +613,21 @@ class BookingSubagent:
             result=tool_result
         )
 
+        repair_updates: Dict[str, Any] = {}
+
+        if branch:
+            repair_updates["selected_branch"] = branch
+            repair_updates["location_branch"] = branch
+
         if appointment_date:
-            updated_variables = apply_variable_patch(
-                updated_variables,
-                {
-                    config.get("appointment_date_path", "appointment_date"): appointment_date,
-                    "date": appointment_date
-                },
-                []
-            )
+            repair_updates[config.get("appointment_date_path", "appointment_date")] = appointment_date
+            repair_updates["date"] = appointment_date
+
+        if date_text:
+            repair_updates[config.get("date_text_path", "date_text")] = date_text
+
+        if repair_updates:
+            updated_variables = apply_variable_patch(updated_variables, repair_updates, [])
 
         result_context = {
             "variables": updated_variables,
@@ -652,6 +694,13 @@ class BookingSubagent:
             message=context.user_message
         )
 
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=context.assistant_config.get("normalization", {})
+        )
+
         operations = config.get("operations", {})
         tool_name = config.get("tool_name", "")
         operation = operations.get("create_booking", "")
@@ -674,6 +723,15 @@ class BookingSubagent:
 
         if date_text and not arguments.get("date_text"):
             arguments["date_text"] = date_text
+
+        branch = self.resolve_canonical_branch(
+            value=str(arguments.get("branch") or ""),
+            assistant_config=context.assistant_config,
+            normalization=context.assistant_config.get("normalization", {})
+        ) or self.get_known_branch(variables)
+
+        if branch:
+            arguments["branch"] = branch
 
         arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
         arguments["user_id"] = deep_get(variables, "user_id", "")
@@ -701,15 +759,21 @@ class BookingSubagent:
             result=tool_result
         )
 
+        repair_updates: Dict[str, Any] = {}
+
+        if branch:
+            repair_updates["selected_branch"] = branch
+            repair_updates["location_branch"] = branch
+
         if appointment_date:
-            updated_variables = apply_variable_patch(
-                updated_variables,
-                {
-                    config.get("appointment_date_path", "appointment_date"): appointment_date,
-                    "date": appointment_date
-                },
-                []
-            )
+            repair_updates[config.get("appointment_date_path", "appointment_date")] = appointment_date
+            repair_updates["date"] = appointment_date
+
+        if date_text:
+            repair_updates[config.get("date_text_path", "date_text")] = date_text
+
+        if repair_updates:
+            updated_variables = apply_variable_patch(updated_variables, repair_updates, [])
 
         template_key = "booking_confirmed" if tool_result.get("ok") is True else "booking_failed"
 
@@ -976,10 +1040,20 @@ class BookingSubagent:
             "الأحد",
             "الاحد",
             "الاثنين",
+            "الاتنين",
             "التلات",
             "الثلاثاء",
             "الأربعاء",
-            "الاربعاء"
+            "الاربعاء",
+            "tomorrow",
+            "today",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday"
         ]
 
         for term in direct_terms:
@@ -1067,7 +1141,8 @@ class BookingSubagent:
             weekday_index = self.resolve_weekday_index(normalized_message)
 
         if weekday_index is not None:
-            return self.next_weekday(today, weekday_index).isoformat()
+            force_next_week = self.has_next_week_marker(normalized) or self.has_next_week_marker(normalized_message)
+            return self.next_weekday(today, weekday_index, force_next_week=force_next_week).isoformat()
 
         iso = self.parse_iso_date(raw)
 
@@ -1102,7 +1177,6 @@ class BookingSubagent:
         weekday_map = {
             "الاثنين": 0,
             "الاتنين": 0,
-            "الاثنين": 0,
             "monday": 0,
             "التلات": 1,
             "الثلاثاء": 1,
@@ -1131,11 +1205,24 @@ class BookingSubagent:
         return None
 
     @staticmethod
-    def next_weekday(today, weekday_index: int):
+    def has_next_week_marker(normalized: str) -> bool:
+        return any(term in str(normalized or "") for term in [
+            "الجاي",
+            "القادم",
+            "اللي جاي",
+            "الجاى",
+            "next"
+        ])
+
+    @staticmethod
+    def next_weekday(today, weekday_index: int, force_next_week: bool = False):
         days_ahead = weekday_index - today.weekday()
 
         if days_ahead < 0:
             days_ahead += 7
+
+        if force_next_week and days_ahead == 0:
+            days_ahead = 7
 
         return today + timedelta(days=days_ahead)
 
@@ -1234,6 +1321,113 @@ class BookingSubagent:
 
         return candidate.isoformat()
 
+    def ensure_selected_branch_from_context(
+        self,
+        variables: Dict[str, Any],
+        assistant_config: Dict[str, Any],
+        message: str,
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        selected = str(deep_get(variables, "selected_branch") or "").strip()
+
+        canonical_selected = self.resolve_canonical_branch(
+            value=selected,
+            assistant_config=assistant_config,
+            normalization=normalization
+        )
+
+        if canonical_selected:
+            if canonical_selected != selected:
+                return apply_variable_patch(
+                    variables,
+                    {
+                        "selected_branch": canonical_selected,
+                        "location_branch": canonical_selected
+                    },
+                    []
+                )
+            return variables
+
+        message_branch = self.resolve_canonical_branch(
+            value=message,
+            assistant_config=assistant_config,
+            normalization=normalization
+        )
+
+        if message_branch:
+            return apply_variable_patch(
+                variables,
+                {
+                    "selected_branch": message_branch,
+                    "location_branch": message_branch
+                },
+                []
+            )
+
+        known_branch = self.get_known_branch(variables)
+
+        if known_branch:
+            return apply_variable_patch(
+                variables,
+                {
+                    "selected_branch": known_branch,
+                    "location_branch": known_branch
+                },
+                []
+            )
+
+        return variables
+
+    def get_known_branch(self, variables: Dict[str, Any]) -> str:
+        for path in ["selected_branch", "location_branch", "nearest_branch"]:
+            value = str(deep_get(variables, path) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def resolve_canonical_branch(
+        self,
+        value: str,
+        assistant_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        text = str(value or "").strip()
+
+        if not text:
+            return ""
+
+        aliases = assistant_config.get("branch_aliases", {})
+
+        if not isinstance(aliases, dict):
+            return ""
+
+        normalized_text = normalize_text(text, normalization)
+
+        for canonical, alias_list in aliases.items():
+            canonical_text = str(canonical or "").strip()
+
+            if not canonical_text:
+                continue
+
+            candidates = [canonical_text]
+
+            if isinstance(alias_list, list):
+                candidates.extend([str(item or "") for item in alias_list])
+
+            for candidate in candidates:
+                normalized_candidate = normalize_text(candidate, normalization)
+
+                if not normalized_candidate:
+                    continue
+
+                if normalized_candidate == normalized_text:
+                    return canonical_text
+
+                if normalized_candidate in normalized_text:
+                    return canonical_text
+
+        return ""
+
     def is_booking_or_availability_request(
         self,
         context: SubagentContext,
@@ -1244,6 +1438,11 @@ class BookingSubagent:
         phrases = config.get("trigger_phrases", [])
 
         if matches_any(context.user_message, phrases, normalization):
+            return True
+
+        date_text = self.extract_date_text(context.user_message, config, normalization)
+
+        if date_text and self.get_known_branch(variables):
             return True
 
         stage_path = config.get("stage_path", "booking.stage")
@@ -1271,13 +1470,18 @@ class BookingSubagent:
             if str(term or "").strip()
         )
 
-        if not has_availability_intent:
+        date_text = self.extract_date_text(context.user_message, config, normalization)
+
+        if not has_availability_intent and not date_text:
             return False
 
-        branch = deep_get(variables, "selected_branch") or deep_get(variables, "location_branch")
-        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+        branch = self.get_known_branch(variables)
+        appointment_date = (
+            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+        )
 
-        return bool(branch and date_text)
+        return bool(branch and (appointment_date or date_text))
 
     def render_missing_question(
         self,
@@ -1291,7 +1495,7 @@ class BookingSubagent:
 
         template_key = "missing_fields"
 
-        if missing_set == {"variables.date_text"}:
+        if missing_set in [{"variables.date_text"}, {"variables.appointment_date"}]:
             template_key = "missing_date"
         elif missing_set == {"variables.selected_branch"}:
             template_key = "missing_branch"
