@@ -68,6 +68,14 @@ class BookingSubagent:
             normalization=normalization
         )
 
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         if self.is_booking_completed(variables):
             if self.is_polite_closing(context.user_message, config, normalization):
                 answer = render_template(
@@ -147,6 +155,14 @@ class BookingSubagent:
             config=config,
             normalization=normalization,
             message=context.user_message
+        )
+
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
         )
 
         extraction_active_stages = config.get("extraction_active_stages", [
@@ -269,6 +285,21 @@ class BookingSubagent:
         confirmation_phrases = config.get("confirmation_phrases", [])
         rejection_phrases = config.get("rejection_phrases", [])
 
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         if self.is_booking_completed(variables):
             answer = render_template(
                 config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
@@ -329,6 +360,14 @@ class BookingSubagent:
         if details:
             variables = apply_variable_patch(variables, details, [])
 
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         if not matches_any(context.user_message, confirmation_phrases, normalization):
             answer = render_template(
                 config.get("templates", {}).get(
@@ -358,6 +397,14 @@ class BookingSubagent:
             []
         )
 
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         missing = self.get_missing_required_create_fields(config, variables)
 
         if missing:
@@ -367,6 +414,14 @@ class BookingSubagent:
                 variables,
                 config.get("on_missing_details_updates", {}),
                 []
+            )
+
+            variables = self.ensure_pending_booking_context(
+                variables=variables,
+                config=config,
+                assistant_config=context.assistant_config,
+                message=context.user_message,
+                normalization=normalization
             )
 
             return SubagentResult(
@@ -388,6 +443,7 @@ class BookingSubagent:
             tool_calls_used=tool_calls_used
         )
 
+
     def handle_awaiting_customer_details(
         self,
         context: SubagentContext,
@@ -397,6 +453,21 @@ class BookingSubagent:
         tool_calls_used: int
     ) -> SubagentResult:
         normalization = context.assistant_config.get("normalization", {})
+
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
 
         if self.is_booking_completed(variables):
             answer = render_template(
@@ -428,6 +499,14 @@ class BookingSubagent:
         if details:
             variables = apply_variable_patch(variables, details, [])
 
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         missing = self.get_missing_required_create_fields(config, variables)
 
         if missing:
@@ -452,6 +531,7 @@ class BookingSubagent:
             tool_calls_used=tool_calls_used
         )
 
+
     def handle_slot_selected(
         self,
         context: SubagentContext,
@@ -459,6 +539,23 @@ class BookingSubagent:
         variables: Dict[str, Any],
         selected_slot: Dict[str, Any]
     ) -> SubagentResult:
+        normalization = context.assistant_config.get("normalization", {})
+
+        variables = self.ensure_selected_branch_from_context(
+            variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         slot_mapping = config.get("slot_to_pending_booking_mapping", {})
         pending_booking_path = config.get("pending_booking_path", "booking.pending")
 
@@ -467,6 +564,20 @@ class BookingSubagent:
             "slot": selected_slot,
             "message": context.user_message
         })
+
+        known_branch = self.get_known_branch(variables)
+
+        if pending.get("branch") in [None, ""]:
+            pending["branch"] = known_branch
+
+        if pending.get("branch") not in [None, ""]:
+            canonical_branch = self.resolve_canonical_branch(
+                value=str(pending.get("branch") or ""),
+                assistant_config=context.assistant_config,
+                normalization=normalization
+            )
+            if canonical_branch:
+                pending["branch"] = canonical_branch
 
         if pending.get("date") in [None, ""]:
             pending["date"] = (
@@ -478,12 +589,36 @@ class BookingSubagent:
         if pending.get("date_text") in [None, ""]:
             pending["date_text"] = deep_get(variables, config.get("date_text_path", "date_text"), "")
 
-        if pending.get("branch") in [None, ""]:
-            pending["branch"] = self.get_known_branch(variables)
+        if pending.get("time") in [None, ""]:
+            selected_time = selected_slot.get("time") if isinstance(selected_slot, dict) else ""
+            if selected_time:
+                pending["time"] = selected_time
+
+        if pending.get("section") in [None, ""]:
+            selected_section = selected_slot.get("section") if isinstance(selected_slot, dict) else ""
+            if selected_section:
+                pending["section"] = selected_section
 
         updates = dict(config.get("on_slot_selected_updates", {}))
         updates[pending_booking_path] = pending
         updates["booking.pending_summary"] = self.build_pending_summary(pending)
+
+        if pending.get("branch"):
+            updates["selected_branch"] = pending.get("branch")
+            updates["location_branch"] = pending.get("branch")
+
+            if not deep_get(variables, "nearest_branch"):
+                updates["nearest_branch"] = pending.get("branch")
+
+        if pending.get("date"):
+            updates[config.get("appointment_date_path", "appointment_date")] = pending.get("date")
+            updates["date"] = pending.get("date")
+
+        if pending.get("date_text"):
+            updates[config.get("date_text_path", "date_text")] = pending.get("date_text")
+
+        if pending.get("time"):
+            updates["appointment_time"] = pending.get("time")
 
         patched = apply_variable_patch(variables, updates, [])
 
@@ -504,8 +639,9 @@ class BookingSubagent:
             variable_updates=patched,
             clear_variables=config.get("on_slot_selected_clear", []),
             selected_subagent=self.name,
-            notes="slot selected; pending booking prepared"
+            notes="slot selected; pending booking prepared with branch/date/time context"
         )
+
 
     def handle_booking_request(
         self,
@@ -551,6 +687,14 @@ class BookingSubagent:
             message=context.user_message
         )
 
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
         required_for_slots = config.get("required_before_list_slots", [])
         missing = get_missing_paths(required_for_slots, variables)
 
@@ -585,11 +729,15 @@ class BookingSubagent:
         })
 
         appointment_date = (
-            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            deep_get(variables, "booking.pending.date")
+            or deep_get(variables, config.get("appointment_date_path", "appointment_date"))
             or deep_get(variables, "date")
         )
 
-        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+        date_text = (
+            deep_get(variables, "booking.pending.date_text")
+            or deep_get(variables, config.get("date_text_path", "date_text"))
+        )
 
         branch = self.resolve_canonical_branch(
             value=str(arguments.get("branch") or ""),
@@ -717,6 +865,14 @@ class BookingSubagent:
 
         variables = self.ensure_selected_branch_from_context(
             variables=variables,
+            assistant_config=context.assistant_config,
+            message=context.user_message,
+            normalization=context.assistant_config.get("normalization", {})
+        )
+
+        variables = self.ensure_pending_booking_context(
+            variables=variables,
+            config=config,
             assistant_config=context.assistant_config,
             message=context.user_message,
             normalization=context.assistant_config.get("normalization", {})
@@ -1369,6 +1525,24 @@ class BookingSubagent:
                 )
             return variables
 
+        pending_branch = str(deep_get(variables, "booking.pending.branch") or "").strip()
+
+        canonical_pending = self.resolve_canonical_branch(
+            value=pending_branch,
+            assistant_config=assistant_config,
+            normalization=normalization
+        )
+
+        if canonical_pending:
+            return apply_variable_patch(
+                variables,
+                {
+                    "selected_branch": canonical_pending,
+                    "location_branch": canonical_pending
+                },
+                []
+            )
+
         message_branch = self.resolve_canonical_branch(
             value=message,
             assistant_config=assistant_config,
@@ -1397,15 +1571,235 @@ class BookingSubagent:
                 []
             )
 
+        inferred_branch = self.infer_branch_from_available_branches(
+            variables=variables,
+            message=message,
+            normalization=normalization
+        )
+
+        if inferred_branch:
+            return apply_variable_patch(
+                variables,
+                {
+                    "selected_branch": inferred_branch,
+                    "location_branch": inferred_branch,
+                    "nearest_branch": inferred_branch
+                },
+                []
+            )
+
         return variables
 
+
     def get_known_branch(self, variables: Dict[str, Any]) -> str:
-        for path in ["selected_branch", "location_branch", "nearest_branch"]:
+        for path in [
+            "booking.pending.branch",
+            "selected_branch",
+            "location_branch",
+            "nearest_branch"
+        ]:
             value = str(deep_get(variables, path) or "").strip()
             if value:
                 return value
         return ""
 
+
+
+    def ensure_pending_booking_context(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        assistant_config: Dict[str, Any],
+        message: str,
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        pending_path = config.get("pending_booking_path", "booking.pending")
+        pending = deep_get(variables, pending_path, {})
+
+        if not isinstance(pending, dict):
+            pending = {}
+
+        updates: Dict[str, Any] = {}
+        patched_pending = dict(pending)
+
+        branch = (
+            patched_pending.get("branch")
+            or self.get_known_branch(variables)
+            or self.infer_branch_from_available_branches(
+                variables=variables,
+                message=message,
+                normalization=normalization
+            )
+        )
+
+        if branch:
+            canonical_branch = self.resolve_canonical_branch(
+                value=str(branch),
+                assistant_config=assistant_config,
+                normalization=normalization
+            ) or str(branch)
+
+            patched_pending["branch"] = canonical_branch
+            updates["selected_branch"] = canonical_branch
+            updates["location_branch"] = canonical_branch
+
+            if not deep_get(variables, "nearest_branch"):
+                updates["nearest_branch"] = canonical_branch
+
+        date_value = (
+            patched_pending.get("date")
+            or deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+        )
+
+        if date_value:
+            patched_pending["date"] = date_value
+            updates[config.get("appointment_date_path", "appointment_date")] = date_value
+            updates["date"] = date_value
+
+        date_text = (
+            patched_pending.get("date_text")
+            or deep_get(variables, config.get("date_text_path", "date_text"))
+        )
+
+        if date_text:
+            patched_pending["date_text"] = date_text
+            updates[config.get("date_text_path", "date_text")] = date_text
+
+        time_value = patched_pending.get("time") or deep_get(variables, "appointment_time")
+
+        if time_value:
+            patched_pending["time"] = time_value
+            updates["appointment_time"] = time_value
+
+        section = patched_pending.get("section") or deep_get(variables, "service_needed")
+
+        if section and not patched_pending.get("section"):
+            patched_pending["section"] = section
+
+        if patched_pending and patched_pending != pending:
+            updates[pending_path] = patched_pending
+            updates["booking.pending_summary"] = self.build_pending_summary(patched_pending)
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+    def infer_branch_from_available_branches(
+        self,
+        variables: Dict[str, Any],
+        message: str,
+        normalization: Dict[str, Any]
+    ) -> str:
+        branches = deep_get(variables, "available_branches", [])
+
+        if not isinstance(branches, list) or not branches:
+            return ""
+
+        location_text = " ".join([
+            str(deep_get(variables, "user_area") or ""),
+            str(message or "")
+        ]).strip()
+
+        if not location_text:
+            return ""
+
+        location_norm = normalize_text(location_text, normalization)
+        location_tokens = self.extract_meaningful_tokens(location_norm)
+
+        if not location_tokens:
+            return ""
+
+        best_branch = ""
+        best_score = 0
+
+        for branch_item in branches:
+            if not isinstance(branch_item, dict):
+                continue
+
+            branch_name = str(branch_item.get("branch") or "").strip()
+            branch_area = str(branch_item.get("area") or "").strip()
+
+            if not branch_name or not branch_area:
+                continue
+
+            area_norm = normalize_text(branch_area, normalization)
+            score = 0
+
+            for token in location_tokens:
+                if token and token in area_norm:
+                    score += 1
+
+            if score > best_score:
+                best_score = score
+                best_branch = branch_name
+
+        if best_score > 0:
+            return best_branch
+
+        return ""
+
+    @staticmethod
+    def extract_meaningful_tokens(text: str) -> List[str]:
+        raw_tokens = re.findall(r"[\w\u0600-\u06FF]+", str(text or "").lower())
+
+        stopwords = {
+            "انا",
+            "أنا",
+            "ساكن",
+            "في",
+            "قولي",
+            "قوللي",
+            "قولى",
+            "اقرب",
+            "أقرب",
+            "فرع",
+            "ليا",
+            "لي",
+            "وايه",
+            "ايه",
+            "إيه",
+            "المواعيد",
+            "المتاحه",
+            "المتاحة",
+            "يوم",
+            "الجاي",
+            "القادم",
+            "عايز",
+            "عاوز",
+            "ممكن",
+            "لو",
+            "تحب",
+            "ده",
+            "هذا",
+            "اللي",
+            "اكد",
+            "أكد",
+            "المعاد",
+            "موعد",
+            "ميعاد",
+            "الساعة",
+            "الساعه"
+        }
+
+        output = []
+
+        for token in raw_tokens:
+            token = token.strip()
+
+            if not token:
+                continue
+
+            if token in stopwords:
+                continue
+
+            if len(token) < 3:
+                continue
+
+            output.append(token)
+
+        return output[:12]
     def resolve_canonical_branch(
         self,
         value: str,
@@ -1524,7 +1918,30 @@ class BookingSubagent:
                 or deep_get(variables, "customer_phone")
             )
 
+        if path == "variables.booking.pending.branch":
+            return bool(self.get_known_branch(variables))
+
+        if path == "variables.booking.pending.date":
+            return bool(
+                deep_get(variables, "booking.pending.date")
+                or deep_get(variables, "appointment_date")
+                or deep_get(variables, "date")
+            )
+
+        if path == "variables.booking.pending.date_text":
+            return bool(
+                deep_get(variables, "booking.pending.date_text")
+                or deep_get(variables, "date_text")
+            )
+
+        if path == "variables.booking.pending.time":
+            return bool(
+                deep_get(variables, "booking.pending.time")
+                or deep_get(variables, "appointment_time")
+            )
+
         return False
+
 
     def render_missing_question(
         self,
