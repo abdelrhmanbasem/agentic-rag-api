@@ -1,6 +1,8 @@
 import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from app.config import TZ
 from app.subagents.base import (
     SubagentContext,
     SubagentResult,
@@ -26,6 +28,7 @@ class BookingSubagent:
     Responsibilities:
     - maintain booking state
     - extract deterministic fields
+    - resolve normalized appointment dates from natural date phrases
     - resolve slot selection
     - call list_available_slots
     - call create_booking only after explicit confirmation and required details
@@ -109,13 +112,32 @@ class BookingSubagent:
         )
 
         if date_text and self.should_extract_date(context, config, stage):
+            date_updates = {
+                config.get("date_text_path", "date_text"): date_text
+            }
+
+            resolved_date = self.resolve_date_text(
+                date_text=date_text,
+                message=context.user_message,
+                normalization=normalization
+            )
+
+            if resolved_date:
+                date_updates[config.get("appointment_date_path", "appointment_date")] = resolved_date
+                date_updates["date"] = resolved_date
+
             variables = apply_variable_patch(
                 variables,
-                {
-                    config.get("date_text_path", "date_text"): date_text
-                },
+                date_updates,
                 []
             )
+
+        variables = self.ensure_resolved_date_from_existing_state(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
 
         extraction_active_stages = config.get("extraction_active_stages", [
             config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details")
@@ -474,6 +496,13 @@ class BookingSubagent:
                 notes="booking already confirmed; new booking request blocked"
             )
 
+        variables = self.ensure_resolved_date_from_existing_state(
+            variables=variables,
+            config=config,
+            normalization=context.assistant_config.get("normalization", {}),
+            message=context.user_message
+        )
+
         required_for_slots = config.get("required_before_list_slots", [])
         missing = get_missing_paths(required_for_slots, variables)
 
@@ -507,6 +536,19 @@ class BookingSubagent:
             "message": context.user_message
         })
 
+        appointment_date = (
+            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+        )
+
+        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+
+        if appointment_date:
+            arguments["date"] = appointment_date
+
+        if date_text and not arguments.get("date_text"):
+            arguments["date_text"] = date_text
+
         tool_result = context.tool_runner.call(
             tool_name=tool_name,
             operation=operation,
@@ -534,6 +576,16 @@ class BookingSubagent:
             arguments=arguments,
             result=tool_result
         )
+
+        if appointment_date:
+            updated_variables = apply_variable_patch(
+                updated_variables,
+                {
+                    config.get("appointment_date_path", "appointment_date"): appointment_date,
+                    "date": appointment_date
+                },
+                []
+            )
 
         result_context = {
             "variables": updated_variables,
@@ -593,6 +645,13 @@ class BookingSubagent:
                 notes="create_booking blocked because booking already confirmed"
             )
 
+        variables = self.ensure_resolved_date_from_existing_state(
+            variables=variables,
+            config=config,
+            normalization=context.assistant_config.get("normalization", {}),
+            message=context.user_message
+        )
+
         operations = config.get("operations", {})
         tool_name = config.get("tool_name", "")
         operation = operations.get("create_booking", "")
@@ -602,6 +661,19 @@ class BookingSubagent:
             "variables": variables,
             "message": context.user_message
         })
+
+        appointment_date = (
+            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+        )
+
+        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+
+        if appointment_date:
+            arguments["date"] = appointment_date
+
+        if date_text and not arguments.get("date_text"):
+            arguments["date_text"] = date_text
 
         arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
         arguments["user_id"] = deep_get(variables, "user_id", "")
@@ -628,6 +700,16 @@ class BookingSubagent:
             arguments=arguments,
             result=tool_result
         )
+
+        if appointment_date:
+            updated_variables = apply_variable_patch(
+                updated_variables,
+                {
+                    config.get("appointment_date_path", "appointment_date"): appointment_date,
+                    "date": appointment_date
+                },
+                []
+            )
 
         template_key = "booking_confirmed" if tool_result.get("ok") is True else "booking_failed"
 
@@ -800,6 +882,20 @@ class BookingSubagent:
         raw_message = normalize_digits(str(message or ""), normalization.get("digit_map", {})).strip()
         normalized = normalize_text(raw_message, normalization)
 
+        direct = self.extract_direct_date_term(
+            normalized_message=normalized,
+            config=config,
+            normalization=normalization
+        )
+
+        if direct:
+            return direct
+
+        explicit = self.extract_explicit_date_phrase(raw_message)
+
+        if explicit:
+            return explicit
+
         for item in config.get("date_extraction_patterns", []):
             if not isinstance(item, dict):
                 continue
@@ -816,19 +912,327 @@ class BookingSubagent:
                 continue
 
             if match:
-                value = match.group(group).strip()
+                value = self.clean_date_text(match.group(group).strip(), normalization)
                 if value:
                     return value
 
+        return ""
+
+    def extract_direct_date_term(
+        self,
+        normalized_message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
         direct_terms = config.get("date_direct_terms", [])
 
         for term in direct_terms:
             normalized_term = normalize_text(str(term), normalization)
 
-            if normalized_term and normalized_term in normalized:
+            if normalized_term and normalized_term in normalized_message:
                 return str(term)
 
         return ""
+
+    def extract_explicit_date_phrase(self, raw_message: str) -> str:
+        month_names = (
+            "يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر"
+        )
+
+        patterns = [
+            rf"\b(\d{{1,2}}\s*(?:{month_names})(?:\s+\d{{4}})?)\b",
+            r"\b(\d{4}-\d{1,2}-\d{1,2})\b",
+            r"\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b"
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_message, flags=re.IGNORECASE)
+
+            if match:
+                return match.group(1).strip()
+
+        return ""
+
+    def clean_date_text(self, value: str, normalization: Dict[str, Any]) -> str:
+        text = str(value or "").strip()
+
+        if not text:
+            return ""
+
+        normalized = normalize_text(text, normalization)
+
+        direct_terms = [
+            "بكرة",
+            "بكره",
+            "بعد بكرة",
+            "بعد بكره",
+            "النهارده",
+            "انهارده",
+            "اليوم",
+            "الخميس",
+            "الجمعة",
+            "الجمعه",
+            "السبت",
+            "الأحد",
+            "الاحد",
+            "الاثنين",
+            "التلات",
+            "الثلاثاء",
+            "الأربعاء",
+            "الاربعاء"
+        ]
+
+        for term in direct_terms:
+            if normalize_text(term, normalization) in normalized:
+                return term
+
+        explicit = self.extract_explicit_date_phrase(text)
+
+        if explicit:
+            return explicit
+
+        text = re.sub(r"^(المتاحه|المتاحة|متاح|في|على|يوم)\s+", "", text).strip()
+        text = re.split(r"\s+(?:في|على|بفرع|فرع)\s+", text, maxsplit=1)[0].strip()
+
+        return text
+
+    def ensure_resolved_date_from_existing_state(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str = ""
+    ) -> Dict[str, Any]:
+        appointment_date_path = config.get("appointment_date_path", "appointment_date")
+        date_text_path = config.get("date_text_path", "date_text")
+
+        existing_date = deep_get(variables, appointment_date_path) or deep_get(variables, "date")
+
+        if existing_date:
+            return variables
+
+        date_text = deep_get(variables, date_text_path, "")
+
+        if not date_text and message:
+            date_text = self.extract_date_text(message, config, normalization)
+
+        if not date_text:
+            return variables
+
+        resolved_date = self.resolve_date_text(
+            date_text=str(date_text),
+            message=message,
+            normalization=normalization
+        )
+
+        if not resolved_date:
+            return variables
+
+        return apply_variable_patch(
+            variables,
+            {
+                date_text_path: date_text,
+                appointment_date_path: resolved_date,
+                "date": resolved_date
+            },
+            []
+        )
+
+    def resolve_date_text(
+        self,
+        date_text: str,
+        message: str = "",
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> str:
+        normalization = normalization or {}
+        raw = normalize_digits(str(date_text or "").strip(), normalization.get("digit_map", {}))
+        raw_message = normalize_digits(str(message or "").strip(), normalization.get("digit_map", {}))
+
+        if not raw:
+            return ""
+
+        normalized = normalize_text(raw, normalization)
+        normalized_message = normalize_text(raw_message, normalization) if raw_message else normalized
+
+        today = datetime.now(TZ).date()
+
+        relative_days = self.resolve_relative_day_offset(normalized)
+
+        if relative_days is not None:
+            return (today + timedelta(days=relative_days)).isoformat()
+
+        weekday_index = self.resolve_weekday_index(normalized)
+
+        if weekday_index is None and raw_message:
+            weekday_index = self.resolve_weekday_index(normalized_message)
+
+        if weekday_index is not None:
+            return self.next_weekday(today, weekday_index).isoformat()
+
+        iso = self.parse_iso_date(raw)
+
+        if iso:
+            return iso
+
+        numeric = self.parse_numeric_date(raw, today)
+
+        if numeric:
+            return numeric
+
+        month_named = self.parse_named_month_date(raw, today)
+
+        if month_named:
+            return month_named
+
+        return ""
+
+    def resolve_relative_day_offset(self, normalized: str) -> Optional[int]:
+        if any(term in normalized for term in ["بعد بكره", "بعد بكرة", "بعد غد", "بعد الغد"]):
+            return 2
+
+        if any(term in normalized for term in ["بكره", "بكرة", "غدا", "غد", "tomorrow"]):
+            return 1
+
+        if any(term in normalized for term in ["النهارده", "انهارده", "اليوم", "today"]):
+            return 0
+
+        return None
+
+    def resolve_weekday_index(self, normalized: str) -> Optional[int]:
+        weekday_map = {
+            "الاثنين": 0,
+            "الاتنين": 0,
+            "الاثنين": 0,
+            "monday": 0,
+            "التلات": 1,
+            "الثلاثاء": 1,
+            "الثلاثا": 1,
+            "tuesday": 1,
+            "الاربعاء": 2,
+            "الأربعاء": 2,
+            "الاربع": 2,
+            "wednesday": 2,
+            "الخميس": 3,
+            "thursday": 3,
+            "الجمعه": 4,
+            "الجمعة": 4,
+            "friday": 4,
+            "السبت": 5,
+            "saturday": 5,
+            "الاحد": 6,
+            "الأحد": 6,
+            "sunday": 6
+        }
+
+        for word, index in weekday_map.items():
+            if word in normalized:
+                return index
+
+        return None
+
+    @staticmethod
+    def next_weekday(today, weekday_index: int):
+        days_ahead = weekday_index - today.weekday()
+
+        if days_ahead < 0:
+            days_ahead += 7
+
+        return today + timedelta(days=days_ahead)
+
+    def parse_iso_date(self, raw: str) -> str:
+        match = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", raw)
+
+        if not match:
+            return ""
+
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return ""
+
+    def parse_numeric_date(self, raw: str, today) -> str:
+        match = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", raw)
+
+        if not match:
+            return ""
+
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_text = match.group(3)
+
+        if year_text:
+            year = int(year_text)
+            if year < 100:
+                year += 2000
+        else:
+            year = today.year
+
+        try:
+            candidate = datetime(year, month, day).date()
+        except ValueError:
+            return ""
+
+        if not year_text and candidate < today:
+            try:
+                candidate = datetime(year + 1, month, day).date()
+            except ValueError:
+                return ""
+
+        return candidate.isoformat()
+
+    def parse_named_month_date(self, raw: str, today) -> str:
+        normalized = raw.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+
+        month_map = {
+            "يناير": 1,
+            "فبراير": 2,
+            "مارس": 3,
+            "ابريل": 4,
+            "مايو": 5,
+            "يونيو": 6,
+            "يونيه": 6,
+            "يوليو": 7,
+            "يوليه": 7,
+            "اغسطس": 8,
+            "سبتمبر": 9,
+            "اكتوبر": 10,
+            "نوفمبر": 11,
+            "ديسمبر": 12
+        }
+
+        pattern = r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
+        match = re.search(pattern, normalized)
+
+        if not match:
+            return ""
+
+        day = int(match.group(1))
+        month_name = match.group(2)
+        year_text = match.group(3)
+
+        month = month_map.get(month_name)
+
+        if not month:
+            return ""
+
+        year = int(year_text) if year_text else today.year
+
+        try:
+            candidate = datetime(year, month, day).date()
+        except ValueError:
+            return ""
+
+        if not year_text and candidate < today:
+            try:
+                candidate = datetime(year + 1, month, day).date()
+            except ValueError:
+                return ""
+
+        return candidate.isoformat()
 
     def is_booking_or_availability_request(
         self,
