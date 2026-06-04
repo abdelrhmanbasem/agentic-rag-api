@@ -7,9 +7,9 @@
     "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
-    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability.",
-    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false, explain safely and do not hallucinate a successful result.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For symptom conversations, explain likely causes carefully and ask useful diagnostic questions before recommending a visit, unless the customer directly asks to book or clearly agrees to inspect the car.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability.",
+    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer.",
     "branch_aliases": {
       "Nasr City": [
         "Nasr City",
@@ -173,6 +173,72 @@
             "do not use formal MSA wording"
           ]
         }
+      },
+      "availability_required_inputs": {
+        "enabled": true,
+        "description": "Config-driven guardrail for availability calls. The graph should not call list_available_slots unless branch and normalized date are available.",
+        "operations": {
+          "list_available_slots": {
+            "required": [
+              "branch",
+              "date"
+            ],
+            "missing_branch_response_brief": {
+              "tone": "natural professional Egyptian Arabic",
+              "language": "Egyptian Arabic",
+              "reply_length": "short",
+              "next_move": "Ask for the customer's area or branch before checking availability.",
+              "must_do": [
+                "ask for branch or area",
+                "do not call the sheet",
+                "do not say no slots"
+              ],
+              "must_not_do": [
+                "do not invent a branch",
+                "do not invent slots",
+                "do not say availability was checked"
+              ]
+            },
+            "missing_date_response_brief": {
+              "tone": "natural professional Egyptian Arabic",
+              "language": "Egyptian Arabic",
+              "reply_length": "short",
+              "next_move": "Ask which day/date the customer wants appointments for.",
+              "must_do": [
+                "acknowledge the availability request",
+                "ask for the preferred day/date",
+                "give examples like بكرة or الأحد الجاي",
+                "do not call the sheet",
+                "do not say no slots"
+              ],
+              "must_not_do": [
+                "do not invent availability",
+                "do not say there are no appointments",
+                "do not ask for branch again if a known branch exists",
+                "do not use formal MSA wording"
+              ]
+            }
+          },
+          "check_availability": {
+            "required": [
+              "branch",
+              "date",
+              "time"
+            ]
+          },
+          "create_booking": {
+            "required": [
+              "branch",
+              "date",
+              "time",
+              "section",
+              "full_name",
+              "phone",
+              "plate_number",
+              "customer_confirmed_booking"
+            ]
+          }
+        }
       }
     },
     "response_rules": [
@@ -196,6 +262,8 @@
       "During an active booking flow, ask only for the next missing required information.",
       "If selected_branch, location_branch, or nearest_branch exists and appointment_date is missing, ask only for the day/date.",
       "If selected_branch and appointment_date both exist and the customer asks for available times, check slots.",
+      "If the customer asks for available appointments but appointment_date/date is missing, ask for the preferred day/date and do not claim that availability was checked.",
+      "If the customer says اه ياريت ايه المواعيد المتاحة or أي صيغة تطلب المواعيد without a date, ask for the date naturally. Do not call list_available_slots and do not say no slots.",
       "If nearest_branch or location_branch exists and the customer asks for available appointments, do not ask for branch again. Use the known branch and ask only for missing date, or check slots if appointment_date exists.",
       "If the customer asks for available appointments and says بكرة/بكره/tomorrow/a weekday/an Arabic date phrase in the same message, treat that as the requested date and use the normalized appointment_date for sheet lookup.",
       "If the customer replies with only a date phrase like بكرة, بكره, الأحد الجاي, الخميس, or 7 يونيو while booking.stage is awaiting_date, use the known branch and check slots immediately.",
@@ -205,6 +273,9 @@
       "When waiting for slot selection, do not call tools again unless the user asks for a different date or new availability.",
       "When the user selects a time in Arabic words like عشرة الصبح, treat it as a slot selection if a matching returned slot exists.",
       "If service_needed exists, show or use only slots matching service_needed.",
+      "If tool_result.ok is false because missing_inputs contains date or appointment_date, ask for the preferred day/date.",
+      "If tool_result.ok is false because missing_inputs contains branch, ask for the customer's area or branch.",
+      "If tool_result.ok is false due to missing required inputs, do not apologize as if the service failed and do not say no appointments are available.",
       "If the user says thanks after a confirmed booking, close politely and do not repeat the full confirmation."
     ],
     "fallback_messages": {
@@ -510,7 +581,7 @@
         "enabled": true,
         "goal": "Safely check appointment slots, resolve selected slot, collect required customer details, and create bookings only after explicit confirmation.",
         "when_to_use": "Use when the customer asks for appointments, available slots, booking, visit scheduling, car inspection, الكشف, الاطمئنان على العربية, date-only follow-ups during an active booking flow, or continues an active booking flow.",
-        "instructions": "Do not write final customer-facing wording. Maintain booking state, extract deterministic fields, normalize natural date phrases into appointment_date, resolve branch aliases into canonical branch names, carry forward selected_branch/location_branch/nearest_branch when the user asks for slots, call list_available_slots with date, resolve slot selection, ask for explicit confirmation, and call create_booking only when all required fields are present and customer_confirmed_booking is true. Never create duplicate bookings after a confirmed visit_id exists. If selected_branch is missing but nearest_branch or location_branch exists, use that known branch before listing slots.",
+        "instructions": "Do not write final customer-facing wording. Maintain booking state, extract deterministic fields, normalize natural date phrases into appointment_date, resolve branch aliases into canonical branch names, carry forward selected_branch/location_branch/nearest_branch when the user asks for slots, call list_available_slots only when selected_branch and appointment_date are present, resolve slot selection, ask for explicit confirmation, and call create_booking only when all required fields are present and customer_confirmed_booking is true. Never create duplicate bookings after a confirmed visit_id exists. If selected_branch is missing but nearest_branch or location_branch exists, use that known branch before listing slots. If appointment_date is missing, ask for the day/date and do not call the availability tool.",
         "allowed_actions": [
           "ask_for_missing_booking_input",
           "list_available_slots",
@@ -1311,7 +1382,7 @@
     }
   },
   "domain_playbook": {
-    "version": "3.5-branch-carry-date-followups",
+    "version": "3.6-missing-date-tool-guardrails",
     "architecture": "LangGraph manifest decides; deterministic executors safely call tools/update state; graph response node writes final customer answer; quality guard validates.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -1324,6 +1395,8 @@
       "BookingSubagent must carry selected_branch from selected_branch, location_branch, or nearest_branch and resolve branch_aliases before slot lookup.",
       "Natural date phrases such as بكرة, بكره, weekdays, الأحد الجاي, and Arabic date phrases must be normalized to appointment_date before sheet lookup.",
       "Date-only replies during awaiting_date should trigger slot lookup with the known branch.",
+      "Availability requests without appointment_date/date must ask for a date and must not call list_available_slots.",
+      "The graph direct-tool path must block list_available_slots when branch or date is missing.",
       "list_available_slots should receive date as the normalized ISO date and date_text as the original user phrase.",
       "Apps Script should prefer payload.date over payload.date_text for matching sheet availability.",
       "Branch aliases live in branch_aliases; canonical branch values should be used for tool calls.",
