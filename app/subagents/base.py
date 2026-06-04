@@ -302,15 +302,131 @@ def pick_variable_scope(variables: Dict[str, Any], include_paths: List[str]) -> 
     return scoped
 
 
+def get_subagent_config(
+    assistant_config: Dict[str, Any],
+    subagent_name: str,
+    default: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Return a subagent configuration by id/name, supporting both supported
+    domain_bundle formats:
+
+    1. Dict format:
+       "subagents": {
+         "booking": {...},
+         "location": {...}
+       }
+
+    2. List format:
+       "subagents": [
+         {"id": "booking", ...},
+         {"id": "location", ...}
+       ]
+
+    This prevents subagents from silently disabling themselves when a future
+    assistant bundle uses list-based configuration.
+    """
+    if not isinstance(assistant_config, dict):
+        return dict(default or {})
+
+    target = str(subagent_name or "").strip()
+    if not target:
+        return dict(default or {})
+
+    raw_subagents = assistant_config.get("subagents", {})
+
+    if isinstance(raw_subagents, dict):
+        direct = raw_subagents.get(target)
+
+        if isinstance(direct, dict):
+            config = dict(direct)
+            config.setdefault("id", target)
+            config.setdefault("name", target)
+            return config
+
+        normalized_target = normalize_text(target, assistant_config.get("normalization", {}) or {})
+
+        for key, value in raw_subagents.items():
+            if not isinstance(value, dict):
+                continue
+
+            candidates = [
+                str(key or ""),
+                str(value.get("id", "") or ""),
+                str(value.get("name", "") or ""),
+            ]
+
+            for candidate in candidates:
+                if normalize_text(candidate, assistant_config.get("normalization", {}) or {}) == normalized_target:
+                    config = dict(value)
+                    config.setdefault("id", str(key or target))
+                    config.setdefault("name", str(key or target))
+                    return config
+
+        return dict(default or {})
+
+    if isinstance(raw_subagents, list):
+        normalized_target = normalize_text(target, assistant_config.get("normalization", {}) or {})
+
+        for item in raw_subagents:
+            if not isinstance(item, dict):
+                continue
+
+            candidates = [
+                str(item.get("id", "") or ""),
+                str(item.get("name", "") or ""),
+                str(item.get("key", "") or ""),
+            ]
+
+            for candidate in candidates:
+                if normalize_text(candidate, assistant_config.get("normalization", {}) or {}) == normalized_target:
+                    config = dict(item)
+                    config.setdefault("id", target)
+                    config.setdefault("name", target)
+                    return config
+
+    return dict(default or {})
+
+
+def get_subagent_config_list(assistant_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return all subagent configs as a normalized list, regardless of whether the
+    domain bundle stores subagents as a dict or list.
+    """
+    if not isinstance(assistant_config, dict):
+        return []
+
+    raw_subagents = assistant_config.get("subagents", {})
+
+    if isinstance(raw_subagents, list):
+        return [dict(item) for item in raw_subagents if isinstance(item, dict)]
+
+    if isinstance(raw_subagents, dict):
+        configs: List[Dict[str, Any]] = []
+
+        for key, value in raw_subagents.items():
+            if not isinstance(value, dict):
+                continue
+
+            config = dict(value)
+            config.setdefault("id", str(key))
+            config.setdefault("name", str(key))
+            configs.append(config)
+
+        return configs
+
+    return []
+
+
 def get_subagent_variable_scope(
     assistant_config: Dict[str, Any],
     subagent_name: str,
     variables: Dict[str, Any]
 ) -> Dict[str, Any]:
-    subagent_config = (
-        assistant_config
-        .get("subagents", {})
-        .get(subagent_name, {})
+    subagent_config = get_subagent_config(
+        assistant_config=assistant_config,
+        subagent_name=subagent_name,
+        default={}
     )
 
     scope = subagent_config.get("variable_scope", {})
