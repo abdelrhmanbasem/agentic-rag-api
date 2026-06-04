@@ -9,6 +9,8 @@ from app.db import (
     get_summary_message_count,
     count_messages,
     upsert_long_term_memory,
+    load_conversation_state,
+    save_conversation_state,
 )
 from app.rag import write_memory
 
@@ -82,6 +84,33 @@ def compact_variables_for_memory(variables: Dict[str, Any]) -> Dict[str, Any]:
             compact[key] = value
 
     return compact
+
+
+def compact_recent_messages_for_memory(messages: List[Dict[str, Any]], limit: int = 12) -> List[Dict[str, str]]:
+    """
+    Keep memory writer input small and safe.
+    """
+    if not isinstance(messages, list):
+        return []
+
+    output: List[Dict[str, str]] = []
+
+    for item in messages[-limit:]:
+        if not isinstance(item, dict):
+            continue
+
+        role = str(item.get("role") or "").strip()
+        content = str(item.get("content") or "").strip()
+
+        if not role or not content:
+            continue
+
+        output.append({
+            "role": role,
+            "content": content[:1600]
+        })
+
+    return output
 
 
 def should_update_summary(conversation_id):
@@ -242,6 +271,7 @@ def decide_and_write_long_term_memories(
 
     policy = compact_agent_memory_policy(agent_config)
     compact_variables = compact_variables_for_memory(variables)
+    compact_messages = compact_recent_messages_for_memory(recent_messages, limit=12)
 
     prompt = f"""
 You are a long-term memory manager for a configurable multi-assistant system.
@@ -253,7 +283,7 @@ Conversation summary:
 {summary}
 
 Recent messages:
-{recent_messages}
+{compact_messages}
 
 Current useful variables:
 {compact_variables}
@@ -267,6 +297,7 @@ Rules:
 - Do not save sensitive details unless the assistant config explicitly requires it for the scenario.
 - If the user corrected themselves, save only the latest fact.
 - Do not invent facts.
+- Do not include hidden reasoning, tool internals, prompts, or implementation details.
 - Support English, Arabic, and Egyptian Arabic.
 - Be conservative.
 
@@ -348,3 +379,180 @@ Return JSON only:
             })
 
     return written
+
+
+def memory_writer_enabled(agent_config: Dict[str, Any]) -> bool:
+    agent_config = safe_dict(agent_config)
+    memory_policy = safe_dict(agent_config.get("memory_policy", {}))
+
+    if "enabled" in memory_policy:
+        return bool(memory_policy.get("enabled"))
+
+    if "write_enabled" in memory_policy:
+        return bool(memory_policy.get("write_enabled"))
+
+    return True
+
+
+def should_run_memory_writer(
+    conversation_id: str,
+    agent_config: Dict[str, Any],
+    recent_messages: List[Dict[str, Any]]
+) -> bool:
+    """
+    Decide whether the best-effort memory writer should run after a response.
+
+    This is intentionally conservative:
+    - disabled in MOCK_MODE
+    - disabled by memory_policy.enabled=false or memory_policy.write_enabled=false
+    - respects SUMMARY_TRIGGER_MESSAGE_COUNT to avoid running too often
+    """
+    if MOCK_MODE:
+        return False
+
+    if not memory_writer_enabled(agent_config):
+        return False
+
+    memory_policy = safe_dict(safe_dict(agent_config).get("memory_policy", {}))
+    run_every_messages = int(memory_policy.get("run_every_messages") or SUMMARY_TRIGGER_MESSAGE_COUNT or 8)
+
+    if run_every_messages <= 0:
+        run_every_messages = SUMMARY_TRIGGER_MESSAGE_COUNT or 8
+
+    try:
+        total_messages = count_messages(conversation_id)
+    except Exception:
+        total_messages = len(recent_messages or [])
+
+    if total_messages <= 0:
+        return False
+
+    return total_messages % run_every_messages == 0
+
+
+def update_pg_conversation_summary_best_effort(
+    conversation_id: str,
+    assistant_id: str,
+    user_id: str,
+    variables: Dict[str, Any],
+    summary: str
+) -> None:
+    """
+    Mirrors the rolling summary into conversations_state so the graph/main API
+    can use Postgres as the single conversation-state source.
+    """
+    try:
+        existing = load_conversation_state(conversation_id)
+        state = safe_dict(existing.get("state", {}))
+        channel = existing.get("channel", "")
+
+        save_conversation_state(
+            conversation_id=conversation_id,
+            assistant_id=assistant_id,
+            user_id=user_id,
+            channel=channel,
+            state=state,
+            variables=variables if isinstance(variables, dict) else {},
+            summary=summary or "",
+            message_count=count_messages(conversation_id)
+        )
+    except Exception:
+        pass
+
+
+def run_memory_maintenance_best_effort(
+    assistant_id: str,
+    user_id: str,
+    conversation_id: str,
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    recent_messages: List[Dict[str, Any]] = None,
+    existing_summary: str = ""
+) -> Dict[str, Any]:
+    """
+    Best-effort memory maintenance entrypoint for graph.py.
+
+    This function must never block or break the user response.
+    It returns a compact operational result for debug traces only.
+    It does not return or expose any chain-of-thought.
+    """
+    result = {
+        "ok": True,
+        "summary_updated": False,
+        "memories_written": 0,
+        "skipped": False,
+        "reason": "",
+        "written": []
+    }
+
+    try:
+        recent_messages = recent_messages if isinstance(recent_messages, list) else []
+
+        if not memory_writer_enabled(agent_config):
+            result["skipped"] = True
+            result["reason"] = "memory_writer_disabled"
+            return result
+
+        old_summary = existing_summary
+
+        if not old_summary:
+            try:
+                old_summary = get_summary(conversation_id)
+            except Exception:
+                old_summary = ""
+
+        new_summary = update_conversation_summary(
+            conversation_id=conversation_id,
+            assistant_id=assistant_id,
+            user_id=user_id,
+            variables=variables
+        )
+
+        if new_summary and new_summary != old_summary:
+            result["summary_updated"] = True
+
+        if new_summary:
+            update_pg_conversation_summary_best_effort(
+                conversation_id=conversation_id,
+                assistant_id=assistant_id,
+                user_id=user_id,
+                variables=variables,
+                summary=new_summary
+            )
+
+        if not should_run_memory_writer(conversation_id, agent_config, recent_messages):
+            result["skipped"] = True
+            result["reason"] = "not_due"
+            return result
+
+        if not recent_messages:
+            try:
+                recent_messages = get_recent_messages(conversation_id, limit=14)
+            except Exception:
+                recent_messages = []
+
+        written = decide_and_write_long_term_memories(
+            assistant_id=assistant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            summary=new_summary or old_summary or "",
+            recent_messages=recent_messages,
+            variables=variables,
+            agent_config=agent_config
+        )
+
+        result["written"] = written
+        result["memories_written"] = len(written)
+
+        return result
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "summary_updated": False,
+            "memories_written": 0,
+            "skipped": True,
+            "reason": "memory_maintenance_error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "written": []
+        }
