@@ -8,8 +8,8 @@
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
     "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection.",
-    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic like: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز. Avoid formal wording like هل ترغب.",
+    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details. If the customer asks to use the same/current WhatsApp number and a valid phone exists in configured phone source paths, treat phone as present and ask only for remaining missing customer details.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic like: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز. Avoid formal wording like هل ترغب. لو العميل قال يستخدم نفس الرقم أو الرقم اللي بيتكلم منه وكان الرقم موجود في السياق، ما تطلبش رقم التليفون تاني؛ اسأل بس عن البيانات الناقصة.",
     "branch_aliases": {
       "Nasr City": [
         "Nasr City",
@@ -363,7 +363,14 @@
       "Do not store or treat confirmation-only phrases as names. Full names should come from labelled name phrases like اسمي or الاسم, or from a clearly requested name response during awaiting_customer_details.",
       "After booking is confirmed, if the customer sends a thanks/closing phrase, reply briefly and do not repeat visit_id, branch, date, or time unless the customer asks for them.",
       "BOOKING_COMPLETED_CLOSING must be a short Egyptian Arabic close like: العفو، تحت أمرك.",
-      "Customer detail phrase lists, name markers, plate markers, closing phrases, and fake-name guards must live in domain_bundle.json, not Python code."
+      "Customer detail phrase lists, name markers, plate markers, closing phrases, and fake-name guards must live in domain_bundle.json, not Python code.",
+      "If the customer says they want to use the same/current WhatsApp number and a valid phone exists in customer_profile.phone, phone, customer_phone, user_id, conversation_id, or configured phone_reuse.source_paths, preserve that phone and ask only for the remaining missing details.",
+      "Never ask for phone again if customer_profile.phone exists or a valid phone can be derived from configured phone_reuse.source_paths.",
+      "If the customer gives a name while phone is already known and plate_number is missing, ask only for plate_number.",
+      "If the customer confirms using the same phone while full_name and plate_number are still missing, acknowledge the phone only briefly and ask for full_name and plate_number.",
+      "If plate_number is still missing, do not say there is a problem completing the booking; ask for plate_number.",
+      "If full_name is captured and phone is known, missing customer-detail questions must not include name or phone again.",
+      "Phone reuse phrases and phone source paths must live in domain_bundle.json under customer_detail_markers.same_phone_markers and phone_reuse, not Python code."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -775,7 +782,9 @@
             "channel",
             "available_branches",
             "available_branches_text",
-            "user_area"
+            "user_area",
+            "phone",
+            "customer_phone"
           ]
         },
         "stages": {
@@ -1261,7 +1270,31 @@
             "رقمي",
             "رقم الموبايل",
             "phone",
-            "mobile"
+            "mobile",
+            "نفس الرقم",
+            "نفس رقم الواتساب",
+            "رقم الواتساب",
+            "الرقم ده",
+            "الرقم دا",
+            "الرقم اللي بكلمك منه",
+            "الرقم اللي بكلم منه",
+            "الرقم اللي بتكلم منه",
+            "الرقم اللي بكلمك عليه",
+            "الرقم اللي بتكلمك منه",
+            "الرقم اللي بتواصل منه",
+            "استخدم نفس الرقم",
+            "خليه نفس الرقم",
+            "على نفس الرقم",
+            "من نفس الرقم",
+            "الرقم الموجود",
+            "الرقم المتسجل",
+            "ده رقمي",
+            "دا رقمي",
+            "this number",
+            "same number",
+            "use this number",
+            "whatsapp number",
+            "same whatsapp number"
           ],
           "plate_markers": [
             "رقم العربية",
@@ -1298,7 +1331,57 @@
             "mobile",
             "plate",
             "name is",
-            "my name is"
+            "my name is",
+            "نفس الرقم",
+            "نفس رقم الواتساب",
+            "رقم الواتساب",
+            "الرقم ده",
+            "الرقم دا",
+            "الرقم اللي بكلمك منه",
+            "الرقم اللي بكلم منه",
+            "الرقم اللي بتكلم منه",
+            "الرقم اللي بكلمك عليه",
+            "الرقم اللي بتكلمك منه",
+            "الرقم اللي بتواصل منه",
+            "استخدم نفس الرقم",
+            "خليه نفس الرقم",
+            "على نفس الرقم",
+            "من نفس الرقم",
+            "الرقم الموجود",
+            "الرقم المتسجل",
+            "ده رقمي",
+            "دا رقمي",
+            "this number",
+            "same number",
+            "use this number",
+            "whatsapp number",
+            "same whatsapp number"
+          ],
+          "same_phone_markers": [
+            "نفس الرقم",
+            "نفس رقم الواتساب",
+            "رقم الواتساب",
+            "الرقم ده",
+            "الرقم دا",
+            "الرقم اللي بكلمك منه",
+            "الرقم اللي بكلم منه",
+            "الرقم اللي بتكلم منه",
+            "الرقم اللي بكلمك عليه",
+            "الرقم اللي بتكلمك منه",
+            "الرقم اللي بتواصل منه",
+            "استخدم نفس الرقم",
+            "خليه نفس الرقم",
+            "على نفس الرقم",
+            "من نفس الرقم",
+            "الرقم الموجود",
+            "الرقم المتسجل",
+            "ده رقمي",
+            "دا رقمي",
+            "this number",
+            "same number",
+            "use this number",
+            "whatsapp number",
+            "same whatsapp number"
           ]
         },
         "customer_detail_guards": {
@@ -1422,7 +1505,9 @@
           "min_name_part_length": 2,
           "max_control_phrase_tokens": 5,
           "full_name_requires_name_signal": true,
-          "do_not_extract_name_from_control_only_message": true
+          "do_not_extract_name_from_control_only_message": true,
+          "same_phone_marker_is_not_name": true,
+          "phone_reuse_marker_is_detail_signal": true
         },
         "closing_detection": {
           "closing_tokens": [
@@ -1510,7 +1595,129 @@
           "ميعاد",
           "الساعة",
           "الساعه"
-        ]
+        ],
+        "phone_reuse": {
+          "enabled": true,
+          "source_paths": [
+            "customer_profile.phone",
+            "phone",
+            "customer_phone",
+            "user_id",
+            "conversation_id"
+          ],
+          "confirmed_path": "customer_profile.phone_confirmed_from_context",
+          "normalize_from_whatsapp_jid": true,
+          "strip_suffixes": [
+            "@s.whatsapp.net",
+            "@c.us",
+            "@g.us"
+          ],
+          "min_digits": 10,
+          "max_digits": 15,
+          "reuse_only_when_marker_present": true,
+          "do_not_ask_phone_if_any_source_path_has_phone": true
+        },
+        "phone_extraction": {
+          "regex": "(01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})",
+          "source_paths": [
+            "customer_profile.phone",
+            "phone",
+            "customer_phone",
+            "user_id",
+            "conversation_id"
+          ],
+          "min_digits": 10,
+          "max_digits": 15,
+          "strip_suffixes": [
+            "@s.whatsapp.net",
+            "@c.us",
+            "@g.us"
+          ]
+        },
+        "time_word_map": {
+          "واحده": "1",
+          "واحد": "1",
+          "اتنين": "2",
+          "اثنين": "2",
+          "تلاته": "3",
+          "ثلاثه": "3",
+          "اربعه": "4",
+          "اربعة": "4",
+          "خمسه": "5",
+          "خمسة": "5",
+          "سته": "6",
+          "ستة": "6",
+          "سبعه": "7",
+          "سبعة": "7",
+          "تمانيه": "8",
+          "ثمانيه": "8",
+          "تسعه": "9",
+          "تسعة": "9",
+          "عشره": "10",
+          "عشر": "10",
+          "احداشر": "11",
+          "حداشر": "11",
+          "احدي عشر": "11",
+          "اتناشر": "12",
+          "اتني عشر": "12",
+          "اثني عشر": "12"
+        },
+        "time_only_slot_selection": {
+          "ambiguous_date_terms": [
+            "معاد",
+            "ميعاد",
+            "موعد",
+            "مواعيد",
+            "المواعيد",
+            "appointment",
+            "slots"
+          ],
+          "time_markers": [
+            "الساعة",
+            "الساعه",
+            "ساعة",
+            "ساعه",
+            "الصبح",
+            "صباح",
+            "صباحا",
+            "صباحًا",
+            "الظهر",
+            "ظهرا",
+            "ظهرًا",
+            "مساء",
+            "مساءا",
+            "مساءً",
+            "بالليل",
+            "am",
+            "pm"
+          ],
+          "allow_bare_numeric": true,
+          "bare_numeric_regex": "(^|\\D)(\\d{1,2})(?::\\d{2})?(\\D|$)"
+        },
+        "explicit_date_patterns": [
+          {
+            "regex": "\\b(\\d{4}-\\d{1,2}-\\d{1,2})\\b",
+            "group": 1
+          },
+          {
+            "regex": "\\b(\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b",
+            "group": 1
+          },
+          {
+            "regex": "\\b(\\d{1,2}\\s*(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر)(?:\\s+\\d{4})?)\\b",
+            "group": 1
+          }
+        ],
+        "date_text_cleanup": {
+          "strip_prefix_patterns": [
+            "^(المتاحه|المتاحة|متاح|في|على|يوم)\\s+"
+          ],
+          "cut_patterns": [
+            "\\s+(?:في|على|بفرع|فرع)\\s+"
+          ]
+        },
+        "branch_inference_max_tokens": 12,
+        "branch_inference_min_token_length": 3
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -2021,7 +2228,17 @@
         "ok"
       ],
       "do_not_repeat_visit_id_on_closing": true,
-      "closing_template_must_not_include_visit_id": true
+      "closing_template_must_not_include_visit_id": true,
+      "never_ask_phone_when_known_or_reusable": true,
+      "phone_reuse_source_paths": [
+        "customer_profile.phone",
+        "phone",
+        "customer_phone",
+        "user_id",
+        "conversation_id"
+      ],
+      "do_not_claim_booking_problem_when_missing_customer_details": true,
+      "ask_only_remaining_customer_details": true
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -2112,11 +2329,14 @@
         "must_do": [
           "ask only for missing fields",
           "do not ask again for fields already captured",
-          "do not ask for branch if booking.pending.branch or selected_branch exists"
+          "do not ask for branch if booking.pending.branch or selected_branch exists",
+          "ask only for fields still missing after deterministic extraction and phone reuse repair",
+          "do not ask for phone if a valid phone exists in configured phone source paths"
         ],
         "must_not_do": [
           "do not say ده ملخص الحجز",
-          "do not ask which branch the customer prefers"
+          "do not ask which branch the customer prefers",
+          "do not say booking failed when any required customer detail is still missing"
         ]
       },
       "BOOKING_SLOT_SELECTION_UNCLEAR": {
@@ -2164,7 +2384,9 @@
           "ask only for full name and plate number",
           "use natural Egyptian Arabic",
           "do not say booking is confirmed",
-          "do not ask for branch/date/time again"
+          "do not ask for branch/date/time again",
+          "ask only for fields still missing after deterministic extraction and phone reuse repair",
+          "do not ask for phone if a valid phone exists in configured phone source paths"
         ],
         "safe_examples": [
           "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
@@ -2172,7 +2394,8 @@
         "must_not_do": [
           "do not say الحجز اتعمل",
           "do not say تم تأكيد الحجز",
-          "do not use هل ترغب"
+          "do not use هل ترغب",
+          "do not say booking failed when any required customer detail is still missing"
         ]
       },
       "BOOKING_MISSING_FULL_NAME": {
@@ -2180,24 +2403,32 @@
         "must_do": [
           "ask only for the full name",
           "acknowledge any previously received plate number only briefly if needed",
-          "do not say booking is confirmed"
+          "do not say booking is confirmed",
+          "ask only for fields still missing after deterministic extraction and phone reuse repair",
+          "do not ask for phone if a valid phone exists in configured phone source paths"
         ],
         "safe_examples": [
           "تمام، محتاج اسمك الكامل عشان أكمل الحجز."
         ],
         "must_not_do": [
           "do not ask for plate if already captured",
-          "do not say الحجز اتعمل"
+          "do not say الحجز اتعمل",
+          "do not say booking failed when any required customer detail is still missing"
         ]
       },
       "BOOKING_MISSING_PLATE_NUMBER": {
         "state": "collecting_plate_number",
         "must_do": [
           "ask only for plate number",
-          "do not say booking is confirmed"
+          "do not say booking is confirmed",
+          "ask only for fields still missing after deterministic extraction and phone reuse repair",
+          "do not ask for phone if a valid phone exists in configured phone source paths"
         ],
         "safe_examples": [
           "تمام، محتاج رقم العربية عشان أكمل الحجز."
+        ],
+        "must_not_do": [
+          "do not say booking failed when any required customer detail is still missing"
         ]
       },
       "BOOKING_CONFIRMED": {
@@ -2244,6 +2475,63 @@
         "must_not_do": [
           "do not use for thanks/closing messages",
           "do not repeat visit_id after a simple شكرا/thanks"
+        ]
+      },
+      "BOOKING_MISSING_PHONE": {
+        "state": "collecting_phone",
+        "must_do": [
+          "ask only for phone if no valid phone exists in customer_profile.phone, phone, customer_phone, user_id, or configured phone_reuse.source_paths",
+          "if the customer says to use the same WhatsApp/current number and a phone exists in context, do not ask for phone again",
+          "do not say booking is confirmed"
+        ],
+        "safe_examples": [
+          "تمام، ممكن تقولي رقم تليفونك عشان أكمل الحجز؟"
+        ],
+        "must_not_do": [
+          "do not ask for phone again if a configured source path already has a valid phone",
+          "do not say في مشكلة في إتمام الحجز if another customer detail is still missing"
+        ]
+      },
+      "BOOKING_MISSING_NAME_AND_PHONE": {
+        "state": "collecting_name_and_phone",
+        "must_do": [
+          "ask only for full name and phone if plate is already captured",
+          "if a configured phone source exists, ask only for full name"
+        ],
+        "safe_examples": [
+          "تمام، محتاج اسمك الكامل ورقم تليفونك عشان أكمل الحجز."
+        ],
+        "must_not_do": [
+          "do not ask for phone again if the user said to use the same number and context has a valid phone"
+        ]
+      },
+      "BOOKING_MISSING_PHONE_AND_PLATE": {
+        "state": "collecting_phone_and_plate",
+        "must_do": [
+          "ask only for phone and plate if name is already captured",
+          "if a configured phone source exists or same-phone marker matched, ask only for plate"
+        ],
+        "safe_examples": [
+          "تمام، محتاج رقم تليفونك ورقم العربية عشان أكمل الحجز."
+        ],
+        "must_not_do": [
+          "do not ask for name if customer_profile.full_name exists",
+          "do not claim booking failed while plate is still missing"
+        ]
+      },
+      "BOOKING_MISSING_NAME_PHONE_AND_PLATE": {
+        "state": "collecting_name_phone_and_plate",
+        "must_do": [
+          "ask for missing details only",
+          "if a valid phone exists in configured phone source paths, do not ask for phone",
+          "if the customer asks to use the same number, preserve the context phone and ask only for remaining details"
+        ],
+        "safe_examples": [
+          "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
+        ],
+        "must_not_do": [
+          "do not ask for phone if phone exists in WhatsApp/user_id context",
+          "do not say booking is confirmed"
         ]
       }
     },
@@ -2323,13 +2611,18 @@
         "تمام، محتاج اسمك الكامل عشان أكمل الحجز.",
         "تمام، محتاج رقم العربية عشان أكمل الحجز.",
         "تمام، اتأكد حجزك.",
-        "رقم الحجز:"
+        "رقم الحجز:",
+        "تمام، هنستخدم نفس الرقم.",
+        "تمام، الرقم متسجل عندي. محتاج بس رقم العربية عشان أكمل الحجز.",
+        "تمام يا أستاذ {first_name}، محتاج رقم العربية عشان أكمل الحجز."
       ],
       "avoid_phrases": [
         "هل ترغب في تأكيد الحجز؟",
         "تم تأكيد المعاد",
         "شكراً! الحجز اتعمل",
-        "لو محتاج أي حاجة تانية، أنا هنا!"
+        "لو محتاج أي حاجة تانية، أنا هنا!",
+        "ممكن تقولي رقم تليفونك؟",
+        "لكن في مشكلة في إتمام الحجز"
       ]
     }
   },
@@ -2347,6 +2640,9 @@
           },
           "plate_number": {
             "type": "string"
+          },
+          "phone_confirmed_from_context": {
+            "type": "boolean"
           }
         }
       },
@@ -2430,11 +2726,17 @@
       },
       "booking_pending_summary": {
         "type": "string"
+      },
+      "phone": {
+        "type": "string"
+      },
+      "customer_phone": {
+        "type": "string"
       }
     }
   },
   "domain_playbook": {
-    "version": "4.7-config-driven-customer-details-and-closing",
+    "version": "4.8-config-driven-phone-reuse-and-precise-missing-fields",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer; quality guard validates; memory writer runs best-effort after response.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -2480,7 +2782,10 @@
       "When plate is provided but full name is missing, ask only for full name and do not confirm booking.",
       "Booking confirmation wording must be natural Egyptian Arabic and include visit_id on success.",
       "BookingSubagent customer-detail markers, fake-name guards, closing detection, plate extraction, and branch inference stopwords must be read from domain_bundle.json.",
-      "After confirmed booking, thanks/closing messages should use BOOKING_COMPLETED_CLOSING and must not repeat visit_id unless explicitly requested."
+      "After confirmed booking, thanks/closing messages should use BOOKING_COMPLETED_CLOSING and must not repeat visit_id unless explicitly requested.",
+      "BookingSubagent phone reuse is config-driven through customer_detail_markers.same_phone_markers and phone_reuse.source_paths.",
+      "If a WhatsApp/user_id phone exists, the assistant should not ask for phone again and should collect only remaining name/plate details.",
+      "Missing-field responses must never frame missing customer details as a booking failure."
     ]
   }
 }
