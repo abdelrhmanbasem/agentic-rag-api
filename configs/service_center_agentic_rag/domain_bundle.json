@@ -2238,7 +2238,32 @@
         "conversation_id"
       ],
       "do_not_claim_booking_problem_when_missing_customer_details": true,
-      "ask_only_remaining_customer_details": true
+      "ask_only_remaining_customer_details": true,
+      "visit_id_append_template": "رقم الحجز: {visit_id}",
+      "visit_id_template": "رقم الحجز: {visit_id}",
+      "confirmed_record_id_required_on_success": true,
+      "do_not_append_confirmed_record_id_on_closing": true,
+      "closing_answer_draft_labels": [
+        "BOOKING_COMPLETED_CLOSING"
+      ],
+      "safe_template_answer_enabled": true,
+      "missing_or_pending_answer_draft_labels": [
+        "BOOKING_MISSING_FIELDS",
+        "BOOKING_MISSING_BRANCH",
+        "BOOKING_MISSING_DATE",
+        "BOOKING_MISSING_TIME",
+        "BOOKING_MISSING_FULL_NAME",
+        "BOOKING_MISSING_PHONE",
+        "BOOKING_MISSING_PLATE_NUMBER",
+        "BOOKING_MISSING_NAME_AND_PLATE",
+        "BOOKING_MISSING_NAME_AND_PHONE",
+        "BOOKING_MISSING_PHONE_AND_PLATE",
+        "BOOKING_MISSING_NAME_PHONE_AND_PLATE",
+        "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
+        "BOOKING_CONFIRM_SELECTED_SLOT",
+        "BOOKING_SLOT_SELECTION_UNCLEAR"
+      ],
+      "configured_banned_terms_only": true
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -2533,6 +2558,82 @@
           "do not ask for phone if phone exists in WhatsApp/user_id context",
           "do not say booking is confirmed"
         ]
+      },
+      "LOCATION_NEAREST_BRANCH_FOUND": {
+        "state": "branch_found",
+        "must_do": [
+          "mention the nearest branch clearly",
+          "sound helpful and confident",
+          "offer the next useful step if proactive_nudge allows it"
+        ],
+        "must_not_do": [
+          "do not invent distance or travel time unless tool returned it",
+          "do not ask for location again if branch_found is true"
+        ],
+        "safe_examples": [
+          "أقرب فرع ليك هو فرع {nearest_branch}. تحب أشوفلك المواعيد المتاحة هناك؟"
+        ],
+        "banned_examples": [
+          "أقرب فرع غالبًا كذا من غير نتيجة الأداة"
+        ]
+      },
+      "LOCATION_NEEDED_FOR_NEAREST_BRANCH": {
+        "state": "location_needed",
+        "must_do": [
+          "ask for the customer's area/location",
+          "ask one question only",
+          "keep it natural and short"
+        ],
+        "must_not_do": [
+          "do not invent nearest branch",
+          "do not ask for appointment date before branch is known"
+        ],
+        "safe_examples": [
+          "تمام، ابعتلي منطقتك أو أقرب مكان ليك عشان أطلعلك أقرب فرع."
+        ]
+      },
+      "LOOKUP_BRANCH_LIST_RESULT": {
+        "state": "branch_list_result",
+        "must_do": [
+          "list only returned branches",
+          "offer to find the nearest branch if proactive_nudge allows it"
+        ],
+        "must_not_do": [
+          "do not invent branches",
+          "do not push booking unless the customer asks"
+        ],
+        "safe_examples": [
+          "فروعنا المتاحة هي: {available_branches_text}. لو تحب، ابعتلي منطقتك وأقولك أقرب فرع ليك."
+        ]
+      },
+      "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION": {
+        "state": "inspection_recommended",
+        "must_do": [
+          "acknowledge the symptom naturally",
+          "recommend inspection in a helpful non-pushy way",
+          "offer the next step if proactive_nudge allows it"
+        ],
+        "must_not_do": [
+          "do not diagnose with certainty",
+          "do not invent prices or availability"
+        ],
+        "safe_examples": [
+          "من وصفك، الأفضل العربية تتكشف عشان نطمن على السبب بدقة. تحب أطلعلك أقرب فرع؟"
+        ]
+      },
+      "BOOKING_MISSING_TIME": {
+        "state": "collecting_time",
+        "must_do": [
+          "ask which time or returned slot the customer prefers",
+          "do not choose a slot for the customer"
+        ],
+        "must_not_do": [
+          "do not confirm booking",
+          "do not recommend the first slot"
+        ],
+        "safe_examples": [
+          "تمام، أنهي معاد من المواعيد المتاحة يناسبك؟"
+        ]
       }
     },
     "slot_context_carryover_policy": {
@@ -2624,7 +2725,301 @@
         "ممكن تقولي رقم تليفونك؟",
         "لكن في مشكلة في إتمام الحجز"
       ]
-    }
+    },
+    "persona": {
+      "name": "Service advisor",
+      "character": "Warm, confident, practical, and professional. Speaks like a trusted service advisor, not a form or script.",
+      "voice": "Natural Egyptian Arabic with clear, short sentences. Friendly but efficient. Gets to the point and moves the customer forward.",
+      "energy_when_selling": "Make the next step feel easy and useful. Highlight the benefit first, then ask for the one action needed.",
+      "energy_when_helping": "Empathetic and solution-focused. One problem, one useful next step per message.",
+      "energy_when_closing": "Warm, reassuring, and clear. Confirm what happened, include the confirmed record ID when available, and end helpfully.",
+      "never": [
+        "sound robotic",
+        "sound like a form",
+        "repeat the user's question back at them",
+        "over-explain internal process",
+        "push aggressively",
+        "use banned terms from answer_safety.banned_terms"
+      ]
+    },
+    "emotion_response_guidance": {
+      "frustrated": "The customer is frustrated. Acknowledge it briefly, then go straight to the practical fix. Do not be defensive.",
+      "angry": "The customer is angry. Stay calm, acknowledge the issue, and give the clearest next step. Do not argue.",
+      "confused": "The customer is confused. Be simple, reassuring, and step-by-step. Avoid long explanations.",
+      "urgent": "The customer needs this quickly. Lead with the answer and the next action. Be efficient and reassuring.",
+      "skeptical": "The customer is skeptical. Be transparent, factual, and grounded in known data. Do not oversell.",
+      "excited": "The customer is excited. Match the positive energy while staying efficient.",
+      "happy": "The customer is happy. Keep the warmth and momentum.",
+      "neutral": "The customer is neutral. Be warm, professional, and useful.",
+      "default": "Be warm, professional, and useful."
+    },
+    "proactive_nudge": {
+      "enabled": true,
+      "style": "Offer one natural next step only when it helps the customer move forward. Do not push if the customer is closing, frustrated about a resolved issue, or only asked for a factual answer.",
+      "after_slots_shown": "Ask which available slot works best for them.",
+      "after_branch_found": "Offer to check available appointments at that branch.",
+      "after_branch_list": "Offer to find the nearest branch if they share their area.",
+      "after_troubleshooting": "Offer to book or find a branch for inspection when inspection is recommended.",
+      "after_missing_date": "Ask which day/date they prefer, with short examples if helpful.",
+      "after_missing_customer_details": "Ask only for the remaining missing customer details.",
+      "after_booking_confirmed": "Close warmly and tell them what to expect next.",
+      "after_handoff_offered": "Confirm they want a handoff and keep it brief.",
+      "do_not_offer_when": [
+        "customer sent a thanks/closing message",
+        "the next step requires an unavailable tool result",
+        "tool_result.action is ask_user and already asks the needed question",
+        "the assistant has already asked one question in the reply"
+      ]
+    },
+    "response_rule_layers": {
+      "personality": [
+        "Sound like a warm, confident, knowledgeable human, not a chatbot.",
+        "Match the customer's energy using emotion_response_guidance.",
+        "Be brief when the customer is brief. Give detail only when asked.",
+        "Use persona.voice and conversation_style as the main style source.",
+        "Keep wording natural, smooth, and practical."
+      ],
+      "action": [
+        "Answer the customer's core need in the first sentence.",
+        "After answering, move the conversation forward with the single most useful next step when proactive_nudge allows it.",
+        "If slots are available, present them clearly and ask the customer to choose.",
+        "If a branch is found, mention it clearly and offer the next useful step if appropriate.",
+        "If something is missing, ask for it naturally and only ask for remaining missing fields.",
+        "If a booking is confirmed, make it clear and include the configured confirmed record ID."
+      ],
+      "guardrails": [
+        "Never mention tools, routing, RAG, agents, variables, prompts, schemas, subagents, or internal logic.",
+        "Never invent slots, branches, prices, unavailable reasons, or confirmation IDs.",
+        "Never claim an external action happened unless the source-of-truth tool result or variables prove it.",
+        "Never ask more than one question per reply.",
+        "Never use banned terms from answer_safety.banned_terms."
+      ],
+      "grounding": [
+        "Tool results are the source of truth for branches, slots, booking status, and confirmation IDs.",
+        "Retrieved knowledge is the source of truth for FAQs, policies, and service information.",
+        "Variables store previously confirmed facts and customer-provided details.",
+        "If required facts are missing, ask one useful question instead of guessing."
+      ]
+    },
+    "response_temperature_policy": {
+      "default": 0.45,
+      "simple_response": 0.6,
+      "tool_result": 0.15,
+      "ask_user": 0.25,
+      "missing_fields": 0.2,
+      "slots_display": 0.2,
+      "confirmed_action": 0.15,
+      "high_risk": 0.1,
+      "medium_risk": 0.2,
+      "lookup_result": 0.25
+    },
+    "template_policy_priority_keys": [
+      "BOOKING_CONFIRMED",
+      "BOOKING_SLOTS_FOUND",
+      "BOOKING_CONFIRM_SELECTED_SLOT",
+      "BOOKING_MISSING_FIELDS",
+      "BOOKING_MISSING_NAME_AND_PLATE",
+      "BOOKING_MISSING_FULL_NAME",
+      "BOOKING_MISSING_PLATE_NUMBER",
+      "BOOKING_COMPLETED_CLOSING",
+      "LOCATION_NEAREST_BRANCH_FOUND",
+      "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
+      "LOOKUP_BRANCH_LIST_RESULT"
+    ],
+    "template_response_policy_detection": {
+      "enabled": true,
+      "select_by_answer_draft_first": true,
+      "priority_keys_path": "template_policy_priority_keys",
+      "fallback_to_all_policies": true,
+      "max_policies": 8,
+      "description": "Graph must select policies generically by current answer_draft first, then configured priority keys, then remaining policies. No code-level booking key list."
+    },
+    "source_of_truth_variables": [
+      "visit_id",
+      "booking_status",
+      "available_slots",
+      "available_slots_text",
+      "available_branches",
+      "available_branches_text",
+      "slots_found",
+      "appointment_date",
+      "appointment_time",
+      "selected_branch",
+      "nearest_branch",
+      "location_branch",
+      "customer_confirmed_booking",
+      "service_needed",
+      "exact_slot",
+      "nearest_slots",
+      "nearest_slots_text",
+      "unavailable_reason"
+    ],
+    "source_of_truth_prefixes": [
+      "booking",
+      "booking.",
+      "tool_result",
+      "location",
+      "location.",
+      "troubleshooting",
+      "troubleshooting.",
+      "exact_slot",
+      "nearest_slots",
+      "unavailable_reason"
+    ],
+    "confirmed_action": {
+      "enabled": true,
+      "status_paths": [
+        "booking_status",
+        "booking.stage",
+        "booking.confirmed.status",
+        "booking.confirmed.booking_status"
+      ],
+      "confirmed_statuses": [
+        "confirmed",
+        "booking_confirmed",
+        "booked"
+      ],
+      "confirmed_operation": "create_booking",
+      "operation_paths": [
+        "tool_result.operation",
+        "tool_result.observations.*.operation"
+      ],
+      "ok_paths": [
+        "tool_result.ok",
+        "tool_result.observations.*.result.ok"
+      ],
+      "confirmed_record_id_paths": [
+        "visit_id",
+        "booking.confirmed.visit_id",
+        "booking.confirmed.id",
+        "tool_result.visit_id",
+        "tool_result.booking.visit_id",
+        "tool_result.result.visit_id",
+        "tool_result.observations.*.result.visit_id",
+        "tool_result.observations.*.result.booking.visit_id"
+      ],
+      "confirmed_record_id_fields": [
+        "visit_id",
+        "booking_id",
+        "reservation_id",
+        "confirmation_id",
+        "ticket_id",
+        "case_id"
+      ]
+    },
+    "booking_confirmed_statuses": [
+      "confirmed",
+      "booking_confirmed",
+      "booked"
+    ],
+    "confirmed_statuses": [
+      "confirmed",
+      "booking_confirmed",
+      "booked"
+    ],
+    "booking_confirmed_operation": "create_booking",
+    "confirmed_operation": "create_booking",
+    "booking_status_path": "booking_status",
+    "booking_status_paths": [
+      "booking_status",
+      "booking.stage",
+      "booking.confirmed.booking_status"
+    ],
+    "confirmed_operation_ok_paths": [
+      "tool_result.ok",
+      "tool_result.observations.*.result.ok"
+    ],
+    "confirmed_record_id_paths": [
+      "visit_id",
+      "booking.confirmed.visit_id",
+      "booking.confirmed.id",
+      "tool_result.visit_id",
+      "tool_result.booking.visit_id",
+      "tool_result.result.visit_id",
+      "tool_result.observations.*.result.visit_id",
+      "tool_result.observations.*.result.booking.visit_id"
+    ],
+    "visit_id_paths": [
+      "visit_id",
+      "booking.confirmed.visit_id",
+      "tool_result.visit_id",
+      "tool_result.observations.*.result.visit_id"
+    ],
+    "confirmation_id_paths": [
+      "visit_id",
+      "booking.confirmed.visit_id",
+      "booking.confirmed.id",
+      "tool_result.visit_id",
+      "tool_result.booking.visit_id",
+      "tool_result.result.visit_id",
+      "tool_result.observations.*.result.visit_id",
+      "tool_result.observations.*.result.booking.visit_id"
+    ],
+    "confirmed_record_id_fields": [
+      "visit_id",
+      "booking_id",
+      "reservation_id",
+      "confirmation_id",
+      "ticket_id",
+      "case_id"
+    ],
+    "blocked_tool_call_policy": {
+      "enabled": true,
+      "default_answer_draft": "BOOKING_MISSING_FIELDS",
+      "answer_draft_by_missing_input": {
+        "date": "BOOKING_MISSING_DATE",
+        "appointment_date": "BOOKING_MISSING_DATE",
+        "date_text": "BOOKING_MISSING_DATE",
+        "branch": "BOOKING_MISSING_BRANCH",
+        "selected_branch": "BOOKING_MISSING_BRANCH",
+        "time": "BOOKING_MISSING_TIME",
+        "full_name": "BOOKING_MISSING_FULL_NAME",
+        "phone": "BOOKING_MISSING_PHONE",
+        "plate_number": "BOOKING_MISSING_PLATE_NUMBER",
+        "customer_confirmed_booking": "BOOKING_AWAITING_EXPLICIT_CONFIRMATION"
+      },
+      "next_move_by_missing_input": {
+        "date": "Ask which day/date the customer wants before checking appointments.",
+        "appointment_date": "Ask which day/date the customer wants before checking appointments.",
+        "date_text": "Ask which day/date the customer wants before checking appointments.",
+        "branch": "Ask for the customer's area or branch before checking appointments.",
+        "selected_branch": "Ask for the customer's area or branch before checking appointments.",
+        "time": "Ask which available time the customer prefers.",
+        "full_name": "Ask for the customer's full name.",
+        "phone": "Ask for phone only if it is not available from configured phone source paths.",
+        "plate_number": "Ask for the car plate number.",
+        "customer_confirmed_booking": "Ask the customer to explicitly confirm before creating the booking."
+      },
+      "must_do": [
+        "ask for the missing input only",
+        "use tool_result.response_brief over the original manifest response_brief",
+        "do not claim the tool was called if it was blocked",
+        "do not claim no availability if availability was not checked"
+      ],
+      "must_not_do": [
+        "do not invent slots",
+        "do not invent branches",
+        "do not invent dates",
+        "do not say booking failed when customer details are simply missing",
+        "do not say availability was checked"
+      ]
+    },
+    "missing_or_pending_answer_draft_labels": [
+      "BOOKING_MISSING_FIELDS",
+      "BOOKING_MISSING_BRANCH",
+      "BOOKING_MISSING_DATE",
+      "BOOKING_MISSING_TIME",
+      "BOOKING_MISSING_FULL_NAME",
+      "BOOKING_MISSING_PHONE",
+      "BOOKING_MISSING_PLATE_NUMBER",
+      "BOOKING_MISSING_NAME_AND_PLATE",
+      "BOOKING_MISSING_NAME_AND_PHONE",
+      "BOOKING_MISSING_PHONE_AND_PLATE",
+      "BOOKING_MISSING_NAME_PHONE_AND_PLATE",
+      "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
+      "BOOKING_CONFIRM_SELECTED_SLOT",
+      "BOOKING_SLOT_SELECTION_UNCLEAR"
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -2647,13 +3042,19 @@
         }
       },
       "booking": {
-        "type": "object"
+        "type": "object",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "troubleshooting": {
-        "type": "object"
+        "type": "object",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "location": {
-        "type": "object"
+        "type": "object",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "user_location": {
         "type": "object"
@@ -2674,13 +3075,19 @@
         "type": "string"
       },
       "selected_branch": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "nearest_branch": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "location_branch": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "date_text": {
         "type": "string"
@@ -2689,37 +3096,59 @@
         "type": "string"
       },
       "appointment_date": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "appointment_time": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "service_needed": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "available_slots": {
-        "type": "array"
+        "type": "array",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "available_slots_text": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "available_branches": {
-        "type": "array"
+        "type": "array",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "available_branches_text": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "slots_found": {
-        "type": "boolean"
+        "type": "boolean",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "booking_status": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "visit_id": {
-        "type": "string"
+        "type": "string",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "customer_confirmed_booking": {
-        "type": "boolean"
+        "type": "boolean",
+        "source_of_truth": true,
+        "operational_state": true
       },
       "handoff_requested": {
         "type": "boolean"
@@ -2736,8 +3165,8 @@
     }
   },
   "domain_playbook": {
-    "version": "4.8-config-driven-phone-reuse-and-precise-missing-fields",
-    "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer; quality guard validates; memory writer runs best-effort after response.",
+    "version": "5.0-humanlike-proactive-multitenant-no-hardcoding",
+    "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
       "Final customer-facing wording is handled by graph.response_node.",
@@ -2785,7 +3214,14 @@
       "After confirmed booking, thanks/closing messages should use BOOKING_COMPLETED_CLOSING and must not repeat visit_id unless explicitly requested.",
       "BookingSubagent phone reuse is config-driven through customer_detail_markers.same_phone_markers and phone_reuse.source_paths.",
       "If a WhatsApp/user_id phone exists, the assistant should not ask for phone again and should collect only remaining name/plate details.",
-      "Missing-field responses must never frame missing customer details as a booking failure."
+      "Missing-field responses must never frame missing customer details as a booking failure.",
+      "Version 5.0 adds persona, emotion_response_guidance, proactive_nudge, response_rule_layers, and dynamic response temperature policy.",
+      "template_policy_priority_keys makes template policy injection generic and multi-tenant; graph must not hardcode BOOKING_* policy keys.",
+      "source_of_truth_variables and source_of_truth_prefixes define operational state that manifest extraction/deletion must not overwrite.",
+      "confirmed_action, confirmed_record_id_paths, and confirmed_record_id_fields make confirmed-action detection and ID extraction config-driven.",
+      "blocked_tool_call_policy owns answer labels and response briefs for blocked direct tool calls; graph.py must not hardcode missing-input response labels.",
+      "Banned tone/style terms are controlled only by answer_safety.banned_terms, not Python prompt hardcoding.",
+      "Quality guard should validate correctness, safety, language, and response energy using persona and emotion_response_guidance."
     ]
   }
 }
