@@ -1921,6 +1921,8 @@ def response_node(state: AgentState):
         "memory": compact_memories_for_final(memories),
         "knowledge": compact_knowledge_for_final(knowledge),
         "tool_result": tool_result,
+        "answer_safety": agent_config.get("answer_safety", {}) or {},
+        "template_response_policy": compact_template_response_policy(agent_config, tool_result),
     }
 
     response_rules = [
@@ -1936,6 +1938,8 @@ def response_node(state: AgentState):
         "If manifest.needs_tool is true and no tool_result exists, do not claim the tool result.",
         "If tool_result exists, treat it as the highest-priority source of truth.",
         "If tool_result contains answer_draft, use it only as a grounded draft/label; rewrite naturally.",
+        "If template_response_policy contains a policy for tool_result.answer_draft, obey its must_do, must_not_do, and safe_examples.",
+        "If tool_result.action is ask_user or answer_draft represents missing fields, do not use wording that implies an external action was completed.",
         "Follow the manifest response_brief unless it conflicts with safety, grounding, or assistant configuration.",
         "Do not take or claim external actions unless a tool result confirms them.",
         "Never confirm booking unless create_booking or tool_result confirms ok=true.",
@@ -2026,17 +2030,254 @@ def create_booking_confirmed(state: AgentState) -> bool:
     return False
 
 
+def compact_template_response_policy(
+    agent_config: Dict[str, Any],
+    tool_result: Optional[Dict[str, Any]] = None,
+    max_policies: int = 8,
+) -> Dict[str, Any]:
+    policies = agent_config.get("template_response_policy", {}) or {}
+
+    if not isinstance(policies, dict):
+        return {}
+
+    selected_keys: List[str] = []
+
+    answer_draft = ""
+    if isinstance(tool_result, dict):
+        answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    if answer_draft and answer_draft in policies:
+        selected_keys.append(answer_draft)
+
+    common_keys = [
+        "BOOKING_CONFIRMED",
+        "BOOKING_COMPLETED_CLOSING",
+        "BOOKING_ALREADY_CONFIRMED",
+        "BOOKING_MISSING_FIELDS",
+        "BOOKING_MISSING_FULL_NAME",
+        "BOOKING_MISSING_PLATE_NUMBER",
+        "BOOKING_MISSING_NAME_AND_PLATE",
+        "BOOKING_CONFIRM_SELECTED_SLOT",
+        "BOOKING_SLOTS_FOUND",
+    ]
+
+    for key in common_keys:
+        if key in policies and key not in selected_keys:
+            selected_keys.append(key)
+        if len(selected_keys) >= max_policies:
+            break
+
+    output: Dict[str, Any] = {}
+
+    for key in selected_keys[:max_policies]:
+        policy = policies.get(key)
+        if not isinstance(policy, dict):
+            continue
+
+        output[key] = {
+            "state": policy.get("state", ""),
+            "must_do": policy.get("must_do", [])[:8] if isinstance(policy.get("must_do"), list) else [],
+            "must_not_do": policy.get("must_not_do", [])[:8] if isinstance(policy.get("must_not_do"), list) else [],
+            "safe_examples": policy.get("safe_examples", [])[:3] if isinstance(policy.get("safe_examples"), list) else [],
+            "banned_examples": policy.get("banned_examples", [])[:3] if isinstance(policy.get("banned_examples"), list) else [],
+        }
+
+    return output
+
+
+def configured_booking_template_labels(
+    agent_config: Dict[str, Any],
+    key_prefixes: Optional[List[str]] = None,
+    value_prefixes: Optional[List[str]] = None,
+) -> List[str]:
+    subagents = agent_config.get("subagents", {}) or {}
+    booking_config = {}
+
+    if isinstance(subagents, dict):
+        booking_config = subagents.get("booking", {}) or {}
+
+    templates = booking_config.get("templates", {}) if isinstance(booking_config, dict) else {}
+
+    if not isinstance(templates, dict):
+        return []
+
+    output: List[str] = []
+    key_prefixes = key_prefixes or []
+    value_prefixes = value_prefixes or []
+
+    for key, value in templates.items():
+        key_text = str(key or "")
+        value_text = str(value or "")
+
+        key_match = any(key_text.startswith(prefix) for prefix in key_prefixes)
+        value_match = any(value_text.startswith(prefix) for prefix in value_prefixes)
+
+        if (key_match or value_match) and value_text and value_text not in output:
+            output.append(value_text)
+
+    return output
+
+
+def get_tool_answer_draft(state: AgentState) -> str:
+    tool_result = state.get("tool_result", {}) or {}
+
+    if not isinstance(tool_result, dict):
+        return ""
+
+    answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    if answer_draft:
+        return answer_draft
+
+    primary_answer = str(tool_result.get("primary_answer_draft") or "").strip()
+    if primary_answer:
+        return primary_answer
+
+    return ""
+
+
+def get_tool_action(state: AgentState) -> str:
+    tool_result = state.get("tool_result", {}) or {}
+
+    if not isinstance(tool_result, dict):
+        return ""
+
+    return str(tool_result.get("action") or "").strip()
+
+
+def get_booking_stage(state: AgentState) -> str:
+    variables = state.get("variables", {}) or {}
+    return str(deep_get(variables, "booking.stage", "") or "").strip()
+
+
+def safe_example_for_answer_draft(state: AgentState, answer_draft: str = "") -> str:
+    agent_config = state.get("agent_config", {}) or {}
+    answer_draft = str(answer_draft or get_tool_answer_draft(state) or "").strip()
+
+    if not answer_draft:
+        return ""
+
+    policies = agent_config.get("template_response_policy", {}) or {}
+
+    if not isinstance(policies, dict):
+        return ""
+
+    policy = policies.get(answer_draft, {})
+
+    if not isinstance(policy, dict):
+        return ""
+
+    safe_examples = policy.get("safe_examples", [])
+
+    if not isinstance(safe_examples, list):
+        return ""
+
+    for example in safe_examples:
+        text = str(example or "").strip()
+        if text:
+            return text
+
+    return ""
+
+
+def answer_contains_any_configured_terms(answer: str, terms: Any) -> bool:
+    if not isinstance(terms, list):
+        return False
+
+    text = str(answer or "")
+
+    for term in terms:
+        term_text = str(term or "").strip()
+        if term_text and term_text in text:
+            return True
+
+    return False
+
+
+def missing_or_pending_answer_draft_labels(agent_config: Dict[str, Any]) -> List[str]:
+    labels = configured_booking_template_labels(
+        agent_config,
+        key_prefixes=["missing_"],
+        value_prefixes=["BOOKING_MISSING"],
+    )
+
+    return labels
+
+
+def should_use_safe_template_answer(answer: str, state: AgentState) -> bool:
+    agent_config = state.get("agent_config", {}) or {}
+    safety_config = agent_config.get("answer_safety", {}) or {}
+    answer_draft = get_tool_answer_draft(state)
+    action = get_tool_action(state)
+    booking_stage = get_booking_stage(state)
+    confirmed = create_booking_confirmed(state)
+
+    if not answer_draft:
+        return False
+
+    if confirmed:
+        return False
+
+    missing_labels = missing_or_pending_answer_draft_labels(agent_config)
+
+    if answer_draft in missing_labels:
+        return True
+
+    if action == "ask_user" and booking_stage in {"awaiting_customer_details", "awaiting_confirmation"}:
+        banned_groups = []
+        banned_groups.extend(safety_config.get("banned_pending_booking_terms", []) or [])
+        banned_groups.extend(safety_config.get("banned_unconfirmed_booking_terms", []) or [])
+        banned_groups.extend(safety_config.get("banned_slot_preselection_phrases", []) or [])
+
+        if answer_contains_any_configured_terms(answer, banned_groups):
+            return True
+
+    if action == "ask_user" and safe_example_for_answer_draft(state, answer_draft):
+        banned_groups = []
+        banned_groups.extend(safety_config.get("banned_pending_booking_terms", []) or [])
+        banned_groups.extend(safety_config.get("banned_unconfirmed_booking_terms", []) or [])
+
+        if answer_contains_any_configured_terms(answer, banned_groups):
+            return True
+
+    return False
+
+
+def render_configured_visit_id_append(
+    text: str,
+    visit_id: str,
+    state: AgentState
+) -> str:
+    agent_config = state.get("agent_config", {}) or {}
+    safety_config = agent_config.get("answer_safety", {}) or {}
+
+    append_template = str(
+        safety_config.get("visit_id_append_template")
+        or safety_config.get("visit_id_template")
+        or ""
+    ).strip()
+
+    if append_template:
+        addition = append_template.replace("{visit_id}", visit_id).strip()
+    else:
+        addition = visit_id
+
+    if not addition or addition in text:
+        return text
+
+    return f"{text}\n{addition}".strip()
+
 def enforce_answer_safety(answer: str, state: AgentState) -> str:
     text = str(answer or "").strip()
     agent_config = state.get("agent_config", {}) or {}
     safety_config = agent_config.get("answer_safety", {}) or {}
 
-    banned_terms = safety_config.get("banned_terms", [
-        "حبيبي",
-        "يا باشا",
-        "يا معلم",
-        "يا صديقي",
-    ])
+    if should_use_safe_template_answer(text, state):
+        safe_answer = safe_example_for_answer_draft(state)
+        if safe_answer:
+            text = safe_answer
+
+    banned_terms = safety_config.get("banned_terms", [])
 
     if not isinstance(banned_terms, list):
         banned_terms = []
@@ -2046,13 +2287,30 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
         if term_text:
             text = text.replace(term_text, "").strip()
 
+    if not create_booking_confirmed(state):
+        answer_draft = get_tool_answer_draft(state)
+        safe_answer = safe_example_for_answer_draft(state, answer_draft)
+
+        blocked_terms: List[str] = []
+        for key in [
+            "banned_pending_booking_terms",
+            "banned_unconfirmed_booking_terms",
+            "banned_slot_preselection_phrases",
+        ]:
+            values = safety_config.get(key, [])
+            if isinstance(values, list):
+                blocked_terms.extend([str(item or "") for item in values])
+
+        if safe_answer and answer_contains_any_configured_terms(text, blocked_terms):
+            text = safe_answer
+
     text = re.sub(r"\s{2,}", " ", text).strip()
 
     append_visit_id = safety_config.get("append_visit_id_on_confirmed_booking", True)
     visit_id = extract_visit_id_from_state(state)
 
     if append_visit_id and create_booking_confirmed(state) and visit_id and visit_id not in text:
-        text = f"{text}\nرقم الزيارة: {visit_id}".strip()
+        text = render_configured_visit_id_append(text, visit_id, state)
 
     return text
 
@@ -2078,8 +2336,10 @@ def quality_guard_node(state: AgentState):
             "Quality check the answer for a configurable assistant. "
             "It must be natural, grounded, in the right language, not reveal internals, ask at most one question, and not hallucinate facts. "
             "If it fails, rewrite it without unsupported facts. "
+            "Obey the configured answer_safety and template_response_policy. "
+            "If tool_result.action is ask_user or tool_result.answer_draft is a missing-field label, never rewrite it into completed-action wording. "
             "Never remove a required visit_id from confirmed booking replies. "
-            "Reject overly familiar words like حبيبي, يا باشا, يا معلم, يا صديقي.",
+            "Reject any overly familiar words listed in the assistant safety config.",
         ),
         (
             "user",
@@ -2098,10 +2358,17 @@ def quality_guard_node(state: AgentState):
         decision = (prompt | quality_llm).invoke({
             "latest_user": latest_user,
             "manifest": safe_json(compact_manifest(state.get("manifest", {}) or {}), max_chars=2400),
-            "context": safe_json(compact_agent_context(
-                state.get("agent_config", {}) or {},
-                state.get("selected_subagent", {}) or {},
-            ), max_chars=2800),
+            "context": safe_json({
+                **compact_agent_context(
+                    state.get("agent_config", {}) or {},
+                    state.get("selected_subagent", {}) or {},
+                ),
+                "answer_safety": (state.get("agent_config", {}) or {}).get("answer_safety", {}) or {},
+                "template_response_policy": compact_template_response_policy(
+                    state.get("agent_config", {}) or {},
+                    state.get("tool_result", {}) or {},
+                ),
+            }, max_chars=3600),
             "analysis": safe_json(compact_analysis(state.get("subagent_analysis", {}) or {}), max_chars=1800),
             "knowledge": clip_text(state.get("knowledge", ""), 1200),
             "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2600),
