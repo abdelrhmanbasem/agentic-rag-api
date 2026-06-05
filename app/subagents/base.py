@@ -3,30 +3,123 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-SOURCE_OF_TRUTH_EXACT_VARIABLES = {
-    "visit_id",
-    "booking_status",
-    "available_slots",
-    "available_slots_text",
-    "available_branches",
-    "available_branches_text",
-    "slots_found",
-    "appointment_date",
-    "appointment_time",
-    "selected_branch",
-    "nearest_branch",
-    "location_branch",
-    "customer_confirmed_booking",
-}
+# Domain-specific source-of-truth paths must live in domain_bundle.json.
+# These empty defaults are kept only for backward compatibility with imports.
+SOURCE_OF_TRUTH_EXACT_VARIABLES = set()
+SOURCE_OF_TRUTH_PREFIXES = tuple()
 
-SOURCE_OF_TRUTH_PREFIXES = (
-    "booking",
-    "booking.",
-    "tool_result",
-    "exact_slot",
-    "nearest_slots",
-    "unavailable_reason",
-)
+
+def as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def unique_list(values: List[Any]) -> List[Any]:
+    output: List[Any] = []
+
+    for value in values or []:
+        if value not in output:
+            output.append(value)
+
+    return output
+
+
+def get_config_path_value(config: Dict[str, Any], path: str, default: Any = None) -> Any:
+    if not isinstance(config, dict):
+        return default
+
+    current: Any = config
+
+    for part in str(path or "").split("."):
+        if not part:
+            continue
+
+        if not isinstance(current, dict):
+            return default
+
+        if part not in current:
+            return default
+
+        current = current.get(part)
+
+    return current if current is not None else default
+
+
+def collect_source_of_truth_exact_variables(assistant_config: Optional[Dict[str, Any]] = None) -> List[str]:
+    assistant_config = assistant_config if isinstance(assistant_config, dict) else {}
+    values: List[str] = []
+
+    sources = [
+        assistant_config.get("source_of_truth_variables"),
+        get_config_path_value(assistant_config, "source_of_truth.exact_variables"),
+        get_config_path_value(assistant_config, "source_of_truth.variables"),
+        get_config_path_value(assistant_config, "state_engine.source_of_truth_variables"),
+        get_config_path_value(assistant_config, "state_engine.source_of_truth.exact_variables"),
+        list(SOURCE_OF_TRUTH_EXACT_VARIABLES),
+    ]
+
+    for source in sources:
+        if isinstance(source, list):
+            values.extend([str(item) for item in source if str(item or "").strip()])
+
+    schema_vars = get_config_path_value(assistant_config, "schema.variables", {})
+    if isinstance(schema_vars, dict):
+        for key, cfg in schema_vars.items():
+            if isinstance(cfg, dict) and (cfg.get("source_of_truth") is True or cfg.get("operational_state") is True):
+                values.append(str(key))
+
+    return unique_list(values)
+
+
+def collect_source_of_truth_prefixes(assistant_config: Optional[Dict[str, Any]] = None) -> List[str]:
+    assistant_config = assistant_config if isinstance(assistant_config, dict) else {}
+    values: List[str] = []
+
+    sources = [
+        assistant_config.get("source_of_truth_prefixes"),
+        get_config_path_value(assistant_config, "source_of_truth.prefixes"),
+        get_config_path_value(assistant_config, "state_engine.source_of_truth_prefixes"),
+        get_config_path_value(assistant_config, "state_engine.source_of_truth.prefixes"),
+        list(SOURCE_OF_TRUTH_PREFIXES),
+    ]
+
+    for source in sources:
+        if isinstance(source, list):
+            values.extend([str(item) for item in source if str(item or "").strip()])
+
+    return unique_list(values)
+
+
+def path_matches_policy_list(path: str, patterns: Optional[List[str]]) -> bool:
+    if not isinstance(patterns, list) or not patterns:
+        return False
+
+    path_text = str(path or "").strip()
+
+    for item in patterns:
+        pattern = str(item or "").strip()
+
+        if not pattern:
+            continue
+
+        if pattern == path_text:
+            return True
+
+        if pattern.endswith(".*"):
+            prefix = pattern[:-2]
+            if path_text == prefix or path_text.startswith(prefix + "."):
+                return True
+
+        if pattern.endswith(".") and path_text.startswith(pattern):
+            return True
+
+    return False
+
 
 
 def is_empty(value: Any) -> bool:
@@ -161,17 +254,22 @@ def render_template(template: str, context: Dict[str, Any]) -> str:
     return pattern.sub(replace, template)
 
 
-def path_is_source_of_truth(path: str) -> bool:
+def path_is_source_of_truth(path: str, assistant_config: Optional[Dict[str, Any]] = None) -> bool:
     path = str(path or "").strip()
 
     if not path:
         return False
 
-    if path in SOURCE_OF_TRUTH_EXACT_VARIABLES:
+    if path in collect_source_of_truth_exact_variables(assistant_config):
         return True
 
-    for prefix in SOURCE_OF_TRUTH_PREFIXES:
-        if path == prefix or path.startswith(prefix + "."):
+    for prefix in collect_source_of_truth_prefixes(assistant_config):
+        prefix_text = str(prefix or "").strip()
+
+        if not prefix_text:
+            continue
+
+        if path == prefix_text or path.startswith(prefix_text + "."):
             return True
 
     return False
@@ -182,7 +280,8 @@ def filter_updates_by_policy(
     *,
     allow_source_of_truth: bool = True,
     allow_paths: Optional[List[str]] = None,
-    deny_paths: Optional[List[str]] = None
+    deny_paths: Optional[List[str]] = None,
+    assistant_config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     if not isinstance(updates, dict):
         return {}
@@ -201,13 +300,13 @@ def filter_updates_by_policy(
         if is_empty(value):
             continue
 
-        if deny_paths and path_text in deny_paths:
+        if deny_paths and path_matches_policy_list(path_text, deny_paths):
             continue
 
-        if allow_paths and path_text not in allow_paths:
+        if allow_paths and not path_matches_policy_list(path_text, allow_paths):
             continue
 
-        if not allow_source_of_truth and path_is_source_of_truth(path_text):
+        if not allow_source_of_truth and path_is_source_of_truth(path_text, assistant_config):
             continue
 
         filtered[path_text] = value
@@ -220,7 +319,8 @@ def filter_clear_by_policy(
     *,
     allow_source_of_truth: bool = True,
     allow_paths: Optional[List[str]] = None,
-    deny_paths: Optional[List[str]] = None
+    deny_paths: Optional[List[str]] = None,
+    assistant_config: Optional[Dict[str, Any]] = None
 ) -> List[str]:
     if not isinstance(clear, list):
         return []
@@ -236,13 +336,13 @@ def filter_clear_by_policy(
         if not path_text:
             continue
 
-        if deny_paths and path_text in deny_paths:
+        if deny_paths and path_matches_policy_list(path_text, deny_paths):
             continue
 
-        if allow_paths and path_text not in allow_paths:
+        if allow_paths and not path_matches_policy_list(path_text, allow_paths):
             continue
 
-        if not allow_source_of_truth and path_is_source_of_truth(path_text):
+        if not allow_source_of_truth and path_is_source_of_truth(path_text, assistant_config):
             continue
 
         filtered.append(path_text)
@@ -257,7 +357,8 @@ def apply_variable_patch(
     *,
     allow_source_of_truth: bool = True,
     allow_paths: Optional[List[str]] = None,
-    deny_paths: Optional[List[str]] = None
+    deny_paths: Optional[List[str]] = None,
+    assistant_config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     patched = dict(variables or {})
 
@@ -265,7 +366,8 @@ def apply_variable_patch(
         clear,
         allow_source_of_truth=allow_source_of_truth,
         allow_paths=allow_paths,
-        deny_paths=deny_paths
+        deny_paths=deny_paths,
+        assistant_config=assistant_config
     )
 
     for path in safe_clear:
@@ -275,7 +377,8 @@ def apply_variable_patch(
         updates,
         allow_source_of_truth=allow_source_of_truth,
         allow_paths=allow_paths,
-        deny_paths=deny_paths
+        deny_paths=deny_paths,
+        assistant_config=assistant_config
     )
 
     for path, value in safe_updates.items():
@@ -302,29 +405,39 @@ def pick_variable_scope(variables: Dict[str, Any], include_paths: List[str]) -> 
     return scoped
 
 
+def get_subagent_aliases(
+    assistant_config: Dict[str, Any],
+    subagent_name: str
+) -> List[str]:
+    if not isinstance(assistant_config, dict):
+        return []
+
+    aliases_config = assistant_config.get("subagent_aliases", {})
+    if not isinstance(aliases_config, dict):
+        aliases_config = get_config_path_value(assistant_config, "routing.subagent_aliases", {})
+
+    target = str(subagent_name or "").strip()
+    aliases: List[str] = [target] if target else []
+
+    if isinstance(aliases_config, dict):
+        configured = aliases_config.get(target, [])
+        if isinstance(configured, list):
+            aliases.extend([str(item) for item in configured if str(item or "").strip()])
+        elif isinstance(configured, str) and configured.strip():
+            aliases.append(configured)
+
+    return unique_list(aliases)
+
+
 def get_subagent_config(
     assistant_config: Dict[str, Any],
     subagent_name: str,
     default: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Return a subagent configuration by id/name, supporting both supported
-    domain_bundle formats:
-
-    1. Dict format:
-       "subagents": {
-         "booking": {...},
-         "location": {...}
-       }
-
-    2. List format:
-       "subagents": [
-         {"id": "booking", ...},
-         {"id": "location", ...}
-       ]
-
-    This prevents subagents from silently disabling themselves when a future
-    assistant bundle uses list-based configuration.
+    Return a subagent configuration by id/name/key/aliases, supporting both
+    dict and list domain_bundle formats. Aliases are config-driven through
+    assistant_config.subagent_aliases.
     """
     if not isinstance(assistant_config, dict):
         return dict(default or {})
@@ -333,19 +446,16 @@ def get_subagent_config(
     if not target:
         return dict(default or {})
 
+    normalization = assistant_config.get("normalization", {}) or {}
+    normalized_targets = {
+        normalize_text(candidate, normalization)
+        for candidate in get_subagent_aliases(assistant_config, target)
+        if str(candidate or "").strip()
+    }
+
     raw_subagents = assistant_config.get("subagents", {})
 
     if isinstance(raw_subagents, dict):
-        direct = raw_subagents.get(target)
-
-        if isinstance(direct, dict):
-            config = dict(direct)
-            config.setdefault("id", target)
-            config.setdefault("name", target)
-            return config
-
-        normalized_target = normalize_text(target, assistant_config.get("normalization", {}) or {})
-
         for key, value in raw_subagents.items():
             if not isinstance(value, dict):
                 continue
@@ -354,20 +464,23 @@ def get_subagent_config(
                 str(key or ""),
                 str(value.get("id", "") or ""),
                 str(value.get("name", "") or ""),
+                str(value.get("key", "") or ""),
             ]
 
+            aliases = value.get("aliases", [])
+            if isinstance(aliases, list):
+                candidates.extend([str(item) for item in aliases if str(item or "").strip()])
+
             for candidate in candidates:
-                if normalize_text(candidate, assistant_config.get("normalization", {}) or {}) == normalized_target:
+                if normalize_text(candidate, normalization) in normalized_targets:
                     config = dict(value)
-                    config.setdefault("id", str(key or target))
-                    config.setdefault("name", str(key or target))
+                    config.setdefault("id", str(value.get("id") or key or target))
+                    config.setdefault("name", str(value.get("name") or key or target))
                     return config
 
         return dict(default or {})
 
     if isinstance(raw_subagents, list):
-        normalized_target = normalize_text(target, assistant_config.get("normalization", {}) or {})
-
         for item in raw_subagents:
             if not isinstance(item, dict):
                 continue
@@ -378,8 +491,12 @@ def get_subagent_config(
                 str(item.get("key", "") or ""),
             ]
 
+            aliases = item.get("aliases", [])
+            if isinstance(aliases, list):
+                candidates.extend([str(alias) for alias in aliases if str(alias or "").strip()])
+
             for candidate in candidates:
-                if normalize_text(candidate, assistant_config.get("normalization", {}) or {}) == normalized_target:
+                if normalize_text(candidate, normalization) in normalized_targets:
                     config = dict(item)
                     config.setdefault("id", target)
                     config.setdefault("name", target)
@@ -500,6 +617,9 @@ def extract_by_patterns(
         if not isinstance(item, dict):
             continue
 
+        if item.get("enabled", True) is False:
+            continue
+
         variable = item.get("variable")
         regex = item.get("regex")
         group = int(item.get("group", 1))
@@ -509,6 +629,16 @@ def extract_by_patterns(
             current_value = deep_get(working_variables, str(when_missing))
 
             if not is_empty(current_value):
+                continue
+
+        when_path = str(item.get("when_path") or "").strip()
+        if when_path:
+            current = deep_get(working_variables, when_path)
+            if "when_equals" in item and current != item.get("when_equals"):
+                continue
+            if item.get("when_exists") is True and is_empty(current):
+                continue
+            if item.get("when_exists") is False and not is_empty(current):
                 continue
 
         if not variable or not regex:
@@ -551,6 +681,42 @@ def format_missing_fields(
         readable.append(str(labels.get(path, path)))
 
     return " و ".join(readable)
+
+
+def evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    if not isinstance(condition, dict):
+        return False
+
+    path = str(condition.get("path", "") or "").strip()
+    actual = deep_get(context, path) if path else None
+
+    if condition.get("exists") is True and is_empty(actual):
+        return False
+
+    if condition.get("exists") is False and not is_empty(actual):
+        return False
+
+    if "equals" in condition and actual != condition.get("equals"):
+        return False
+
+    if "not_equals" in condition and actual == condition.get("not_equals"):
+        return False
+
+    allowed_values = condition.get("in")
+    if isinstance(allowed_values, list) and actual not in allowed_values:
+        return False
+
+    disallowed_values = condition.get("not_in")
+    if isinstance(disallowed_values, list) and actual in disallowed_values:
+        return False
+
+    if condition.get("truthy") is True and not bool(actual):
+        return False
+
+    if condition.get("falsy") is True and bool(actual):
+        return False
+
+    return True
 
 
 def get_tool_update_policy(
@@ -632,7 +798,8 @@ def apply_tool_update_rules(
         clear,
         allow_source_of_truth=allow_source_of_truth,
         allow_paths=allow_paths,
-        deny_paths=deny_paths
+        deny_paths=deny_paths,
+        assistant_config=assistant_config
     )
 
     for path in safe_clear:
@@ -648,7 +815,8 @@ def apply_tool_update_rules(
             [],
             allow_source_of_truth=allow_source_of_truth,
             allow_paths=allow_paths,
-            deny_paths=deny_paths
+            deny_paths=deny_paths,
+            assistant_config=assistant_config
         )
 
     context["variables"] = patched
@@ -665,11 +833,7 @@ def apply_tool_update_rules(
             if not isinstance(when, dict):
                 continue
 
-            path = str(when.get("path", ""))
-            expected = when.get("equals")
-            actual = deep_get(context, path)
-
-            if actual == expected:
+            if evaluate_condition(when, context):
                 c_clear = item.get("clear", [])
 
                 safe_c_clear = filter_clear_by_policy(
