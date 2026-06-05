@@ -193,7 +193,10 @@ class BookingSubagent:
             config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details")
         ])
 
-        should_extract_customer_details = stage in extraction_active_stages
+        should_extract_customer_details = (
+            stage in extraction_active_stages
+            or self.has_customer_detail_signal(context.user_message, normalization)
+        )
         extracted: Dict[str, Any] = {}
 
         if should_extract_customer_details:
@@ -2204,7 +2207,7 @@ class BookingSubagent:
             and not self.is_control_only_message(text, normalization)
         ):
             name_match = re.search(
-                r"(?:اسمي|انا اسمي|الإسم|الاسم|name is|my name is)\s+([^،,.!?؟\n]+)",
+                r"(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\s*[:：\\-]?\s*([^،,.!?؟\n]+)",
                 text,
                 flags=re.IGNORECASE
             )
@@ -2256,7 +2259,11 @@ class BookingSubagent:
 
         detail_markers = [
             "اسمي",
+            "اسمى",
             "انا اسمي",
+            "انا اسمى",
+            "أنا اسمي",
+            "أنا اسمى",
             "الاسم",
             "الإسم",
             "تليفون",
@@ -2295,7 +2302,11 @@ class BookingSubagent:
 
         name_markers = [
             "اسمي",
+            "اسمى",
             "انا اسمي",
+            "انا اسمى",
+            "أنا اسمي",
+            "أنا اسمى",
             "الاسم",
             "الإسم",
             "name is",
@@ -2592,18 +2603,59 @@ class BookingSubagent:
         config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> bool:
-        terms = config.get("closing_phrases", [
+        text = str(message or "").strip()
+
+        if not text:
+            return False
+
+        normalized = normalize_text(text, normalization)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        configured_terms = config.get("closing_phrases", [])
+
+        if not isinstance(configured_terms, list):
+            configured_terms = []
+
+        default_terms = [
             "شكرا",
+            "شكراً",
             "شكرًا",
+            "شكرا ليك",
+            "شكرا لك",
+            "شكراً ليك",
+            "شكرًا ليك",
             "متشكر",
+            "متشكر جدا",
+            "متشكرين",
+            "الف شكر",
+            "ألف شكر",
             "تمام شكرا",
             "تمام شكرًا",
             "تسلم",
+            "تسلملي",
+            "تسلم ايدك",
+            "ربنا يخليك",
+            "يعطيك العافيه",
+            "يعطيك العافية",
             "thanks",
-            "thank you"
-        ])
+            "thank you",
+            "thx"
+        ]
 
-        return matches_any(message, terms, normalization)
+        terms = configured_terms + default_terms
+
+        for term in terms:
+            normalized_term = normalize_text(str(term or ""), normalization)
+            normalized_term = re.sub(r"\s+", " ", normalized_term).strip()
+
+            if normalized_term and normalized_term in normalized:
+                return True
+
+        # Very short thanks-only messages should close after a confirmed booking.
+        tokens = [token for token in re.findall(r"[\w\u0600-\u06FF]+", normalized) if token]
+        thanks_tokens = {"شكرا", "شكرًا", "شكراً", "متشكر", "تسلم", "thanks", "thx"}
+
+        return bool(tokens and len(tokens) <= 4 and any(token in thanks_tokens for token in tokens))
 
     def looks_like_duplicate_confirmation(
         self,
