@@ -61,6 +61,12 @@ class BookingSubagent:
             config=config,
             normalization=normalization
         )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
         observations: List[Dict[str, Any]] = []
         tool_calls_used = 0
 
@@ -214,7 +220,14 @@ class BookingSubagent:
             variables = self.ensure_valid_customer_profile(
                 variables=variables,
                 message=context.user_message,
+                config=config,
                 normalization=normalization
+            )
+            variables = self.ensure_phone_context(
+                variables=variables,
+                config=config,
+                normalization=normalization,
+                message=context.user_message
             )
 
         stage = deep_get(variables, stage_path, stage)
@@ -405,6 +418,12 @@ class BookingSubagent:
             config=config,
             normalization=normalization
         )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -443,12 +462,25 @@ class BookingSubagent:
             []
         )
 
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+
         variables = self.ensure_pending_booking_context(
             variables=variables,
             config=config,
             assistant_config=context.assistant_config,
             message=context.user_message,
             normalization=normalization
+        )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
         )
 
         missing = self.get_missing_required_create_fields(config, variables)
@@ -550,6 +582,12 @@ class BookingSubagent:
             message=context.user_message,
             config=config,
             normalization=normalization
+        )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
         )
 
         variables = self.ensure_pending_booking_context(
@@ -930,6 +968,12 @@ class BookingSubagent:
             message=context.user_message,
             normalization=context.assistant_config.get("normalization", {})
         )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=context.assistant_config.get("normalization", {}),
+            message=context.user_message
+        )
 
         operations = config.get("operations", {})
         tool_name = config.get("tool_name", "")
@@ -966,6 +1010,15 @@ class BookingSubagent:
 
         if branch:
             arguments["branch"] = branch
+
+        if not arguments.get("phone"):
+            existing_phone = self.get_existing_phone(
+                variables,
+                config,
+                context.assistant_config.get("normalization", {})
+            )
+            if existing_phone:
+                arguments["phone"] = existing_phone
 
         arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
         arguments["user_id"] = deep_get(variables, "user_id", "")
@@ -2065,11 +2118,7 @@ class BookingSubagent:
 
     def is_ignorable_create_missing(self, path: str, variables: Dict[str, Any]) -> bool:
         if path == "variables.customer_profile.phone":
-            return bool(
-                deep_get(variables, "customer_profile.phone")
-                or deep_get(variables, "phone")
-                or deep_get(variables, "customer_phone")
-            )
+            return bool(self.get_existing_phone(variables, config, {}))
 
         if path == "variables.booking.pending.branch":
             return bool(self.get_known_branch(variables))
@@ -2214,7 +2263,12 @@ class BookingSubagent:
         phone_config = config.get("phone_extraction", {})
         phone_regex = phone_config.get("regex", r"(01\d{9}|\+?20\d{10,11})")
 
-        if not deep_get(variables, "customer_profile.phone"):
+        if self.is_same_phone_request(text, config, normalization):
+            existing_phone = self.get_existing_phone(variables, config, normalization)
+            if existing_phone:
+                output["customer_profile.phone"] = existing_phone
+
+        if not deep_get(variables, "customer_profile.phone") and not output.get("customer_profile.phone"):
             try:
                 phone_match = re.search(
                     phone_regex,
@@ -2246,6 +2300,167 @@ class BookingSubagent:
                 output["customer_profile.plate_number"] = plate
 
         return output
+
+
+    def ensure_phone_context(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Promote an already-known phone value into customer_profile.phone.
+
+        The source paths and same-phone markers are config-driven. This keeps
+        WhatsApp/user-id phone context usable for create_booking without asking
+        the customer for phone again.
+        """
+        existing_profile_phone = self.normalize_phone_value(
+            deep_get(variables, "customer_profile.phone"),
+            config,
+            normalization
+        )
+
+        if existing_profile_phone:
+            if existing_profile_phone == deep_get(variables, "customer_profile.phone"):
+                return variables
+
+            return apply_variable_patch(
+                variables,
+                {"customer_profile.phone": existing_profile_phone},
+                []
+            )
+
+        existing_phone = self.get_existing_phone(variables, config, normalization)
+
+        if not existing_phone:
+            return variables
+
+        updates = {"customer_profile.phone": existing_phone}
+
+        phone_reuse = config.get("phone_reuse", {})
+        if isinstance(phone_reuse, dict) and self.is_same_phone_request(message, config, normalization):
+            confirmed_path = str(phone_reuse.get("confirmed_path", "") or "").strip()
+            if confirmed_path:
+                updates[confirmed_path] = True
+
+        return apply_variable_patch(variables, updates, [])
+
+    def get_existing_phone(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        phone_reuse = config.get("phone_reuse", {})
+        phone_config = config.get("phone_extraction", {})
+
+        if not isinstance(phone_reuse, dict):
+            phone_reuse = {}
+
+        if not isinstance(phone_config, dict):
+            phone_config = {}
+
+        source_paths: List[str] = []
+
+        for source in [
+            phone_reuse.get("source_paths", []),
+            phone_config.get("source_paths", [])
+        ]:
+            if isinstance(source, list):
+                source_paths.extend([str(item or "") for item in source if str(item or "").strip()])
+
+        if not source_paths:
+            source_paths = [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id"
+            ]
+
+        for source_path in source_paths:
+            value = self.normalize_phone_value(
+                deep_get(variables, source_path),
+                config,
+                normalization
+            )
+
+            if value:
+                return value
+
+        return ""
+
+    def normalize_phone_value(
+        self,
+        value: Any,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        raw_value = str(value or "").strip()
+
+        if not raw_value:
+            return ""
+
+        phone_config = config.get("phone_extraction", {})
+        if not isinstance(phone_config, dict):
+            phone_config = {}
+
+        regex = str(phone_config.get("regex", r"(01\d{9}|\+?20\d{10,11})") or "")
+        digits_text = normalize_digits(raw_value, normalization.get("digit_map", {}))
+
+        if regex:
+            try:
+                match = re.search(regex, digits_text)
+            except re.error:
+                match = None
+
+            if match:
+                return match.group(1).strip()
+
+        digits_only = re.sub(r"\D+", "", digits_text)
+        min_digits = int(phone_config.get("min_digits", 10) or 10)
+        max_digits = int(phone_config.get("max_digits", 15) or 15)
+
+        if min_digits <= len(digits_only) <= max_digits:
+            return digits_only
+
+        return ""
+
+    def is_same_phone_request(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        text = str(message or "").strip()
+
+        if not text:
+            return False
+
+        normalized = normalize_text(text, normalization)
+
+        markers_config = config.get("customer_detail_markers", {})
+        phone_reuse = config.get("phone_reuse", {})
+
+        markers: List[str] = []
+
+        if isinstance(markers_config, dict):
+            values = markers_config.get("same_phone_markers", [])
+            if isinstance(values, list):
+                markers.extend([str(item or "") for item in values])
+
+        if isinstance(phone_reuse, dict):
+            values = phone_reuse.get("same_phone_markers", [])
+            if isinstance(values, list):
+                markers.extend([str(item or "") for item in values])
+
+        for marker in markers:
+            normalized_marker = normalize_text(str(marker or ""), normalization)
+            if normalized_marker and normalized_marker in normalized:
+                return True
+
+        return False
 
 
     def ensure_valid_customer_profile(
@@ -2284,7 +2499,7 @@ class BookingSubagent:
             markers_config = {}
 
         all_markers: List[str] = []
-        for key in ["name_markers", "phone_markers", "plate_markers", "general_markers"]:
+        for key in ["name_markers", "phone_markers", "same_phone_markers", "plate_markers", "general_markers"]:
             values = markers_config.get(key, [])
             if isinstance(values, list):
                 all_markers.extend([str(item or "") for item in values])
@@ -2363,7 +2578,7 @@ class BookingSubagent:
             detail_markers = {}
 
         configured_markers: List[str] = []
-        for key in ["name_markers", "phone_markers", "plate_markers", "general_markers"]:
+        for key in ["name_markers", "phone_markers", "same_phone_markers", "plate_markers", "general_markers"]:
             values = detail_markers.get(key, [])
             if isinstance(values, list):
                 configured_markers.extend([str(item or "") for item in values])
