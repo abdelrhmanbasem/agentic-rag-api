@@ -360,7 +360,10 @@
       "After create_booking ok=true, final confirmation must include visit_id when returned, branch, date/date_text, time, and a short friendly close.",
       "After create_booking ok=true, preferred Egyptian Arabic wording: تمام، اتأكد حجزك في فرع {branch} يوم {date_text} الساعة {time}. رقم الحجز: {visit_id}. هنستناك في المعاد.",
       "Do not use formal MSA phrases in booking flow: هل ترغب, تم تأكيد المعاد, يرجى, لديك, إذا كنت. Prefer: تحب, اخترتلك, تأكدلي, عندك, لو.",
-      "Do not store or treat confirmation-only phrases as names. Full names should come from labelled name phrases like اسمي or الاسم, or from a clearly requested name response during awaiting_customer_details."
+      "Do not store or treat confirmation-only phrases as names. Full names should come from labelled name phrases like اسمي or الاسم, or from a clearly requested name response during awaiting_customer_details.",
+      "After booking is confirmed, if the customer sends a thanks/closing phrase, reply briefly and do not repeat visit_id, branch, date, or time unless the customer asks for them.",
+      "BOOKING_COMPLETED_CLOSING must be a short Egyptian Arabic close like: العفو، تحت أمرك.",
+      "Customer detail phrase lists, name markers, plate markers, closing phrases, and fake-name guards must live in domain_bundle.json, not Python code."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -991,12 +994,25 @@
         "closing_phrases": [
           "شكرا",
           "شكرًا",
-          "متشكر",
+          "شكراً",
+          "شكرا ليك",
+          "شكرا لك",
+          "شكرًا ليك",
+          "شكراً ليك",
           "تمام شكرا",
           "تمام شكرًا",
+          "تمام شكراً",
+          "متشكر",
+          "متشكر جدا",
+          "متشكر جدًا",
+          "الف شكر",
+          "ألف شكر",
           "تسلم",
+          "تسلملي",
+          "ربنا يخليك",
           "thanks",
-          "thank you"
+          "thank you",
+          "thx"
         ],
         "rejection_phrases": [
           "لا",
@@ -1010,7 +1026,7 @@
         "extraction_patterns": [
           {
             "variable": "customer_profile.full_name",
-            "regex": "(?:اسمي|انا اسمي|الاسم|الإسم|name is|my name is)\\s+([^\\n،,.]+)",
+            "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الاسم|الإسم|name is|my name is)\\s*[:：\\-]?\\s*([^\\n،,.]+)",
             "group": 1
           },
           {
@@ -1046,7 +1062,7 @@
             "group": 1,
             "when_missing": "customer_profile.full_name",
             "enabled": false,
-            "note": "Disabled to prevent confirmation-only phrases like اه أكده تمام from being stored as names. Names should be labelled or requested explicitly."
+            "note": "Disabled to prevent confirmation-only phrases from being stored as names. Names should be labelled or requested explicitly."
           }
         ],
         "time_normalization": {
@@ -1218,7 +1234,283 @@
           ],
           "if_name_missing_after_plate": "ask_only_for_full_name",
           "if_name_and_plate_missing_after_confirmation": "ask_for_full_name_and_plate"
-        }
+        },
+        "customer_detail_markers": {
+          "name_markers": [
+            "اسمي",
+            "اسمى",
+            "انا اسمي",
+            "انا اسمى",
+            "أنا اسمي",
+            "أنا اسمى",
+            "الاسم",
+            "الإسم",
+            "اسمي هو",
+            "اسمى هو",
+            "اسمي:",
+            "اسمى:",
+            "name is",
+            "my name is"
+          ],
+          "phone_markers": [
+            "تليفون",
+            "تلفون",
+            "موبايل",
+            "رقم تليفوني",
+            "رقم تلفوني",
+            "رقمي",
+            "رقم الموبايل",
+            "phone",
+            "mobile"
+          ],
+          "plate_markers": [
+            "رقم العربية",
+            "نمر العربية",
+            "نمرة العربية",
+            "رقم اللوحه",
+            "رقم اللوحة",
+            "اللوحه",
+            "اللوحة",
+            "لوحتي",
+            "لوحتى",
+            "plate"
+          ],
+          "general_markers": [
+            "اسمي",
+            "اسمى",
+            "انا اسمي",
+            "انا اسمى",
+            "الاسم",
+            "الإسم",
+            "تليفون",
+            "تلفون",
+            "موبايل",
+            "رقم العربية",
+            "نمر العربية",
+            "نمرة العربية",
+            "رقم اللوحة",
+            "رقم اللوحه",
+            "اللوحة",
+            "اللوحه",
+            "لوحتي",
+            "لوحتى",
+            "phone",
+            "mobile",
+            "plate",
+            "name is",
+            "my name is"
+          ]
+        },
+        "customer_detail_guards": {
+          "fake_name_phrases": [
+            "اه أكده تمام",
+            "اه اكده تمام",
+            "أه أكده تمام",
+            "اكد تمام",
+            "أكد تمام",
+            "اكد الحجز",
+            "أكد الحجز",
+            "اكد المعاد",
+            "أكد المعاد",
+            "اكد الموعد",
+            "أكد الموعد",
+            "تمام",
+            "اه",
+            "أه",
+            "اها",
+            "ايوه",
+            "أيوه",
+            "ايوا",
+            "نعم",
+            "اوكي",
+            "أوكي",
+            "اوك",
+            "اكيد",
+            "أكيد",
+            "مظبوط",
+            "صح",
+            "confirm",
+            "confirmed",
+            "yes",
+            "ok",
+            "okay"
+          ],
+          "control_only_terms": [
+            "اه",
+            "أه",
+            "اها",
+            "ايوه",
+            "أيوه",
+            "ايوا",
+            "نعم",
+            "تمام",
+            "اوكي",
+            "أوكي",
+            "اوك",
+            "اكيد",
+            "أكيد",
+            "مظبوط",
+            "صح",
+            "اكد",
+            "أكد",
+            "اكده",
+            "أكده",
+            "اكدها",
+            "أكدها",
+            "الحجز",
+            "المعاد",
+            "الموعد",
+            "confirm",
+            "confirmed",
+            "yes",
+            "ok",
+            "okay"
+          ],
+          "name_blocklist": [
+            "العربية",
+            "العربيه",
+            "اللوحة",
+            "اللوحه",
+            "رقم",
+            "موبايل",
+            "تليفون",
+            "تلفون",
+            "فرع",
+            "ميعاد",
+            "معاد",
+            "موعد",
+            "الحجز",
+            "تمام",
+            "اكد",
+            "أكد",
+            "اكده",
+            "أكده",
+            "اكدها",
+            "أكدها",
+            "ايوه",
+            "أيوه",
+            "اه",
+            "أه",
+            "اوكي",
+            "أوكي",
+            "confirm",
+            "confirmed",
+            "yes",
+            "ok",
+            "okay"
+          ],
+          "customer_marker_exceptions": [
+            "اسمي",
+            "اسمى",
+            "الاسم",
+            "الإسم",
+            "رقم",
+            "العربيه",
+            "العربية",
+            "اللوحه",
+            "اللوحة",
+            "تليفون",
+            "تلفون",
+            "موبايل",
+            "phone",
+            "mobile",
+            "plate",
+            "name"
+          ],
+          "min_name_parts": 2,
+          "max_name_parts": 6,
+          "min_name_part_length": 2,
+          "max_control_phrase_tokens": 5,
+          "full_name_requires_name_signal": true,
+          "do_not_extract_name_from_control_only_message": true
+        },
+        "closing_detection": {
+          "closing_tokens": [
+            "شكرا",
+            "شكرًا",
+            "شكراً",
+            "متشكر",
+            "تسلم",
+            "تسلملي",
+            "ميرسي",
+            "thanks",
+            "thank",
+            "thx"
+          ],
+          "max_thanks_tokens": 4,
+          "do_not_repeat_visit_id_on_closing": true
+        },
+        "name_extraction": {
+          "capture_patterns": [
+            {
+              "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
+              "group": 1
+            }
+          ]
+        },
+        "plate_extraction": {
+          "fallback_patterns": [
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            }
+          ],
+          "blocklist": [
+            "اسمي",
+            "اسمى",
+            "الاسم",
+            "الإسم",
+            "موبايل",
+            "تليفون",
+            "تلفون",
+            "موعد",
+            "ميعاد",
+            "معاد",
+            "فرع"
+          ],
+          "require_digit": true,
+          "require_letter_or_digit": true,
+          "min_length": 2,
+          "max_length": 30
+        },
+        "branch_inference_stopwords": [
+          "انا",
+          "أنا",
+          "ساكن",
+          "في",
+          "قولي",
+          "قوللي",
+          "قولى",
+          "اقرب",
+          "أقرب",
+          "فرع",
+          "ليا",
+          "لي",
+          "وايه",
+          "ايه",
+          "إيه",
+          "المواعيد",
+          "المتاحه",
+          "المتاحة",
+          "يوم",
+          "الجاي",
+          "القادم",
+          "عايز",
+          "عاوز",
+          "ممكن",
+          "لو",
+          "تحب",
+          "ده",
+          "هذا",
+          "اللي",
+          "اكد",
+          "أكد",
+          "المعاد",
+          "موعد",
+          "ميعاد",
+          "الساعة",
+          "الساعه"
+        ]
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -1727,7 +2019,9 @@
         "confirm",
         "yes",
         "ok"
-      ]
+      ],
+      "do_not_repeat_visit_id_on_closing": true,
+      "closing_template_must_not_include_visit_id": true
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -1922,6 +2216,35 @@
           "do not use if visit_id is missing",
           "do not use while booking.stage is awaiting_customer_details"
         ]
+      },
+      "BOOKING_COMPLETED_CLOSING": {
+        "state": "confirmed_booking_polite_close",
+        "must_do": [
+          "reply with a short polite closing only",
+          "do not repeat booking details",
+          "do not repeat visit_id unless the customer explicitly asks for the booking number again",
+          "use natural Egyptian Arabic"
+        ],
+        "safe_examples": [
+          "العفو، تحت أمرك.",
+          "العفو يا فندم، يومك سعيد."
+        ],
+        "must_not_do": [
+          "do not repeat رقم الحجز",
+          "do not repeat visit_id",
+          "do not repeat branch/date/time"
+        ]
+      },
+      "BOOKING_ALREADY_CONFIRMED": {
+        "state": "already_confirmed_non_closing",
+        "must_do": [
+          "only use when the customer tries to confirm again or asks about existing booking",
+          "include visit_id only if useful and not a thanks/closing message"
+        ],
+        "must_not_do": [
+          "do not use for thanks/closing messages",
+          "do not repeat visit_id after a simple شكرا/thanks"
+        ]
       }
     },
     "slot_context_carryover_policy": {
@@ -2111,7 +2434,7 @@
     }
   },
   "domain_playbook": {
-    "version": "4.5-expert-final-booking-safety-egyptian-arabic",
+    "version": "4.7-config-driven-customer-details-and-closing",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer; quality guard validates; memory writer runs best-effort after response.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -2155,7 +2478,9 @@
       "Full name extraction must not accept confirmation-only phrases such as اه أكده تمام.",
       "The assistant must never claim a booking was created unless create_booking returned ok=true and visit_id exists.",
       "When plate is provided but full name is missing, ask only for full name and do not confirm booking.",
-      "Booking confirmation wording must be natural Egyptian Arabic and include visit_id on success."
+      "Booking confirmation wording must be natural Egyptian Arabic and include visit_id on success.",
+      "BookingSubagent customer-detail markers, fake-name guards, closing detection, plate extraction, and branch inference stopwords must be read from domain_bundle.json.",
+      "After confirmed booking, thanks/closing messages should use BOOKING_COMPLETED_CLOSING and must not repeat visit_id unless explicitly requested."
     ]
   }
 }
