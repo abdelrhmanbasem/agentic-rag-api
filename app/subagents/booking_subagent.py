@@ -113,12 +113,12 @@ class BookingSubagent:
                     selected_slot=selected_slot_before_date
                 )
 
-        if self.is_booking_completed(variables):
+        if self.is_booking_completed(variables, config):
             if self.is_polite_closing(context.user_message, config, normalization):
                 answer = render_template(
                     config.get("templates", {}).get(
                         "booking_completed_closing",
-                        "BOOKING_COMPLETED_CLOSING"
+                        ""
                     ),
                     {
                         "variables": variables,
@@ -141,7 +141,7 @@ class BookingSubagent:
                 answer = render_template(
                     config.get("templates", {}).get(
                         "booking_already_confirmed",
-                        "BOOKING_ALREADY_CONFIRMED"
+                        ""
                     ),
                     {
                         "variables": variables,
@@ -174,7 +174,8 @@ class BookingSubagent:
             resolved_date = self.resolve_date_text(
                 date_text=date_text,
                 message=context.user_message,
-                normalization=normalization
+                normalization=normalization,
+                config=config
             )
 
             if resolved_date:
@@ -291,7 +292,7 @@ class BookingSubagent:
                 )
 
             answer = render_template(
-                config.get("templates", {}).get("choose_slot_again", "BOOKING_SLOT_SELECTION_UNCLEAR"),
+                config.get("templates", {}).get("choose_slot_again", ""),
                 {
                     "variables": variables,
                     "message": context.user_message
@@ -359,9 +360,9 @@ class BookingSubagent:
             normalization=normalization
         )
 
-        if self.is_booking_completed(variables):
+        if self.is_booking_completed(variables, config):
             answer = render_template(
-                config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
+                config.get("templates", {}).get("booking_already_confirmed", ""),
                 {
                     "variables": variables,
                     "message": context.user_message
@@ -390,7 +391,7 @@ class BookingSubagent:
             )
 
             answer = render_template(
-                config.get("templates", {}).get("slot_rejected", "BOOKING_SLOT_REJECTED"),
+                config.get("templates", {}).get("slot_rejected", ""),
                 {
                     "variables": patched,
                     "message": context.user_message
@@ -455,7 +456,7 @@ class BookingSubagent:
             answer = render_template(
                 config.get("templates", {}).get(
                     "repeat_confirmation",
-                    "BOOKING_AWAITING_EXPLICIT_CONFIRMATION"
+                    ""
                 ),
                 {
                     "variables": variables,
@@ -577,9 +578,9 @@ class BookingSubagent:
             normalization=normalization
         )
 
-        if self.is_booking_completed(variables):
+        if self.is_booking_completed(variables, config):
             answer = render_template(
-                config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
+                config.get("templates", {}).get("booking_already_confirmed", ""),
                 {
                     "variables": variables,
                     "message": context.user_message
@@ -692,7 +693,7 @@ class BookingSubagent:
             "message": context.user_message
         })
 
-        known_branch = self.get_known_branch(variables)
+        known_branch = self.get_known_branch(variables, config)
 
         if pending.get("branch") in [None, ""]:
             pending["branch"] = known_branch
@@ -750,7 +751,7 @@ class BookingSubagent:
         patched = apply_variable_patch(variables, updates, [])
 
         answer = render_template(
-            config.get("templates", {}).get("confirm_slot", "BOOKING_CONFIRM_SELECTED_SLOT"),
+            config.get("templates", {}).get("confirm_slot", ""),
             {
                 "variables": patched,
                 "slot": selected_slot,
@@ -778,9 +779,9 @@ class BookingSubagent:
         observations: List[Dict[str, Any]],
         tool_calls_used: int
     ) -> SubagentResult:
-        if self.is_booking_completed(variables):
+        if self.is_booking_completed(variables, config):
             answer = render_template(
-                config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
+                config.get("templates", {}).get("booking_already_confirmed", ""),
                 {
                     "variables": variables,
                     "message": context.user_message
@@ -870,7 +871,7 @@ class BookingSubagent:
             value=str(arguments.get("branch") or ""),
             assistant_config=context.assistant_config,
             normalization=normalization
-        ) or self.get_known_branch(variables)
+        ) or self.get_known_branch(variables, config)
 
         if branch:
             arguments["branch"] = branch
@@ -936,11 +937,11 @@ class BookingSubagent:
         slots_found = deep_get(tool_result, slots_found_path, False)
 
         if tool_result.get("ok") is False:
-            template = config.get("templates", {}).get("tool_error", "BOOKING_TOOL_ERROR")
+            template = config.get("templates", {}).get("tool_error", "")
         elif slots_found is True:
-            template = config.get("templates", {}).get("slots_found", "BOOKING_SLOTS_FOUND")
+            template = config.get("templates", {}).get("slots_found", "")
         else:
-            template = config.get("templates", {}).get("no_slots", "BOOKING_NO_SLOTS")
+            template = config.get("templates", {}).get("no_slots", "")
 
         answer = render_template(template, result_context)
 
@@ -963,9 +964,9 @@ class BookingSubagent:
         observations: List[Dict[str, Any]],
         tool_calls_used: int
     ) -> SubagentResult:
-        if self.is_booking_completed(variables):
+        if self.is_booking_completed(variables, config):
             answer = render_template(
-                config.get("templates", {}).get("booking_already_confirmed", "BOOKING_ALREADY_CONFIRMED"),
+                config.get("templates", {}).get("booking_already_confirmed", ""),
                 {
                     "variables": variables,
                     "message": context.user_message
@@ -1048,7 +1049,7 @@ class BookingSubagent:
             value=str(arguments.get("branch") or ""),
             assistant_config=context.assistant_config,
             normalization=context.assistant_config.get("normalization", {})
-        ) or self.get_known_branch(variables)
+        ) or self.get_known_branch(variables, config)
 
         if branch:
             arguments["branch"] = branch
@@ -1527,7 +1528,8 @@ class BookingSubagent:
         resolved_date = self.resolve_date_text(
             date_text=str(date_text),
             message=message,
-            normalization=normalization
+            normalization=normalization,
+            config=config
         )
 
         if not resolved_date:
@@ -1547,8 +1549,10 @@ class BookingSubagent:
         self,
         date_text: str,
         message: str = "",
-        normalization: Optional[Dict[str, Any]] = None
+        normalization: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None
     ) -> str:
+        config = config or {}
         normalization = normalization or {}
         raw = normalize_digits(str(date_text or "").strip(), normalization.get("digit_map", {}))
         raw_message = normalize_digits(str(message or "").strip(), normalization.get("digit_map", {}))
@@ -1561,18 +1565,33 @@ class BookingSubagent:
 
         today = datetime.now(TZ).date()
 
-        relative_days = self.resolve_relative_day_offset(normalized)
+        relative_days = self.resolve_relative_day_offset(
+            normalized=normalized,
+            config=config,
+            normalization=normalization
+        )
 
         if relative_days is not None:
             return (today + timedelta(days=relative_days)).isoformat()
 
-        weekday_index = self.resolve_weekday_index(normalized)
+        weekday_index = self.resolve_weekday_index(
+            normalized=normalized,
+            config=config,
+            normalization=normalization
+        )
 
         if weekday_index is None and raw_message:
-            weekday_index = self.resolve_weekday_index(normalized_message)
+            weekday_index = self.resolve_weekday_index(
+                normalized=normalized_message,
+                config=config,
+                normalization=normalization
+            )
 
         if weekday_index is not None:
-            force_next_week = self.has_next_week_marker(normalized) or self.has_next_week_marker(normalized_message)
+            force_next_week = (
+                self.has_next_week_marker(normalized, config, normalization)
+                or self.has_next_week_marker(normalized_message, config, normalization)
+            )
             return self.next_weekday(today, weekday_index, force_next_week=force_next_week).isoformat()
 
         iso = self.parse_iso_date(raw)
@@ -1585,67 +1604,100 @@ class BookingSubagent:
         if numeric:
             return numeric
 
-        month_named = self.parse_named_month_date(raw, today)
+        month_named = self.parse_named_month_date(raw, today, config=config, normalization=normalization)
 
         if month_named:
             return month_named
 
         return ""
 
-    def resolve_relative_day_offset(self, normalized: str) -> Optional[int]:
-        if any(term in normalized for term in ["بعد بكره", "بعد بكرة", "بعد غد", "بعد الغد"]):
-            return 2
+    def resolve_relative_day_offset(
+        self,
+        normalized: str,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> Optional[int]:
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
 
-        if any(term in normalized for term in ["بكره", "بكرة", "غدا", "غد", "tomorrow"]):
-            return 1
+        relative_terms = date_resolution.get("relative_day_offsets", {})
+        if not isinstance(relative_terms, dict):
+            relative_terms = {}
 
-        if any(term in normalized for term in ["النهارده", "انهارده", "اليوم", "today"]):
-            return 0
+        for offset_text, terms in relative_terms.items():
+            try:
+                offset = int(offset_text)
+            except Exception:
+                continue
+
+            if not isinstance(terms, list):
+                continue
+
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term and normalized_term in normalized:
+                    return offset
 
         return None
 
-    def resolve_weekday_index(self, normalized: str) -> Optional[int]:
-        weekday_map = {
-            "الاثنين": 0,
-            "الاتنين": 0,
-            "monday": 0,
-            "التلات": 1,
-            "الثلاثاء": 1,
-            "الثلاثا": 1,
-            "tuesday": 1,
-            "الاربعاء": 2,
-            "الأربعاء": 2,
-            "الاربع": 2,
-            "wednesday": 2,
-            "الخميس": 3,
-            "thursday": 3,
-            "الجمعه": 4,
-            "الجمعة": 4,
-            "friday": 4,
-            "السبت": 5,
-            "saturday": 5,
-            "الاحد": 6,
-            "الأحد": 6,
-            "sunday": 6
-        }
+    def resolve_weekday_index(
+        self,
+        normalized: str,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> Optional[int]:
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
 
-        for word, index in weekday_map.items():
-            if word in normalized:
-                return index
+        weekday_terms = date_resolution.get("weekday_terms", {})
+        if not isinstance(weekday_terms, dict):
+            return None
+
+        for index_text, terms in weekday_terms.items():
+            try:
+                index = int(index_text)
+            except Exception:
+                continue
+
+            if not isinstance(terms, list):
+                continue
+
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term and normalized_term in normalized:
+                    return index
 
         return None
 
     @staticmethod
-    def has_next_week_marker(normalized: str) -> bool:
-        return any(term in str(normalized or "") for term in [
-            "الجاي",
-            "القادم",
-            "اللي جاي",
-            "الجاى",
-            "next"
-        ])
+    def has_next_week_marker(
+        normalized: str,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
 
-    @staticmethod
+        markers = date_resolution.get("next_week_markers", [])
+        if not isinstance(markers, list):
+            return False
+
+        for marker in markers:
+            normalized_marker = normalize_text(str(marker or ""), normalization)
+            if normalized_marker and normalized_marker in str(normalized or ""):
+                return True
+
+        return False
+
     def next_weekday(today, weekday_index: int, force_next_week: bool = False):
         days_ahead = weekday_index - today.weekday()
 
@@ -1702,37 +1754,63 @@ class BookingSubagent:
 
         return candidate.isoformat()
 
-    def parse_named_month_date(self, raw: str, today) -> str:
-        normalized = raw.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    def parse_named_month_date(
+        self,
+        raw: str,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
 
-        month_map = {
-            "يناير": 1,
-            "فبراير": 2,
-            "مارس": 3,
-            "ابريل": 4,
-            "مايو": 5,
-            "يونيو": 6,
-            "يونيه": 6,
-            "يوليو": 7,
-            "يوليه": 7,
-            "اغسطس": 8,
-            "سبتمبر": 9,
-            "اكتوبر": 10,
-            "نوفمبر": 11,
-            "ديسمبر": 12
-        }
+        month_terms = date_resolution.get("month_terms", {})
+        if not isinstance(month_terms, dict):
+            return ""
 
-        pattern = r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
-        match = re.search(pattern, normalized)
+        normalized = normalize_text(raw, normalization)
+
+        pattern = str(
+            date_resolution.get(
+                "named_month_date_regex",
+                r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
+            )
+        )
+
+        try:
+            match = re.search(pattern, normalized)
+        except re.error:
+            return ""
 
         if not match:
             return ""
 
         day = int(match.group(1))
-        month_name = match.group(2)
+        month_name = normalize_text(match.group(2), normalization)
         year_text = match.group(3)
 
-        month = month_map.get(month_name)
+        month = None
+
+        for month_index_text, terms in month_terms.items():
+            try:
+                month_index = int(month_index_text)
+            except Exception:
+                continue
+
+            if not isinstance(terms, list):
+                continue
+
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term and normalized_term == month_name:
+                    month = month_index
+                    break
+
+            if month is not None:
+                break
 
         if not month:
             return ""
@@ -1813,7 +1891,7 @@ class BookingSubagent:
                 []
             )
 
-        known_branch = self.get_known_branch(variables)
+        known_branch = self.get_known_branch(variables, get_subagent_config(assistant_config, self.name))
 
         if known_branch:
             return apply_variable_patch(
@@ -1846,19 +1924,47 @@ class BookingSubagent:
         return variables
 
 
-    def get_known_branch(self, variables: Dict[str, Any]) -> str:
-        for path in [
-            "booking.pending.branch",
-            "selected_branch",
-            "location_branch",
-            "nearest_branch"
-        ]:
+    def get_known_branch(
+        self,
+        variables: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
+
+        paths: List[str] = []
+
+        carryover = config.get("slot_context_carryover", {})
+        if isinstance(carryover, dict):
+            values = carryover.get("never_ask_branch_if_any_exist", [])
+            if isinstance(values, list):
+                paths.extend([str(item).replace("variables.", "") for item in values if str(item or "").strip()])
+
+            values = carryover.get("known_branch_fallback_order", [])
+            if isinstance(values, list):
+                paths.extend([
+                    str(item).replace("variables.", "").replace("slot.", "")
+                    for item in values
+                    if str(item or "").strip()
+                ])
+
+        configured_paths = config.get("known_branch_paths", [])
+        if isinstance(configured_paths, list):
+            paths.extend([str(item).replace("variables.", "") for item in configured_paths if str(item or "").strip()])
+
+        seen = set()
+        ordered_paths = []
+        for path in paths:
+            path = str(path or "").strip()
+            if path and path not in seen:
+                ordered_paths.append(path)
+                seen.add(path)
+
+        for path in ordered_paths:
             value = str(deep_get(variables, path) or "").strip()
             if value:
                 return value
+
         return ""
-
-
 
     def ensure_pending_booking_context(
         self,
@@ -1879,7 +1985,7 @@ class BookingSubagent:
 
         branch = (
             patched_pending.get("branch")
-            or self.get_known_branch(variables)
+            or self.get_known_branch(variables, config)
             or self.infer_branch_from_available_branches(
                 variables=variables,
                 message=message,
@@ -2105,7 +2211,7 @@ class BookingSubagent:
 
         date_text = self.extract_date_text(context.user_message, config, normalization)
 
-        if date_text and self.get_known_branch(variables):
+        if date_text and self.get_known_branch(variables, config):
             return True
 
         stage_path = config.get("stage_path", "booking.stage")
@@ -2138,7 +2244,7 @@ class BookingSubagent:
         if not has_availability_intent and not date_text:
             return False
 
-        branch = self.get_known_branch(variables)
+        branch = self.get_known_branch(variables, config)
         appointment_date = (
             deep_get(variables, config.get("appointment_date_path", "appointment_date"))
             or deep_get(variables, "date")
@@ -2184,7 +2290,7 @@ class BookingSubagent:
             return bool(self.get_existing_phone(variables, config, {}))
 
         if path == "variables.booking.pending.branch":
-            return bool(self.get_known_branch(variables))
+            return bool(self.get_known_branch(variables, config))
 
         if path == "variables.booking.pending.date":
             return bool(
@@ -2216,47 +2322,15 @@ class BookingSubagent:
         message: str
     ) -> str:
         templates = config.get("templates", {})
-        missing_set = set(missing)
+        if not isinstance(templates, dict):
+            templates = {}
 
-        template_key = "missing_fields"
-
-        if missing_set in [{"variables.date_text"}, {"variables.appointment_date"}]:
-            template_key = "missing_date"
-        elif missing_set == {"variables.selected_branch"}:
-            template_key = "missing_branch"
-        elif missing_set == {"variables.customer_profile.full_name"}:
-            template_key = "missing_full_name"
-        elif missing_set == {"variables.customer_profile.phone"}:
-            template_key = "missing_phone"
-        elif missing_set == {"variables.customer_profile.plate_number"}:
-            template_key = "missing_plate_number"
-        elif missing_set == {
-            "variables.customer_profile.full_name",
-            "variables.customer_profile.plate_number"
-        }:
-            template_key = "missing_name_and_plate"
-        elif missing_set == {
-            "variables.customer_profile.full_name",
-            "variables.customer_profile.phone"
-        }:
-            template_key = "missing_name_and_phone"
-        elif missing_set == {
-            "variables.customer_profile.phone",
-            "variables.customer_profile.plate_number"
-        }:
-            template_key = "missing_phone_and_plate"
-        elif missing_set == {
-            "variables.customer_profile.full_name",
-            "variables.customer_profile.phone",
-            "variables.customer_profile.plate_number"
-        }:
-            template_key = "missing_name_phone_and_plate"
-
+        template_key = self.resolve_missing_template_key(config=config, missing=missing)
         labels = config.get("field_labels", {})
         missing_text = format_missing_fields(missing, labels)
 
         return render_template(
-            templates.get(template_key, templates.get("missing_fields", "BOOKING_MISSING_FIELDS")),
+            templates.get(template_key, templates.get("missing_fields", "")),
             {
                 "variables": variables,
                 "missing_fields": missing_text,
@@ -2265,6 +2339,41 @@ class BookingSubagent:
             }
         )
 
+    def resolve_missing_template_key(
+        self,
+        config: Dict[str, Any],
+        missing: List[str]
+    ) -> str:
+        normalized_missing = sorted([str(item or "").strip() for item in missing if str(item or "").strip()])
+        joined_missing = "|".join(normalized_missing)
+
+        by_paths = config.get("missing_template_by_paths", {})
+        if isinstance(by_paths, dict):
+            for key, template_key in by_paths.items():
+                configured = sorted([
+                    part.strip()
+                    for part in str(key or "").split("|")
+                    if part.strip()
+                ])
+
+                if configured == normalized_missing:
+                    return str(template_key or "missing_fields").strip() or "missing_fields"
+
+        rules = config.get("missing_template_rules", [])
+        if isinstance(rules, list):
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+
+                paths = rule.get("paths", [])
+                if not isinstance(paths, list):
+                    continue
+
+                configured = sorted([str(item or "").strip() for item in paths if str(item or "").strip()])
+                if configured == normalized_missing:
+                    return str(rule.get("template_key") or rule.get("template") or "missing_fields").strip() or "missing_fields"
+
+        return str(config.get("default_missing_template_key", "missing_fields") or "missing_fields")
 
     def extract_customer_details(
         self,
@@ -3233,17 +3342,46 @@ class BookingSubagent:
 
         return "\n".join(lines)
 
-    def is_booking_completed(self, variables: Dict[str, Any]) -> bool:
-        status = str(deep_get(variables, "booking_status") or "").lower()
-        stage = str(deep_get(variables, "booking.stage") or "").lower()
-        visit_id = deep_get(variables, "visit_id")
+    def is_booking_completed(
+        self,
+        variables: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        config = config or {}
+        completion_config = config.get("booking_completion", {})
+        if not isinstance(completion_config, dict):
+            completion_config = {}
 
-        return bool(
-            visit_id
-            or status in {"confirmed", "booking_confirmed", "booked"}
-            or stage in {"confirmed", "booking_confirmed", "booked"}
-        )
+        id_paths = completion_config.get("id_paths", [])
+        if not isinstance(id_paths, list):
+            id_paths = []
 
+        status_paths = completion_config.get("status_paths", [])
+        if not isinstance(status_paths, list):
+            status_paths = []
+
+        completed_statuses = completion_config.get("completed_statuses", [])
+        if not isinstance(completed_statuses, list):
+            completed_statuses = []
+
+        normalized_completed_statuses = {
+            str(item or "").strip().lower()
+            for item in completed_statuses
+            if str(item or "").strip()
+        }
+
+        for path in id_paths:
+            value = deep_get(variables, str(path or "").strip())
+            if value not in [None, "", [], {}]:
+                return True
+
+        if normalized_completed_statuses:
+            for path in status_paths:
+                status = str(deep_get(variables, str(path or "").strip()) or "").strip().lower()
+                if status and status in normalized_completed_statuses:
+                    return True
+
+        return False
 
     def is_polite_closing(
         self,
