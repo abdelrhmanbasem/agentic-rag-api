@@ -55,6 +55,11 @@ class BookingSubagent:
 
         variables = dict(context.variables or {})
         normalization = context.assistant_config.get("normalization", {})
+        variables = self.ensure_valid_customer_profile(
+            variables=variables,
+            message=context.user_message,
+            normalization=normalization
+        )
         observations: List[Dict[str, Any]] = []
         tool_calls_used = 0
 
@@ -201,6 +206,12 @@ class BookingSubagent:
 
             if extracted:
                 variables = apply_variable_patch(variables, extracted, [])
+
+            variables = self.ensure_valid_customer_profile(
+                variables=variables,
+                message=context.user_message,
+                normalization=normalization
+            )
 
         stage = deep_get(variables, stage_path, stage)
 
@@ -369,15 +380,26 @@ class BookingSubagent:
                 notes="pending booking rejected"
             )
 
-        details = self.extract_customer_details(
-            message=context.user_message,
-            config=config,
+        # In confirmation stage, do not allow generic extraction to treat
+        # confirmation-only replies like "اه اكده تمام" as a customer name.
+        details: Dict[str, Any] = {}
+
+        if self.has_customer_detail_signal(context.user_message, normalization):
+            details = self.extract_customer_details(
+                message=context.user_message,
+                config=config,
+                variables=variables,
+                normalization=normalization
+            )
+
+            if details:
+                variables = apply_variable_patch(variables, details, [])
+
+        variables = self.ensure_valid_customer_profile(
             variables=variables,
+            message=context.user_message,
             normalization=normalization
         )
-
-        if details:
-            variables = apply_variable_patch(variables, details, [])
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -517,6 +539,12 @@ class BookingSubagent:
 
         if details:
             variables = apply_variable_patch(variables, details, [])
+
+        variables = self.ensure_valid_customer_profile(
+            variables=variables,
+            message=context.user_message,
+            normalization=normalization
+        )
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -908,11 +936,15 @@ class BookingSubagent:
         })
 
         appointment_date = (
-            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            deep_get(variables, "booking.pending.date")
+            or deep_get(variables, config.get("appointment_date_path", "appointment_date"))
             or deep_get(variables, "date")
         )
 
-        date_text = deep_get(variables, config.get("date_text_path", "date_text"))
+        date_text = (
+            deep_get(variables, "booking.pending.date_text")
+            or deep_get(variables, config.get("date_text_path", "date_text"))
+        )
 
         if appointment_date:
             arguments["date"] = appointment_date
@@ -2123,6 +2155,9 @@ class BookingSubagent:
         if not isinstance(extracted, dict):
             extracted = {}
 
+        if self.is_control_only_message(message, normalization):
+            extracted.pop("customer_profile.full_name", None)
+
         fallback = self.extract_customer_details_fallback(
             message=message,
             variables=variables,
@@ -2132,6 +2167,16 @@ class BookingSubagent:
         for key, value in fallback.items():
             if key not in extracted or extracted.get(key) in [None, "", [], {}]:
                 extracted[key] = value
+
+        if "customer_profile.full_name" in extracted:
+            full_name = str(extracted.get("customer_profile.full_name") or "").strip()
+
+            if (
+                self.is_control_only_message(message, normalization)
+                or not self.message_has_name_signal(message, normalization)
+                or not self.looks_like_person_name(full_name)
+            ):
+                extracted.pop("customer_profile.full_name", None)
 
         if not extracted:
             return {}
@@ -2153,7 +2198,11 @@ class BookingSubagent:
             if phone_match:
                 output["customer_profile.phone"] = phone_match.group(1).strip()
 
-        if not deep_get(variables, "customer_profile.full_name"):
+        if (
+            not deep_get(variables, "customer_profile.full_name")
+            and self.message_has_name_signal(text, normalization)
+            and not self.is_control_only_message(text, normalization)
+        ):
             name_match = re.search(
                 r"(?:اسمي|انا اسمي|الإسم|الاسم|name is|my name is)\s+([^،,.!?؟\n]+)",
                 text,
@@ -2180,6 +2229,139 @@ class BookingSubagent:
                 output.pop("customer_profile.plate_number", None)
 
         return output
+
+    def ensure_valid_customer_profile(
+        self,
+        variables: Dict[str, Any],
+        message: str,
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        full_name = str(deep_get(variables, "customer_profile.full_name") or "").strip()
+
+        if not full_name:
+            return variables
+
+        if self.looks_like_person_name(full_name):
+            return variables
+
+        return apply_variable_patch(
+            variables,
+            {},
+            ["customer_profile.full_name"]
+        )
+
+    def has_customer_detail_signal(self, message: str, normalization: Dict[str, Any]) -> bool:
+        text = str(message or "").strip()
+        normalized = normalize_text(text, normalization)
+
+        detail_markers = [
+            "اسمي",
+            "انا اسمي",
+            "الاسم",
+            "الإسم",
+            "تليفون",
+            "تلفون",
+            "موبايل",
+            "رقم العربية",
+            "نمر العربية",
+            "نمرة العربية",
+            "رقم اللوحه",
+            "رقم اللوحة",
+            "اللوحه",
+            "اللوحة",
+            "لوحتي",
+            "لوحتى",
+            "plate",
+            "phone",
+            "mobile",
+            "name is",
+            "my name is"
+        ]
+
+        if any(normalize_text(marker, normalization) in normalized for marker in detail_markers):
+            return True
+
+        if re.search(r"(01\d{9}|\+?20\d{10,11})", normalize_digits(text, normalization.get("digit_map", {}))):
+            return True
+
+        # A standalone plate-like reply during customer-detail collection is a detail.
+        if self.extract_plate_fallback(text, normalization):
+            return True
+
+        return False
+
+    def message_has_name_signal(self, message: str, normalization: Dict[str, Any]) -> bool:
+        normalized = normalize_text(str(message or ""), normalization)
+
+        name_markers = [
+            "اسمي",
+            "انا اسمي",
+            "الاسم",
+            "الإسم",
+            "name is",
+            "my name is"
+        ]
+
+        return any(normalize_text(marker, normalization) in normalized for marker in name_markers)
+
+    def is_control_only_message(self, message: str, normalization: Dict[str, Any]) -> bool:
+        normalized = normalize_text(str(message or ""), normalization)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        if not normalized:
+            return False
+
+        control_terms = {
+            "اه",
+            "اها",
+            "ايوه",
+            "ايوا",
+            "نعم",
+            "تمام",
+            "اوكي",
+            "اوك",
+            "اكيد",
+            "اكد",
+            "اكده",
+            "اكدها",
+            "اكد الحجز",
+            "اكد المعاد",
+            "اكد الموعد",
+            "confirm",
+            "confirmed",
+            "yes",
+            "ok",
+            "okay"
+        }
+
+        tokens = [token for token in re.findall(r"[\w\u0600-\u06FF]+", normalized) if token]
+
+        if not tokens:
+            return False
+
+        if all(token in control_terms for token in tokens):
+            return True
+
+        # Mixed short confirmation/control phrases like "اه اكده تمام" should
+        # never be accepted as a full name.
+        if len(tokens) <= 5 and any(token in control_terms for token in tokens):
+            customer_markers = [
+                "اسمي",
+                "الاسم",
+                "رقم",
+                "العربيه",
+                "العربية",
+                "اللوحه",
+                "اللوحة",
+                "تليفون",
+                "تلفون",
+                "موبايل"
+            ]
+
+            if not any(marker in normalized for marker in customer_markers):
+                return True
+
+        return False
 
     def clean_name(self, value: str) -> str:
         text = str(value or "").strip()
@@ -2213,17 +2395,38 @@ class BookingSubagent:
             "ميعاد",
             "معاد",
             "موعد",
-            "الحجز"
+            "الحجز",
+            "تمام",
+            "اكد",
+            "أكد",
+            "اكده",
+            "أكده",
+            "اكدها",
+            "أكدها",
+            "ايوه",
+            "أيوه",
+            "اه",
+            "أه",
+            "اوكي",
+            "أوكي",
+            "confirm",
+            "confirmed",
+            "yes",
+            "ok",
+            "okay"
         ]
 
-        normalized = text.replace("ة", "ه").replace("ى", "ي")
+        normalized = text.replace("ة", "ه").replace("ى", "ي").replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
 
-        if any(word in normalized for word in blocked):
+        if any(word.replace("ة", "ه").replace("ى", "ي").replace("أ", "ا").replace("إ", "ا").replace("آ", "ا") in normalized for word in blocked):
             return False
 
         parts = [part for part in text.split() if part.strip()]
 
-        return 1 <= len(parts) <= 6 and all(len(part) >= 2 for part in parts)
+        if len(parts) < 2:
+            return False
+
+        return 2 <= len(parts) <= 6 and all(len(part) >= 2 for part in parts)
 
     def extract_plate_fallback(self, text: str, normalization: Dict[str, Any]) -> str:
         digit_map = normalization.get("digit_map", {})
