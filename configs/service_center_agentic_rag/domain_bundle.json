@@ -510,7 +510,37 @@
         "variable_updates": {
           "handoff_requested": true
         },
-        "clear_variables": []
+        "clear_variables": [],
+        "template_fallback_prefix": "HANDOFF",
+        "template_fallback_suffix": "TRIGGERED",
+        "default_template_key": "default",
+        "default_action": "handoff",
+        "templates": {
+          "default": "HANDOFF_REQUESTED",
+          "triggered": "HANDOFF_REQUESTED"
+        },
+        "notes": {
+          "triggered": "handoff:triggered:{rule_id}"
+        },
+        "rules": [
+          {
+            "id": "human_handoff_request",
+            "enabled": true,
+            "phrases": [
+              "اكلم حد",
+              "موظف",
+              "خدمة العملاء",
+              "human",
+              "agent"
+            ],
+            "action": "handoff",
+            "template_key": "default",
+            "variable_updates": {
+              "handoff_requested": true
+            },
+            "clear_variables": []
+          }
+        ]
       },
       "lookup": {
         "id": "lookup",
@@ -549,9 +579,40 @@
             "operation": "list_branches",
             "arguments": {},
             "success_template": "LOOKUP_BRANCH_LIST_RESULT",
-            "error_template": "LOOKUP_BRANCH_LIST_ERROR"
+            "error_template": "LOOKUP_BRANCH_LIST_ERROR",
+            "enabled": true,
+            "action": "reply",
+            "variable_conditions": [],
+            "required_context_paths": [],
+            "arguments_mapping": {},
+            "update_mappings": {}
           }
-        ]
+        ],
+        "template_fallback_prefix": "LOOKUP",
+        "result_ok_path": "ok",
+        "result_ok_value": true,
+        "actions": {
+          "reply": "reply",
+          "ask_user": "ask_user"
+        },
+        "templates": {
+          "success": "LOOKUP_RESULT",
+          "error": "LOOKUP_ERROR",
+          "missing_context": "LOOKUP_MISSING_CONTEXT",
+          "invalid_rule": "LOOKUP_INVALID_RULE"
+        },
+        "allow_rules": {
+          "blocked_rule_ids": [],
+          "required_paths": []
+        },
+        "tool_error_result": {
+          "include_exception_type": true
+        },
+        "notes": {
+          "executed": "lookup:executed:{rule_id}",
+          "missing_context": "lookup:missing_context:{rule_id}",
+          "invalid_rule": "lookup:invalid_rule:{rule_id}"
+        }
       },
       "location": {
         "id": "location",
@@ -724,7 +785,96 @@
           "slots",
           "appointment"
         ],
-        "location_max_words": 4
+        "location_max_words": 4,
+        "active_intent_values": [
+          "nearest_branch",
+          "find_nearest_branch",
+          "branch_locator"
+        ],
+        "location_flow_active_values": [
+          "nearest_branch",
+          "find_nearest_branch",
+          "branch_locator"
+        ],
+        "default_intent_value": "nearest_branch",
+        "coordinate_paths": {
+          "latitude": [
+            "latitude",
+            "lat",
+            "location.latitude",
+            "user_location.latitude",
+            "user_coordinates.latitude"
+          ],
+          "longitude": [
+            "longitude",
+            "lng",
+            "lon",
+            "location.longitude",
+            "user_location.longitude",
+            "user_coordinates.longitude"
+          ]
+        },
+        "coordinate_bounds": {
+          "latitude_min": -90,
+          "latitude_max": 90,
+          "longitude_min": -180,
+          "longitude_max": 180
+        },
+        "coordinate_argument_names": {
+          "latitude": "latitude",
+          "longitude": "longitude"
+        },
+        "coordinate_update_paths": {
+          "latitude": "user_coordinates.latitude",
+          "longitude": "user_coordinates.longitude"
+        },
+        "result_detection": {
+          "ok_path": "ok",
+          "ok_value": true,
+          "branch_found_path": "branch_found",
+          "branch_found_value": true
+        },
+        "result_branch_paths": [
+          "branch",
+          "nearest_branch",
+          "location_branch"
+        ],
+        "result_user_area_paths": [
+          "user_area",
+          "location"
+        ],
+        "manual_update_mappings": {
+          "user_area": {
+            "first_present": [
+              "result.user_area",
+              "result.location",
+              "location",
+              "variables.user_area"
+            ]
+          },
+          "nearest_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          },
+          "location_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          },
+          "selected_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          }
+        },
+        "template_fallback_prefix": "LOCATION"
       },
       "booking": {
         "id": "booking",
@@ -1717,7 +1867,188 @@
           ]
         },
         "branch_inference_max_tokens": 12,
-        "branch_inference_min_token_length": 3
+        "branch_inference_min_token_length": 3,
+        "template_fallback_prefix": "BOOKING",
+        "default_missing_template_key": "missing_fields",
+        "known_branch_paths": [
+          "booking.pending.branch",
+          "selected_branch",
+          "location_branch",
+          "nearest_branch"
+        ],
+        "booking_completion": {
+          "id_paths": [
+            "visit_id",
+            "booking.confirmed.visit_id",
+            "booking.confirmed.id"
+          ],
+          "status_paths": [
+            "booking_status",
+            "booking.stage",
+            "booking.confirmed.status",
+            "booking.confirmed.booking_status"
+          ],
+          "completed_statuses": [
+            "confirmed",
+            "booking_confirmed",
+            "booked"
+          ]
+        },
+        "date_resolution": {
+          "relative_day_offsets": {
+            "بعد بكره": 2,
+            "بعد بكرة": 2,
+            "بعد غد": 2,
+            "بعد الغد": 2,
+            "بكره": 1,
+            "بكرة": 1,
+            "غدا": 1,
+            "غد": 1,
+            "tomorrow": 1,
+            "النهارده": 0,
+            "انهارده": 0,
+            "اليوم": 0,
+            "today": 0
+          },
+          "weekday_terms": {
+            "الاثنين": 0,
+            "الاتنين": 0,
+            "monday": 0,
+            "التلات": 1,
+            "الثلاثاء": 1,
+            "الثلاثا": 1,
+            "tuesday": 1,
+            "الاربعاء": 2,
+            "الأربعاء": 2,
+            "الاربع": 2,
+            "wednesday": 2,
+            "الخميس": 3,
+            "thursday": 3,
+            "الجمعه": 4,
+            "الجمعة": 4,
+            "friday": 4,
+            "السبت": 5,
+            "saturday": 5,
+            "الاحد": 6,
+            "الأحد": 6,
+            "sunday": 6
+          },
+          "next_week_markers": [
+            "الجاي",
+            "القادم",
+            "اللي جاي",
+            "الجاى",
+            "next"
+          ],
+          "month_names": {
+            "يناير": 1,
+            "فبراير": 2,
+            "مارس": 3,
+            "ابريل": 4,
+            "أبريل": 4,
+            "مايو": 5,
+            "يونيو": 6,
+            "يونيه": 6,
+            "يوليو": 7,
+            "يوليه": 7,
+            "اغسطس": 8,
+            "أغسطس": 8,
+            "سبتمبر": 9,
+            "اكتوبر": 10,
+            "أكتوبر": 10,
+            "نوفمبر": 11,
+            "ديسمبر": 12
+          },
+          "named_month_pattern": "\\b(\\d{1,2})\\s+([^\\s\\d]+)(?:\\s+(\\d{4}))?\\b",
+          "numeric_date_pattern": "\\b(\\d{1,2})[/-](\\d{1,2})(?:[/-](\\d{2,4}))?\\b",
+          "iso_date_pattern": "\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})\\b"
+        },
+        "missing_template_by_paths": {
+          "variables.date_text": "missing_date",
+          "variables.appointment_date": "missing_date",
+          "variables.selected_branch": "missing_branch",
+          "variables.customer_profile.full_name": "missing_full_name",
+          "variables.customer_profile.phone": "missing_phone",
+          "variables.customer_profile.plate_number": "missing_plate_number"
+        },
+        "missing_template_rules": [
+          {
+            "paths": [
+              "variables.customer_profile.full_name",
+              "variables.customer_profile.plate_number"
+            ],
+            "template_key": "missing_name_and_plate"
+          },
+          {
+            "paths": [
+              "variables.customer_profile.full_name",
+              "variables.customer_profile.phone"
+            ],
+            "template_key": "missing_name_and_phone"
+          },
+          {
+            "paths": [
+              "variables.customer_profile.phone",
+              "variables.customer_profile.plate_number"
+            ],
+            "template_key": "missing_phone_and_plate"
+          },
+          {
+            "paths": [
+              "variables.customer_profile.full_name",
+              "variables.customer_profile.phone",
+              "variables.customer_profile.plate_number"
+            ],
+            "template_key": "missing_name_phone_and_plate"
+          }
+        ],
+        "customer_profile_persistence": {
+          "fields": {
+            "full_name": {
+              "target_path": "customer_profile.full_name",
+              "source_paths": [
+                "customer_profile.full_name",
+                "booking.customer_profile.full_name",
+                "booking.pending.customer_profile.full_name",
+                "booking.confirmed.full_name"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.full_name"
+              ],
+              "validator": "full_name"
+            },
+            "phone": {
+              "target_path": "customer_profile.phone",
+              "source_paths": [
+                "customer_profile.phone",
+                "booking.customer_profile.phone",
+                "booking.pending.customer_profile.phone",
+                "booking.confirmed.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.phone"
+              ],
+              "validator": "phone"
+            },
+            "plate_number": {
+              "target_path": "customer_profile.plate_number",
+              "source_paths": [
+                "customer_profile.plate_number",
+                "booking.customer_profile.plate_number",
+                "booking.pending.customer_profile.plate_number",
+                "booking.confirmed.plate_number"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.plate_number"
+              ],
+              "validator": "plate_number"
+            }
+          }
+        }
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -1855,9 +2186,132 @@
               "available_slots",
               "appointment_time",
               "customer_confirmed_booking"
-            ]
+            ],
+            "enabled": true,
+            "all_required_phrases": [],
+            "templates": {}
           }
-        ]
+        ],
+        "active_state_values": [
+          "active"
+        ],
+        "phase_template_keys": {
+          "started": "started",
+          "continued": "continued",
+          "complete": "complete",
+          "default": "default"
+        },
+        "phase_actions": {
+          "started": "ask_user",
+          "continued": "ask_user",
+          "complete": "ask_user",
+          "default": "ask_user"
+        },
+        "default_action": "ask_user",
+        "default_template_key": "default",
+        "template_fallback_prefix": "TROUBLESHOOTING",
+        "phase_updates": {
+          "started": {},
+          "continued": {},
+          "complete": {
+            "troubleshooting.inspection_recommended": true
+          }
+        },
+        "metadata_update_mappings": {
+          "troubleshooting.last_user_symptom": "message",
+          "troubleshooting.category": "rule.category",
+          "troubleshooting.rule_id": "rule.id",
+          "troubleshooting.expected_system": "rule.expected_system",
+          "troubleshooting.possible_causes": "rule.possible_causes",
+          "troubleshooting.recommended_questions": "rule.recommended_questions",
+          "troubleshooting.inspection_recommended": {
+            "literal": false
+          },
+          "troubleshooting.severity": "rule.severity",
+          "troubleshooting.safety_note": "rule.safety_note"
+        },
+        "latest_answer_update_mappings": {
+          "troubleshooting.latest_user_answer": "message"
+        },
+        "do_not_take_over": {
+          "phrases": [
+            "احجز",
+            "عايز احجز",
+            "أحجز",
+            "حجز",
+            "عايز معاد",
+            "عايز ميعاد",
+            "عايز موعد",
+            "مواعيد",
+            "المواعيد",
+            "حابب اكشف",
+            "حابب أكشف",
+            "عايز اكشف",
+            "عايز أكشف",
+            "عاوز اكشف",
+            "عاوز أكشف",
+            "اكشف واطمن",
+            "أكشف واطمن",
+            "اطمن على العربية",
+            "أطمن على العربية",
+            "اتطمن على العربية",
+            "عايز اطمن على العربية",
+            "عايز أطمن على العربية",
+            "عاوز اطمن على العربية",
+            "عاوز أطمن على العربية",
+            "عاوز اطمن",
+            "عاوز أطمن",
+            "عاوز اطمن عليها",
+            "عاوز أطمن عليها",
+            "اطمن عليها",
+            "أطمن عليها",
+            "اكشف عليها",
+            "أكشف عليها",
+            "اكشف على العربية",
+            "أكشف على العربية",
+            "اودي العربية",
+            "أودي العربية",
+            "اوديها",
+            "أوديها",
+            "اروح اكشف",
+            "أروح أكشف",
+            "اروح اطمن",
+            "أروح أطمن",
+            "اشوفها",
+            "أشوفها",
+            "اه ياريت",
+            "أه ياريت",
+            "ايوه ياريت",
+            "أيوه ياريت",
+            "ياريت",
+            "تمام اكشف",
+            "تمام نكشف",
+            "ماشي اكشف",
+            "ماشي نكشف",
+            "موعد كشف",
+            "معاد كشف",
+            "حجز كشف",
+            "زيارة للكشف",
+            "book",
+            "appointment"
+          ],
+          "intent_phrases": [],
+          "variable_conditions": [
+            {
+              "path": "booking.stage",
+              "exists": true
+            },
+            {
+              "path": "selected_branch",
+              "exists": true
+            }
+          ]
+        },
+        "notes": {
+          "started": "troubleshooting:started:{rule_id}",
+          "continued": "troubleshooting:continued:{rule_id}",
+          "complete": "troubleshooting:complete:{rule_id}"
+        }
       }
     },
     "tool_update_rules": {
@@ -2634,6 +3088,44 @@
         "safe_examples": [
           "تمام، أنهي معاد من المواعيد المتاحة يناسبك؟"
         ]
+      },
+      "LOOKUP_RESULT": {
+        "state": "lookup_result",
+        "must_do": [
+          "answer from the grounded lookup result only",
+          "do not invent missing data"
+        ],
+        "must_not_do": [
+          "do not invent branches, availability, or booking status"
+        ]
+      },
+      "LOOKUP_ERROR": {
+        "state": "lookup_error",
+        "must_do": [
+          "explain safely that the lookup could not be completed",
+          "ask one useful follow-up if needed"
+        ],
+        "must_not_do": [
+          "do not invent a successful lookup result"
+        ]
+      },
+      "LOOKUP_MISSING_CONTEXT": {
+        "state": "lookup_missing_context",
+        "must_do": [
+          "ask only for the missing context needed for the lookup"
+        ],
+        "must_not_do": [
+          "do not call or imply a tool result exists"
+        ]
+      },
+      "HANDOFF_TRIGGERED": {
+        "state": "handoff_requested",
+        "must_do": [
+          "acknowledge the handoff request briefly"
+        ],
+        "must_not_do": [
+          "do not promise a human joined unless the backend confirms it"
+        ]
       }
     },
     "slot_context_carryover_policy": {
@@ -2824,7 +3316,11 @@
       "BOOKING_COMPLETED_CLOSING",
       "LOCATION_NEAREST_BRANCH_FOUND",
       "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
-      "LOOKUP_BRANCH_LIST_RESULT"
+      "LOOKUP_BRANCH_LIST_RESULT",
+      "LOOKUP_RESULT",
+      "LOOKUP_ERROR",
+      "LOOKUP_MISSING_CONTEXT",
+      "HANDOFF_TRIGGERED"
     ],
     "template_response_policy_detection": {
       "enabled": true,
@@ -3019,7 +3515,104 @@
       "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
       "BOOKING_CONFIRM_SELECTED_SLOT",
       "BOOKING_SLOT_SELECTION_UNCLEAR"
-    ]
+    ],
+    "source_of_truth": {
+      "exact_variables": [
+        "visit_id",
+        "booking_status",
+        "available_slots",
+        "available_slots_text",
+        "available_branches",
+        "available_branches_text",
+        "slots_found",
+        "appointment_date",
+        "appointment_time",
+        "selected_branch",
+        "nearest_branch",
+        "location_branch",
+        "customer_confirmed_booking",
+        "service_needed",
+        "exact_slot",
+        "nearest_slots",
+        "nearest_slots_text",
+        "unavailable_reason"
+      ],
+      "prefixes": [
+        "booking",
+        "booking.",
+        "tool_result",
+        "location",
+        "location.",
+        "troubleshooting",
+        "troubleshooting.",
+        "exact_slot",
+        "nearest_slots",
+        "unavailable_reason"
+      ]
+    },
+    "state_engine": {
+      "source_of_truth_variables": [
+        "visit_id",
+        "booking_status",
+        "available_slots",
+        "available_slots_text",
+        "available_branches",
+        "available_branches_text",
+        "slots_found",
+        "appointment_date",
+        "appointment_time",
+        "selected_branch",
+        "nearest_branch",
+        "location_branch",
+        "customer_confirmed_booking",
+        "service_needed",
+        "exact_slot",
+        "nearest_slots",
+        "nearest_slots_text",
+        "unavailable_reason"
+      ],
+      "source_of_truth_prefixes": [
+        "booking",
+        "booking.",
+        "tool_result",
+        "location",
+        "location.",
+        "troubleshooting",
+        "troubleshooting.",
+        "exact_slot",
+        "nearest_slots",
+        "unavailable_reason"
+      ]
+    },
+    "subagent_aliases": {
+      "handoff": [
+        "human_handoff",
+        "support_handoff",
+        "agent_handoff"
+      ],
+      "lookup": [
+        "read_only_lookup",
+        "faq_lookup",
+        "catalog_lookup"
+      ],
+      "location": [
+        "nearest_branch",
+        "branch_locator",
+        "location_lookup"
+      ],
+      "booking": [
+        "appointment",
+        "appointment_booking",
+        "reservation",
+        "visit_booking"
+      ],
+      "troubleshooting": [
+        "diagnostics",
+        "symptom_checker",
+        "problem_triage"
+      ]
+    },
+    "architecture_version": "6.0-batch6-multitenant-config-driven-no-hardcoding"
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -3165,8 +3758,8 @@
     }
   },
   "domain_playbook": {
-    "version": "5.0-humanlike-proactive-multitenant-no-hardcoding",
-    "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response.",
+    "version": "6.0-batch6-multitenant-config-driven-no-hardcoding",
+    "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
       "Final customer-facing wording is handled by graph.response_node.",
@@ -3221,7 +3814,16 @@
       "confirmed_action, confirmed_record_id_paths, and confirmed_record_id_fields make confirmed-action detection and ID extraction config-driven.",
       "blocked_tool_call_policy owns answer labels and response briefs for blocked direct tool calls; graph.py must not hardcode missing-input response labels.",
       "Banned tone/style terms are controlled only by answer_safety.banned_terms, not Python prompt hardcoding.",
-      "Quality guard should validate correctness, safety, language, and response energy using persona and emotion_response_guidance."
+      "Quality guard should validate correctness, safety, language, and response energy using persona and emotion_response_guidance.",
+      "Batch 6 adds config contracts for booking, location, troubleshooting, lookup, handoff, and base helper behavior.",
+      "Subagent executors should not contain domain/customer phrase lists; all phrases, labels, templates, status values, field paths, and fallback policies live in domain_bundle.json.",
+      "booking.date_resolution owns relative days, weekday terms, next-week markers, month names, and numeric/named date parsing config.",
+      "booking.booking_completion owns completed status detection, ID paths, and duplicate booking protection.",
+      "booking.missing_template_by_paths and missing_template_rules own missing-field template selection instead of Python branching.",
+      "location result detection, coordinate extraction, branch/user-area paths, and manual update mappings are config-driven.",
+      "troubleshooting phase actions, phase templates, metadata updates, and do-not-take-over conditions are config-driven.",
+      "lookup and handoff rule matching, templates, actions, notes, and update mappings are config-driven.",
+      "base.py source-of-truth protection reads source_of_truth_variables/source_of_truth_prefixes/schema flags from config."
     ]
   }
 }
