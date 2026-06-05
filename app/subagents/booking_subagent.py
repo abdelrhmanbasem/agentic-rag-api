@@ -58,6 +58,7 @@ class BookingSubagent:
         variables = self.ensure_valid_customer_profile(
             variables=variables,
             message=context.user_message,
+            config=config,
             normalization=normalization
         )
         observations: List[Dict[str, Any]] = []
@@ -82,7 +83,7 @@ class BookingSubagent:
         )
 
         # Critical slot-selection guard:
-        # In slot_selection stage, a message like "الساعة 12" or "معاد 12"
+        # In slot_selection stage, a time-only reply must be resolved
         # must be resolved against the existing available_slots before any
         # date extraction runs. Otherwise it can be misclassified as date_text.
         if stage == "slot_selection":
@@ -195,7 +196,7 @@ class BookingSubagent:
 
         should_extract_customer_details = (
             stage in extraction_active_stages
-            or self.has_customer_detail_signal(context.user_message, normalization)
+            or self.has_customer_detail_signal(context.user_message, config, normalization)
         )
         extracted: Dict[str, Any] = {}
 
@@ -384,10 +385,10 @@ class BookingSubagent:
             )
 
         # In confirmation stage, do not allow generic extraction to treat
-        # confirmation-only replies like "اه اكده تمام" as a customer name.
+        # configured control-only replies as customer names.
         details: Dict[str, Any] = {}
 
-        if self.has_customer_detail_signal(context.user_message, normalization):
+        if self.has_customer_detail_signal(context.user_message, config, normalization):
             details = self.extract_customer_details(
                 message=context.user_message,
                 config=config,
@@ -401,6 +402,7 @@ class BookingSubagent:
         variables = self.ensure_valid_customer_profile(
             variables=variables,
             message=context.user_message,
+            config=config,
             normalization=normalization
         )
 
@@ -546,6 +548,7 @@ class BookingSubagent:
         variables = self.ensure_valid_customer_profile(
             variables=variables,
             message=context.user_message,
+            config=config,
             normalization=normalization
         )
 
@@ -1096,7 +1099,7 @@ class BookingSubagent:
             raw_text = raw_text.replace(src, dst)
 
         normalized = normalize_text(raw_text, normalization)
-        normalized = self.replace_arabic_time_words(normalized)
+        normalized = self.replace_arabic_time_words(normalized, config)
 
         regex = time_config.get("regex", r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
 
@@ -1123,41 +1126,28 @@ class BookingSubagent:
 
         return f"{hour:02d}:{minute:02d}"
 
+
     @staticmethod
-    def replace_arabic_time_words(text: str) -> str:
-        word_map = {
-            "واحده": "1",
-            "واحد": "1",
-            "اتنين": "2",
-            "اثنين": "2",
-            "تلاته": "3",
-            "ثلاثه": "3",
-            "اربعه": "4",
-            "اربعة": "4",
-            "خمسه": "5",
-            "خمسة": "5",
-            "سته": "6",
-            "ستة": "6",
-            "سبعه": "7",
-            "سبعة": "7",
-            "تمانيه": "8",
-            "ثمانيه": "8",
-            "تسعه": "9",
-            "تسعة": "9",
-            "عشره": "10",
-            "عشر": "10",
-            "احداشر": "11",
-            "حداشر": "11",
-            "احدي عشر": "11",
-            "اتناشر": "12",
-            "اتني عشر": "12",
-            "اثني عشر": "12"
-        }
+    def replace_arabic_time_words(
+        text: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
+        word_map = config.get("time_word_map", {})
+
+        if not isinstance(word_map, dict):
+            word_map = {}
 
         output = text
 
-        for word, number in sorted(word_map.items(), key=lambda item: len(item[0]), reverse=True):
-            output = re.sub(rf"\b{re.escape(word)}\b", number, output)
+        for word, number in sorted(word_map.items(), key=lambda item: len(str(item[0])), reverse=True):
+            word_text = str(word or "").strip()
+            number_text = str(number or "").strip()
+
+            if not word_text or not number_text:
+                continue
+
+            output = re.sub(rf"\b{re.escape(word_text)}\b", number_text, output)
 
         return output
 
@@ -1178,9 +1168,8 @@ class BookingSubagent:
         normalized = normalize_text(raw_message, normalization)
 
         # Do not let time-only slot selections become date_text.
-        # Example during slot_selection:
-        # "لا معاد الساعة 12 هيكون مناسب معايا اكتر"
-        # should resolve to a slot time, not date_text="الساعة 12..."
+        # Example during slot_selection: a time-only reply should resolve
+        # to a slot time, not to date_text.
         if self.looks_like_time_only_slot_selection_text(
             message=raw_message,
             config=config,
@@ -1197,7 +1186,7 @@ class BookingSubagent:
         if direct:
             return direct
 
-        explicit = self.extract_explicit_date_phrase(raw_message)
+        explicit = self.extract_explicit_date_phrase(raw_message, config)
 
         if explicit:
             return explicit
@@ -1218,11 +1207,12 @@ class BookingSubagent:
                 continue
 
             if match:
-                value = self.clean_date_text(match.group(group).strip(), normalization)
+                value = self.clean_date_text(match.group(group).strip(), normalization, config)
                 if value:
                     return value
 
         return ""
+
 
     def looks_like_time_only_slot_selection_text(
         self,
@@ -1237,19 +1227,19 @@ class BookingSubagent:
 
         normalized = normalize_text(raw_message, normalization)
 
-        # If the message contains a real date term, it is not time-only.
         date_terms = config.get("date_direct_terms", [])
 
         if isinstance(date_terms, list):
-            ambiguous_booking_words = {
-                "معاد",
-                "ميعاد",
-                "موعد",
-                "مواعيد",
-                "المواعيد",
-                "appointment",
-                "slots"
-            }
+            ambiguous_booking_words = set()
+            time_only_config = config.get("time_only_slot_selection", {})
+            if isinstance(time_only_config, dict):
+                raw_ambiguous = time_only_config.get("ambiguous_date_terms", [])
+                if isinstance(raw_ambiguous, list):
+                    ambiguous_booking_words = {
+                        normalize_text(str(item or ""), normalization)
+                        for item in raw_ambiguous
+                        if str(item or "").strip()
+                    }
 
             for term in date_terms:
                 term_text = str(term or "").strip()
@@ -1257,15 +1247,15 @@ class BookingSubagent:
                 if not term_text:
                     continue
 
-                if normalize_text(term_text, normalization) in ambiguous_booking_words:
-                    continue
-
                 normalized_term = normalize_text(term_text, normalization)
+
+                if normalized_term in ambiguous_booking_words:
+                    continue
 
                 if normalized_term and normalized_term in normalized:
                     return False
 
-        if self.extract_explicit_date_phrase(raw_message):
+        if self.extract_explicit_date_phrase(raw_message, config):
             return False
 
         requested_time = self.extract_time(raw_message, config, normalization)
@@ -1273,32 +1263,34 @@ class BookingSubagent:
         if not requested_time:
             return False
 
-        time_markers = [
-            "الساعة",
-            "الساعه",
-            "ساعة",
-            "ساعه",
-            "الصبح",
-            "صباح",
-            "صباحا",
-            "صباحًا",
-            "الظهر",
-            "ظهرا",
-            "ظهرًا",
-            "مساء",
-            "مساءا",
-            "مساءً",
-            "بالليل",
-            "am",
-            "pm"
-        ]
+        time_only_config = config.get("time_only_slot_selection", {})
+        if not isinstance(time_only_config, dict):
+            time_only_config = {}
 
-        if any(marker in normalized for marker in time_markers):
-            return True
+        markers = time_only_config.get("time_markers", [])
 
-        # Bare numeric choices can be slot times during slot selection, but avoid
-        # treating very long numbers as time.
-        return bool(re.search(r"(^|\D)(\d{1,2})(?::\d{2})?(\D|$)", normalized))
+        if not isinstance(markers, list):
+            markers = []
+
+        for marker in markers:
+            normalized_marker = normalize_text(str(marker or ""), normalization)
+            if normalized_marker and normalized_marker in normalized:
+                return True
+
+        allow_bare_numeric = bool(time_only_config.get("allow_bare_numeric", True))
+
+        if not allow_bare_numeric:
+            return False
+
+        bare_numeric_regex = time_only_config.get(
+            "bare_numeric_regex",
+            r"(^|\D)(\d{1,2})(?::\d{2})?(\D|$)"
+        )
+
+        try:
+            return bool(re.search(str(bare_numeric_regex), normalized))
+        except re.error:
+            return False
 
     def extract_direct_date_term(
         self,
@@ -1316,26 +1308,51 @@ class BookingSubagent:
 
         return ""
 
-    def extract_explicit_date_phrase(self, raw_message: str) -> str:
-        month_names = (
-            "يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر"
-        )
 
-        patterns = [
-            rf"\b(\d{{1,2}}\s*(?:{month_names})(?:\s+\d{{4}})?)\b",
-            r"\b(\d{4}-\d{1,2}-\d{1,2})\b",
-            r"\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b"
-        ]
+    def extract_explicit_date_phrase(self, raw_message: str, config: Optional[Dict[str, Any]] = None) -> str:
+        config = config or {}
+        patterns = config.get("explicit_date_patterns", [])
 
-        for pattern in patterns:
-            match = re.search(pattern, raw_message, flags=re.IGNORECASE)
+        if not isinstance(patterns, list):
+            patterns = []
+
+        for item in patterns:
+            pattern = ""
+            group = 1
+
+            if isinstance(item, dict):
+                pattern = str(item.get("regex", "") or "")
+                try:
+                    group = int(item.get("group", 1))
+                except Exception:
+                    group = 1
+            else:
+                pattern = str(item or "")
+
+            if not pattern:
+                continue
+
+            try:
+                match = re.search(pattern, raw_message, flags=re.IGNORECASE)
+            except re.error:
+                continue
 
             if match:
-                return match.group(1).strip()
+                try:
+                    return match.group(group).strip()
+                except Exception:
+                    return match.group(0).strip()
 
         return ""
 
-    def clean_date_text(self, value: str, normalization: Dict[str, Any]) -> str:
+
+    def clean_date_text(
+        self,
+        value: str,
+        normalization: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
         text = str(value or "").strip()
 
         if not text:
@@ -1343,48 +1360,49 @@ class BookingSubagent:
 
         normalized = normalize_text(text, normalization)
 
-        direct_terms = [
-            "بكرة",
-            "بكره",
-            "بعد بكرة",
-            "بعد بكره",
-            "النهارده",
-            "انهارده",
-            "اليوم",
-            "الخميس",
-            "الجمعة",
-            "الجمعه",
-            "السبت",
-            "الأحد",
-            "الاحد",
-            "الاثنين",
-            "الاتنين",
-            "التلات",
-            "الثلاثاء",
-            "الأربعاء",
-            "الاربعاء",
-            "tomorrow",
-            "today",
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
-            "sunday"
-        ]
+        direct_terms = config.get("date_direct_terms", [])
+
+        if not isinstance(direct_terms, list):
+            direct_terms = []
 
         for term in direct_terms:
-            if normalize_text(term, normalization) in normalized:
-                return term
+            normalized_term = normalize_text(str(term or ""), normalization)
+            if normalized_term and normalized_term in normalized:
+                return str(term)
 
-        explicit = self.extract_explicit_date_phrase(text)
+        explicit = self.extract_explicit_date_phrase(text, config)
 
         if explicit:
             return explicit
 
-        text = re.sub(r"^(المتاحه|المتاحة|متاح|في|على|يوم)\s+", "", text).strip()
-        text = re.split(r"\s+(?:في|على|بفرع|فرع)\s+", text, maxsplit=1)[0].strip()
+        cleanup_config = config.get("date_text_cleanup", {})
+        if not isinstance(cleanup_config, dict):
+            cleanup_config = {}
+
+        strip_prefix_patterns = cleanup_config.get("strip_prefix_patterns", [])
+        cut_patterns = cleanup_config.get("cut_patterns", [])
+
+        if isinstance(strip_prefix_patterns, list):
+            for pattern in strip_prefix_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+
+                try:
+                    text = re.sub(pattern_text, "", text).strip()
+                except re.error:
+                    continue
+
+        if isinstance(cut_patterns, list):
+            for pattern in cut_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+
+                try:
+                    text = re.split(pattern_text, text, maxsplit=1)[0].strip()
+                except re.error:
+                    continue
 
         return text
 
@@ -1715,7 +1733,8 @@ class BookingSubagent:
         inferred_branch = self.infer_branch_from_available_branches(
             variables=variables,
             message=message,
-            normalization=normalization
+            normalization=normalization,
+            config=get_subagent_config(assistant_config, self.name)
         )
 
         if inferred_branch:
@@ -1769,7 +1788,8 @@ class BookingSubagent:
             or self.infer_branch_from_available_branches(
                 variables=variables,
                 message=message,
-                normalization=normalization
+                normalization=normalization,
+                config=config
             )
         )
 
@@ -1827,12 +1847,15 @@ class BookingSubagent:
 
         return apply_variable_patch(variables, updates, [])
 
+
     def infer_branch_from_available_branches(
         self,
         variables: Dict[str, Any],
         message: str,
-        normalization: Dict[str, Any]
+        normalization: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
     ) -> str:
+        config = config or {}
         branches = deep_get(variables, "available_branches", [])
 
         if not isinstance(branches, list) or not branches:
@@ -1847,7 +1870,11 @@ class BookingSubagent:
             return ""
 
         location_norm = normalize_text(location_text, normalization)
-        location_tokens = self.extract_meaningful_tokens(location_norm)
+        location_tokens = self.extract_meaningful_tokens(
+            text=location_norm,
+            config=config,
+            normalization=normalization
+        )
 
         if not location_tokens:
             return ""
@@ -1881,48 +1908,30 @@ class BookingSubagent:
 
         return ""
 
+
     @staticmethod
-    def extract_meaningful_tokens(text: str) -> List[str]:
+    def extract_meaningful_tokens(
+        text: str,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        config = config or {}
+        normalization = normalization or {}
         raw_tokens = re.findall(r"[\w\u0600-\u06FF]+", str(text or "").lower())
 
-        stopwords = {
-            "انا",
-            "أنا",
-            "ساكن",
-            "في",
-            "قولي",
-            "قوللي",
-            "قولى",
-            "اقرب",
-            "أقرب",
-            "فرع",
-            "ليا",
-            "لي",
-            "وايه",
-            "ايه",
-            "إيه",
-            "المواعيد",
-            "المتاحه",
-            "المتاحة",
-            "يوم",
-            "الجاي",
-            "القادم",
-            "عايز",
-            "عاوز",
-            "ممكن",
-            "لو",
-            "تحب",
-            "ده",
-            "هذا",
-            "اللي",
-            "اكد",
-            "أكد",
-            "المعاد",
-            "موعد",
-            "ميعاد",
-            "الساعة",
-            "الساعه"
+        stopwords = config.get("branch_inference_stopwords", [])
+
+        if not isinstance(stopwords, list):
+            stopwords = []
+
+        normalized_stopwords = {
+            normalize_text(str(item or ""), normalization)
+            for item in stopwords
+            if str(item or "").strip()
         }
+
+        max_tokens = int(config.get("branch_inference_max_tokens", 12) or 12)
+        min_token_length = int(config.get("branch_inference_min_token_length", 3) or 3)
 
         output = []
 
@@ -1932,15 +1941,18 @@ class BookingSubagent:
             if not token:
                 continue
 
-            if token in stopwords:
+            normalized_token = normalize_text(token, normalization)
+
+            if normalized_token in normalized_stopwords:
                 continue
 
-            if len(token) < 3:
+            if len(token) < min_token_length:
                 continue
 
             output.append(token)
 
-        return output[:12]
+        return output[:max_tokens]
+
     def resolve_canonical_branch(
         self,
         value: str,
@@ -2141,6 +2153,7 @@ class BookingSubagent:
             }
         )
 
+
     def extract_customer_details(
         self,
         message: str,
@@ -2158,11 +2171,12 @@ class BookingSubagent:
         if not isinstance(extracted, dict):
             extracted = {}
 
-        if self.is_control_only_message(message, normalization):
+        if self.is_control_only_message(message, config, normalization):
             extracted.pop("customer_profile.full_name", None)
 
         fallback = self.extract_customer_details_fallback(
             message=message,
+            config=config,
             variables=variables,
             normalization=normalization
         )
@@ -2175,68 +2189,70 @@ class BookingSubagent:
             full_name = str(extracted.get("customer_profile.full_name") or "").strip()
 
             if (
-                self.is_control_only_message(message, normalization)
-                or not self.message_has_name_signal(message, normalization)
-                or not self.looks_like_person_name(full_name)
+                self.is_control_only_message(message, config, normalization)
+                or not self.message_has_name_signal(message, config, normalization)
+                or not self.looks_like_person_name(full_name, config, normalization)
             ):
                 extracted.pop("customer_profile.full_name", None)
 
         if not extracted:
             return {}
 
-        return self.post_process_extracted_fields(extracted, normalization)
+        return self.post_process_extracted_fields(extracted, config, normalization)
+
 
     def extract_customer_details_fallback(
         self,
         message: str,
+        config: Dict[str, Any],
         variables: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
         output: Dict[str, Any] = {}
         text = str(message or "").strip()
-        normalized = normalize_text(text, normalization)
+
+        phone_config = config.get("phone_extraction", {})
+        phone_regex = phone_config.get("regex", r"(01\d{9}|\+?20\d{10,11})")
 
         if not deep_get(variables, "customer_profile.phone"):
-            phone_match = re.search(r"(01\d{9}|\+?20\d{10,11})", normalize_digits(text, normalization.get("digit_map", {})))
+            try:
+                phone_match = re.search(
+                    phone_regex,
+                    normalize_digits(text, normalization.get("digit_map", {}))
+                )
+            except re.error:
+                phone_match = None
+
             if phone_match:
                 output["customer_profile.phone"] = phone_match.group(1).strip()
 
         if (
             not deep_get(variables, "customer_profile.full_name")
-            and self.message_has_name_signal(text, normalization)
-            and not self.is_control_only_message(text, normalization)
+            and self.message_has_name_signal(text, config, normalization)
+            and not self.is_control_only_message(text, config, normalization)
         ):
-            name_match = re.search(
-                r"(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\s*[:：\\-]?\s*([^،,.!?؟\n]+)",
-                text,
-                flags=re.IGNORECASE
+            name = self.extract_name_from_configured_patterns(
+                message=text,
+                config=config
             )
 
-            if name_match:
-                name = self.clean_name(name_match.group(1))
-                if self.looks_like_person_name(name):
-                    output["customer_profile.full_name"] = name
+            if name and self.looks_like_person_name(name, config, normalization):
+                output["customer_profile.full_name"] = name
 
         if not deep_get(variables, "customer_profile.plate_number"):
-            plate = self.extract_plate_fallback(text, normalization)
+            plate = self.extract_plate_fallback(text, config, normalization)
 
             if plate:
                 output["customer_profile.plate_number"] = plate
 
-        if not output:
-            return output
-
-        # If a message starts with "اسمي", never let the generic plate/name patterns overwrite the name.
-        if "اسمي" in normalized or "انا اسمي" in normalized:
-            if output.get("customer_profile.full_name"):
-                output.pop("customer_profile.plate_number", None)
-
         return output
+
 
     def ensure_valid_customer_profile(
         self,
         variables: Dict[str, Any],
         message: str,
+        config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
         full_name = str(deep_get(variables, "customer_profile.full_name") or "").strip()
@@ -2244,7 +2260,7 @@ class BookingSubagent:
         if not full_name:
             return variables
 
-        if self.looks_like_person_name(full_name):
+        if self.looks_like_person_name(full_name, config, normalization):
             return variables
 
         return apply_variable_patch(
@@ -2253,249 +2269,351 @@ class BookingSubagent:
             ["customer_profile.full_name"]
         )
 
-    def has_customer_detail_signal(self, message: str, normalization: Dict[str, Any]) -> bool:
+
+    def has_customer_detail_signal(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
         text = str(message or "").strip()
         normalized = normalize_text(text, normalization)
 
-        detail_markers = [
-            "اسمي",
-            "اسمى",
-            "انا اسمي",
-            "انا اسمى",
-            "أنا اسمي",
-            "أنا اسمى",
-            "الاسم",
-            "الإسم",
-            "تليفون",
-            "تلفون",
-            "موبايل",
-            "رقم العربية",
-            "نمر العربية",
-            "نمرة العربية",
-            "رقم اللوحه",
-            "رقم اللوحة",
-            "اللوحه",
-            "اللوحة",
-            "لوحتي",
-            "لوحتى",
-            "plate",
-            "phone",
-            "mobile",
-            "name is",
-            "my name is"
-        ]
+        markers_config = config.get("customer_detail_markers", {})
+        if not isinstance(markers_config, dict):
+            markers_config = {}
 
-        if any(normalize_text(marker, normalization) in normalized for marker in detail_markers):
-            return True
+        all_markers: List[str] = []
+        for key in ["name_markers", "phone_markers", "plate_markers", "general_markers"]:
+            values = markers_config.get(key, [])
+            if isinstance(values, list):
+                all_markers.extend([str(item or "") for item in values])
 
-        if re.search(r"(01\d{9}|\+?20\d{10,11})", normalize_digits(text, normalization.get("digit_map", {}))):
-            return True
+        for marker in all_markers:
+            normalized_marker = normalize_text(marker, normalization)
+            if normalized_marker and normalized_marker in normalized:
+                return True
 
-        # A standalone plate-like reply during customer-detail collection is a detail.
-        if self.extract_plate_fallback(text, normalization):
+        phone_config = config.get("phone_extraction", {})
+        phone_regex = phone_config.get("regex", r"(01\d{9}|\+?20\d{10,11})")
+
+        try:
+            if re.search(phone_regex, normalize_digits(text, normalization.get("digit_map", {}))):
+                return True
+        except re.error:
+            pass
+
+        if self.extract_plate_fallback(text, config, normalization):
             return True
 
         return False
 
-    def message_has_name_signal(self, message: str, normalization: Dict[str, Any]) -> bool:
+
+    def message_has_name_signal(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
         normalized = normalize_text(str(message or ""), normalization)
+        markers_config = config.get("customer_detail_markers", {})
 
-        name_markers = [
-            "اسمي",
-            "اسمى",
-            "انا اسمي",
-            "انا اسمى",
-            "أنا اسمي",
-            "أنا اسمى",
-            "الاسم",
-            "الإسم",
-            "name is",
-            "my name is"
-        ]
+        if not isinstance(markers_config, dict):
+            markers_config = {}
 
-        return any(normalize_text(marker, normalization) in normalized for marker in name_markers)
+        name_markers = markers_config.get("name_markers", [])
 
-    def is_control_only_message(self, message: str, normalization: Dict[str, Any]) -> bool:
+        if not isinstance(name_markers, list):
+            name_markers = []
+
+        return any(
+            normalize_text(str(marker or ""), normalization) in normalized
+            for marker in name_markers
+            if str(marker or "").strip()
+        )
+
+
+    def is_control_only_message(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
         normalized = normalize_text(str(message or ""), normalization)
         normalized = re.sub(r"\s+", " ", normalized).strip()
 
         if not normalized:
             return False
 
-        control_terms = {
-            "اه",
-            "اها",
-            "ايوه",
-            "ايوا",
-            "نعم",
-            "تمام",
-            "اوكي",
-            "اوك",
-            "اكيد",
-            "اكد",
-            "اكده",
-            "اكدها",
-            "اكد الحجز",
-            "اكد المعاد",
-            "اكد الموعد",
-            "confirm",
-            "confirmed",
-            "yes",
-            "ok",
-            "okay"
-        }
+        guard_config = config.get("customer_detail_guards", {})
+        if not isinstance(guard_config, dict):
+            guard_config = {}
+
+        fake_phrases = guard_config.get("fake_name_phrases", [])
+        control_terms = guard_config.get("control_only_terms", [])
+        detail_markers = config.get("customer_detail_markers", {})
+
+        if not isinstance(fake_phrases, list):
+            fake_phrases = []
+
+        if not isinstance(control_terms, list):
+            control_terms = []
+
+        if not isinstance(detail_markers, dict):
+            detail_markers = {}
+
+        configured_markers: List[str] = []
+        for key in ["name_markers", "phone_markers", "plate_markers", "general_markers"]:
+            values = detail_markers.get(key, [])
+            if isinstance(values, list):
+                configured_markers.extend([str(item or "") for item in values])
+
+        for phrase in fake_phrases:
+            normalized_phrase = normalize_text(str(phrase or ""), normalization)
+            normalized_phrase = re.sub(r"\s+", " ", normalized_phrase).strip()
+            if normalized_phrase and normalized_phrase == normalized:
+                return True
 
         tokens = [token for token in re.findall(r"[\w\u0600-\u06FF]+", normalized) if token]
+        normalized_control_terms = {
+            normalize_text(str(term or ""), normalization)
+            for term in control_terms
+            if str(term or "").strip()
+        }
 
-        if not tokens:
-            return False
+        normalized_control_terms = {term for term in normalized_control_terms if term}
 
-        if all(token in control_terms for token in tokens):
+        if tokens and normalized_control_terms and all(token in normalized_control_terms for token in tokens):
             return True
 
-        # Mixed short confirmation/control phrases like "اه اكده تمام" should
-        # never be accepted as a full name.
-        if len(tokens) <= 5 and any(token in control_terms for token in tokens):
-            customer_markers = [
-                "اسمي",
-                "الاسم",
-                "رقم",
-                "العربيه",
-                "العربية",
-                "اللوحه",
-                "اللوحة",
-                "تليفون",
-                "تلفون",
-                "موبايل"
-            ]
+        max_control_tokens = int(guard_config.get("max_control_phrase_tokens", 5) or 5)
 
-            if not any(marker in normalized for marker in customer_markers):
+        if (
+            tokens
+            and len(tokens) <= max_control_tokens
+            and normalized_control_terms
+            and any(token in normalized_control_terms for token in tokens)
+        ):
+            has_detail_marker = any(
+                normalize_text(marker, normalization) in normalized
+                for marker in configured_markers
+                if str(marker or "").strip()
+            )
+
+            if not has_detail_marker:
                 return True
 
         return False
 
-    def clean_name(self, value: str) -> str:
+
+
+    def extract_name_from_configured_patterns(
+        self,
+        message: str,
+        config: Dict[str, Any]
+    ) -> str:
+        patterns_config = config.get("name_extraction", {})
+        if not isinstance(patterns_config, dict):
+            patterns_config = {}
+
+        patterns = patterns_config.get("capture_patterns", [])
+
+        if not isinstance(patterns, list):
+            patterns = []
+
+        for item in patterns:
+            pattern = ""
+            group = 1
+
+            if isinstance(item, dict):
+                pattern = str(item.get("regex", "") or "")
+                try:
+                    group = int(item.get("group", 1))
+                except Exception:
+                    group = 1
+            else:
+                pattern = str(item or "")
+
+            if not pattern:
+                continue
+
+            try:
+                match = re.search(pattern, message, flags=re.IGNORECASE)
+            except re.error:
+                continue
+
+            if not match:
+                continue
+
+            try:
+                return self.clean_name(match.group(group), config)
+            except Exception:
+                continue
+
+        return ""
+
+    def clean_name(self, value: str, config: Optional[Dict[str, Any]] = None) -> str:
+        config = config or {}
         text = str(value or "").strip()
         text = re.sub(r"\s+", " ", text)
-        text = re.sub(
-            r"\s+(?:ورقم|و رقم|وتليفوني|و تليفوني|وتلفوني|و تلفوني|وموبايل|و موبايل|ولوحتي|و لوحتي|واللوحة|و اللوحة).*$",
-            "",
-            text
-        ).strip()
+
+        cleanup_config = config.get("name_cleanup", {})
+        if not isinstance(cleanup_config, dict):
+            cleanup_config = {}
+
+        cut_patterns = cleanup_config.get("cut_patterns", [])
+
+        if isinstance(cut_patterns, list):
+            for pattern in cut_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+
+                try:
+                    text = re.sub(pattern_text, "", text).strip()
+                except re.error:
+                    continue
+
         return text
 
-    def looks_like_person_name(self, value: str) -> bool:
+
+    def looks_like_person_name(
+        self,
+        value: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
         text = str(value or "").strip()
 
         if not text:
             return False
+
+        guard_config = config.get("customer_detail_guards", {})
+        if not isinstance(guard_config, dict):
+            guard_config = {}
 
         if re.search(r"\d", text):
             return False
 
-        blocked = [
-            "العربية",
-            "العربيه",
-            "اللوحة",
-            "اللوحه",
-            "رقم",
-            "موبايل",
-            "تليفون",
-            "تلفون",
-            "فرع",
-            "ميعاد",
-            "معاد",
-            "موعد",
-            "الحجز",
-            "تمام",
-            "اكد",
-            "أكد",
-            "اكده",
-            "أكده",
-            "اكدها",
-            "أكدها",
-            "ايوه",
-            "أيوه",
-            "اه",
-            "أه",
-            "اوكي",
-            "أوكي",
-            "confirm",
-            "confirmed",
-            "yes",
-            "ok",
-            "okay"
-        ]
+        normalized = normalize_text(text, normalization)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
 
-        normalized = text.replace("ة", "ه").replace("ى", "ي").replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+        fake_phrases = guard_config.get("fake_name_phrases", [])
+        name_blocklist = guard_config.get("name_blocklist", [])
 
-        if any(word.replace("ة", "ه").replace("ى", "ي").replace("أ", "ا").replace("إ", "ا").replace("آ", "ا") in normalized for word in blocked):
-            return False
+        if not isinstance(fake_phrases, list):
+            fake_phrases = []
+
+        if not isinstance(name_blocklist, list):
+            name_blocklist = []
+
+        for phrase in fake_phrases:
+            normalized_phrase = normalize_text(str(phrase or ""), normalization)
+            normalized_phrase = re.sub(r"\s+", " ", normalized_phrase).strip()
+            if normalized_phrase and normalized_phrase == normalized:
+                return False
+
+        for blocked in name_blocklist:
+            normalized_blocked = normalize_text(str(blocked or ""), normalization)
+            if normalized_blocked and normalized_blocked in normalized:
+                return False
 
         parts = [part for part in text.split() if part.strip()]
 
-        if len(parts) < 2:
+        min_parts = int(guard_config.get("min_name_parts", 2) or 2)
+        max_parts = int(guard_config.get("max_name_parts", 6) or 6)
+        min_part_length = int(guard_config.get("min_name_part_length", 2) or 2)
+
+        if len(parts) < min_parts or len(parts) > max_parts:
             return False
 
-        return 2 <= len(parts) <= 6 and all(len(part) >= 2 for part in parts)
+        return all(len(part) >= min_part_length for part in parts)
 
-    def extract_plate_fallback(self, text: str, normalization: Dict[str, Any]) -> str:
+
+    def extract_plate_fallback(
+        self,
+        text: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
         digit_map = normalization.get("digit_map", {})
         normalized_digits = normalize_digits(str(text or ""), digit_map)
 
-        labelled = re.search(
-            r"(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\D*([^\n،,.!?؟]{2,30})",
-            normalized_digits,
-            flags=re.IGNORECASE
-        )
+        plate_config = config.get("plate_extraction", {})
+        if not isinstance(plate_config, dict):
+            plate_config = {}
 
-        if labelled:
-            candidate = labelled.group(1).strip()
-            candidate = self.normalize_plate_number(candidate, normalization)
-            if self.looks_like_plate_number(candidate):
-                return candidate
+        patterns = plate_config.get("fallback_patterns", [])
 
-        standalone = self.normalize_plate_number(normalized_digits, normalization)
+        if isinstance(patterns, list):
+            for pattern in patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
 
-        if self.looks_like_plate_number(standalone):
-            return standalone
+                try:
+                    match = re.search(pattern_text, normalized_digits, flags=re.IGNORECASE)
+                except re.error:
+                    continue
+
+                if not match:
+                    continue
+
+                group_index = 1
+                candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
+                candidate = self.normalize_plate_number(candidate, normalization)
+
+                if self.looks_like_plate_number(candidate, config, normalization):
+                    return candidate
 
         return ""
 
-    def looks_like_plate_number(self, value: str) -> bool:
+
+    def looks_like_plate_number(
+        self,
+        value: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
         text = str(value or "").strip()
 
         if not text:
             return False
 
+        plate_config = config.get("plate_extraction", {})
+        if not isinstance(plate_config, dict):
+            plate_config = {}
+
         has_digit = bool(re.search(r"\d", text))
         has_letter = bool(re.search(r"[A-Za-z\u0600-\u06FF]", text))
 
-        if not has_digit:
+        require_digit = bool(plate_config.get("require_digit", True))
+        require_letter_or_digit = bool(plate_config.get("require_letter_or_digit", True))
+
+        if require_digit and not has_digit:
             return False
 
-        if len(text) < 2 or len(text) > 30:
+        if require_letter_or_digit and not (has_digit or has_letter):
             return False
 
-        blocked = [
-            "اسمي",
-            "الاسم",
-            "الإسم",
-            "موبايل",
-            "تليفون",
-            "تلفون",
-            "موعد",
-            "ميعاد",
-            "معاد",
-            "فرع"
-        ]
+        min_length = int(plate_config.get("min_length", 2) or 2)
+        max_length = int(plate_config.get("max_length", 30) or 30)
 
-        normalized = text.replace("ة", "ه").replace("ى", "ي")
-
-        if any(word in normalized for word in blocked):
+        if len(text) < min_length or len(text) > max_length:
             return False
 
-        return has_digit or has_letter
+        normalized = normalize_text(text, normalization)
+        blocklist = plate_config.get("blocklist", [])
+
+        if not isinstance(blocklist, list):
+            blocklist = []
+
+        for blocked in blocklist:
+            normalized_blocked = normalize_text(str(blocked or ""), normalization)
+            if normalized_blocked and normalized_blocked in normalized:
+                return False
+
+        return True
 
     def build_pending_summary(self, pending: Dict[str, Any]) -> str:
         if not isinstance(pending, dict):
@@ -2597,6 +2715,7 @@ class BookingSubagent:
             or stage in {"confirmed", "booking_confirmed", "booked"}
         )
 
+
     def is_polite_closing(
         self,
         message: str,
@@ -2616,46 +2735,37 @@ class BookingSubagent:
         if not isinstance(configured_terms, list):
             configured_terms = []
 
-        default_terms = [
-            "شكرا",
-            "شكراً",
-            "شكرًا",
-            "شكرا ليك",
-            "شكرا لك",
-            "شكراً ليك",
-            "شكرًا ليك",
-            "متشكر",
-            "متشكر جدا",
-            "متشكرين",
-            "الف شكر",
-            "ألف شكر",
-            "تمام شكرا",
-            "تمام شكرًا",
-            "تسلم",
-            "تسلملي",
-            "تسلم ايدك",
-            "ربنا يخليك",
-            "يعطيك العافيه",
-            "يعطيك العافية",
-            "thanks",
-            "thank you",
-            "thx"
-        ]
-
-        terms = configured_terms + default_terms
-
-        for term in terms:
+        for term in configured_terms:
             normalized_term = normalize_text(str(term or ""), normalization)
             normalized_term = re.sub(r"\s+", " ", normalized_term).strip()
 
             if normalized_term and normalized_term in normalized:
                 return True
 
-        # Very short thanks-only messages should close after a confirmed booking.
-        tokens = [token for token in re.findall(r"[\w\u0600-\u06FF]+", normalized) if token]
-        thanks_tokens = {"شكرا", "شكرًا", "شكراً", "متشكر", "تسلم", "thanks", "thx"}
+        closing_config = config.get("closing_detection", {})
+        if not isinstance(closing_config, dict):
+            closing_config = {}
 
-        return bool(tokens and len(tokens) <= 4 and any(token in thanks_tokens for token in tokens))
+        tokens = [token for token in re.findall(r"[\w\u0600-\u06FF]+", normalized) if token]
+        closing_tokens = closing_config.get("closing_tokens", [])
+
+        if not isinstance(closing_tokens, list):
+            closing_tokens = []
+
+        normalized_closing_tokens = {
+            normalize_text(str(token or ""), normalization)
+            for token in closing_tokens
+            if str(token or "").strip()
+        }
+
+        max_tokens = int(closing_config.get("max_thanks_tokens", 4) or 4)
+
+        return bool(
+            tokens
+            and len(tokens) <= max_tokens
+            and normalized_closing_tokens
+            and any(token in normalized_closing_tokens for token in tokens)
+        )
 
     def looks_like_duplicate_confirmation(
         self,
@@ -2671,9 +2781,11 @@ class BookingSubagent:
             or matches_any(message, confirmation_terms, normalization)
         )
 
+
     def post_process_extracted_fields(
         self,
         extracted: Dict[str, Any],
+        config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
         output = dict(extracted)
@@ -2686,7 +2798,7 @@ class BookingSubagent:
                 normalization
             )
 
-            if self.looks_like_plate_number(plate_text):
+            if self.looks_like_plate_number(plate_text, config, normalization):
                 output["customer_profile.plate_number"] = plate_text
             else:
                 output.pop("customer_profile.plate_number", None)
@@ -2694,9 +2806,9 @@ class BookingSubagent:
         full_name = output.get("customer_profile.full_name")
 
         if full_name:
-            clean = self.clean_name(str(full_name))
+            clean = self.clean_name(str(full_name), config)
 
-            if self.looks_like_person_name(clean):
+            if self.looks_like_person_name(clean, config, normalization):
                 output["customer_profile.full_name"] = re.sub(
                     r"\s+",
                     " ",
