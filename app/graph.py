@@ -27,6 +27,7 @@ from app.subagents.base import (
     apply_variable_patch as apply_subagent_variable_patch,
     apply_tool_update_rules,
     get_subagent_variable_scope,
+    get_subagent_config,
     matches_any,
     deep_get,
 )
@@ -95,6 +96,8 @@ class QualityDecision(BaseModel):
     pass_check: bool
     revised_answer: str = ""
     issues: List[str] = Field(default_factory=list)
+    energy_ok: bool = True
+    energy_issue: str = ""
 
 
 manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=900).bind(
@@ -119,30 +122,11 @@ SUBAGENT_EXECUTORS = {
 }
 
 
-SOURCE_OF_TRUTH_EXACT_VARIABLES = {
-    "visit_id",
-    "booking_status",
-    "available_slots",
-    "available_slots_text",
-    "available_branches",
-    "available_branches_text",
-    "slots_found",
-    "appointment_date",
-    "appointment_time",
-    "selected_branch",
-    "nearest_branch",
-    "location_branch",
-    "customer_confirmed_booking",
-}
-
-SOURCE_OF_TRUTH_PREFIXES = (
-    "booking",
-    "booking.",
-    "tool_result",
-    "exact_slot",
-    "nearest_slots",
-    "unavailable_reason",
-)
+# Source-of-truth protections are assistant-config driven.
+# Configure these per assistant in domain_bundle.json:
+# - source_of_truth_variables
+# - source_of_truth_prefixes
+# - source_of_truth_include_tool_result
 
 
 def last_user_message(state: AgentState) -> str:
@@ -294,11 +278,94 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def filter_manifest_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+
+def as_string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    output: List[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            output.append(text)
+    return output
+
+
+def get_config_bool(config: Dict[str, Any], path: str, default: bool = False) -> bool:
+    value = get_config_path_value(config, path, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def get_source_of_truth_variables(agent_config: Dict[str, Any]) -> set:
+    """
+    Multi-tenant source-of-truth variable protection.
+
+    This intentionally reads from assistant config instead of hardcoded booking
+    fields so a hotel/support/sales assistant can define its own protected
+    operational state in domain_bundle.json.
+    """
+    values = set(as_string_list(agent_config.get("source_of_truth_variables", [])))
+
+    schema_config = agent_config.get("schema") or agent_config.get("variables") or {}
+    if isinstance(schema_config, dict):
+        schema_fields = get_schema_fields(schema_config)
+        for key, meta in schema_fields.items():
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("source_of_truth") is True or meta.get("operational_state") is True:
+                key_text = str(key or "").strip()
+                if key_text:
+                    values.add(key_text)
+
+    return values
+
+
+def get_source_of_truth_prefixes(agent_config: Dict[str, Any]) -> tuple:
+    """
+    Multi-tenant prefix protection for operational namespaces.
+    Configure per assistant with source_of_truth_prefixes.
+    """
+    return tuple(as_string_list(agent_config.get("source_of_truth_prefixes", [])))
+
+
+def is_source_of_truth_path(path: str, agent_config: Dict[str, Any]) -> bool:
+    path_text = str(path or "").strip()
+
+    if not path_text:
+        return False
+
+    exact = get_source_of_truth_variables(agent_config)
+    prefixes = get_source_of_truth_prefixes(agent_config)
+
+    if path_text in exact:
+        return True
+
+    for prefix in prefixes:
+        prefix_text = str(prefix or "").strip()
+        if not prefix_text:
+            continue
+        if path_text == prefix_text or path_text.startswith(prefix_text + "."):
+            return True
+
+    return False
+
+
+def filter_manifest_updates(
+    updates: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     The manifest LLM may extract soft user info, but it must not directly write
     source-of-truth operational state. Tool/subagent execution owns those fields.
+
+    Source-of-truth paths are multi-tenant and config-driven through
+    source_of_truth_variables/source_of_truth_prefixes.
     """
+    agent_config = agent_config or {}
+
     if not isinstance(updates, dict):
         return {}
 
@@ -310,25 +377,26 @@ def filter_manifest_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
         if not key_text:
             continue
 
-        if key_text in SOURCE_OF_TRUTH_EXACT_VARIABLES:
-            continue
-
-        if any(
-            key_text == prefix or key_text.startswith(prefix + ".")
-            for prefix in SOURCE_OF_TRUTH_PREFIXES
-        ):
+        if is_source_of_truth_path(key_text, agent_config):
             continue
 
         allowed[key_text] = value
 
     return allowed
 
-
-def filter_manifest_deletions(deletions: List[str]) -> List[str]:
+def filter_manifest_deletions(
+    deletions: List[str],
+    agent_config: Optional[Dict[str, Any]] = None
+) -> List[str]:
     """
     The manifest LLM may request deletion of soft state, but cannot delete
     source-of-truth operational state.
+
+    Source-of-truth paths are multi-tenant and config-driven through
+    source_of_truth_variables/source_of_truth_prefixes.
     """
+    agent_config = agent_config or {}
+
     if not isinstance(deletions, list):
         return []
 
@@ -340,19 +408,12 @@ def filter_manifest_deletions(deletions: List[str]) -> List[str]:
         if not path:
             continue
 
-        if path in SOURCE_OF_TRUTH_EXACT_VARIABLES:
-            continue
-
-        if any(
-            path == prefix or path.startswith(prefix + ".")
-            for prefix in SOURCE_OF_TRUTH_PREFIXES
-        ):
+        if is_source_of_truth_path(path, agent_config):
             continue
 
         allowed.append(path)
 
     return allowed
-
 
 def get_schema_fields(schema: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(schema, dict):
@@ -579,6 +640,8 @@ def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[
     return {
         "assistant_goal": clip_text_head_tail(agent_config.get("assistant_goal", ""), 550),
         "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 450),
+        "persona": agent_config.get("persona", {}) if isinstance(agent_config.get("persona", {}), dict) else {},
+        "proactive_nudge": agent_config.get("proactive_nudge", {}) if isinstance(agent_config.get("proactive_nudge", {}), dict) else {},
         "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 320),
         "grounding_policy": clip_text_head_tail(agent_config.get("grounding_policy", ""), 650),
         "response_rules": (agent_config.get("response_rules") or [])[:14],
@@ -590,7 +653,6 @@ def compact_agent_context(agent_config: Dict[str, Any], selected_subagent: Dict[
             "allowed_actions": selected_subagent.get("allowed_actions", []),
         },
     }
-
 
 def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -1137,11 +1199,13 @@ def unified_manifest_node(state: AgentState):
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
     safe_manifest_updates = filter_manifest_updates(
-        manifest.get("extracted_updates", {}) or {}
+        manifest.get("extracted_updates", {}) or {},
+        agent_config,
     )
 
     safe_manifest_deletions = filter_manifest_deletions(
-        manifest.get("extracted_deletions", []) or []
+        manifest.get("extracted_deletions", []) or [],
+        agent_config,
     )
 
     updated_variables = apply_subagent_variable_patch(
@@ -1460,17 +1524,49 @@ def blocked_tool_call_result(
     tool_name: str,
     operation: str,
     arguments: Dict[str, Any],
-    missing_inputs: List[str]
+    missing_inputs: List[str],
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if "date" in missing_inputs:
-        answer_draft = "BOOKING_MISSING_DATE"
-        next_move = "Ask the customer which day/date they want before checking appointment availability."
-    elif "branch" in missing_inputs:
-        answer_draft = "BOOKING_MISSING_BRANCH"
-        next_move = "Ask the customer which branch or area they want before checking appointment availability."
-    else:
-        answer_draft = "BOOKING_MISSING_FIELDS"
-        next_move = "Ask for the next missing booking detail before calling the tool."
+    agent_config = agent_config or {}
+
+    blocked_config = agent_config.get("blocked_tool_call_policy", {})
+    if not isinstance(blocked_config, dict):
+        blocked_config = {}
+
+    answer_draft_map = blocked_config.get("answer_draft_by_missing_input", {})
+    if not isinstance(answer_draft_map, dict):
+        answer_draft_map = {}
+
+    next_move_map = blocked_config.get("next_move_by_missing_input", {})
+    if not isinstance(next_move_map, dict):
+        next_move_map = {}
+
+    default_answer_draft = str(blocked_config.get("default_answer_draft") or "MISSING_REQUIRED_FIELDS").strip()
+    default_next_move = str(blocked_config.get("default_next_move") or "Ask for the next missing detail before calling the tool.").strip()
+
+    answer_draft = default_answer_draft
+    next_move = default_next_move
+
+    for missing_input in missing_inputs:
+        key = str(missing_input or "").strip()
+        if key in answer_draft_map and str(answer_draft_map.get(key) or "").strip():
+            answer_draft = str(answer_draft_map.get(key) or "").strip()
+            break
+
+    for missing_input in missing_inputs:
+        key = str(missing_input or "").strip()
+        if key in next_move_map and str(next_move_map.get(key) or "").strip():
+            next_move = str(next_move_map.get(key) or "").strip()
+            break
+
+    must_do = blocked_config.get("must_do", [])
+    must_not_do = blocked_config.get("must_not_do", [])
+
+    if not isinstance(must_do, list):
+        must_do = []
+
+    if not isinstance(must_not_do, list):
+        must_not_do = []
 
     return {
         "ok": True,
@@ -1483,24 +1579,14 @@ def blocked_tool_call_result(
         "answer_draft": answer_draft,
         "notes": "Tool call was safely blocked because required inputs were missing.",
         "response_brief": {
-            "tone": "natural professional Egyptian Arabic",
-            "language": "same as user",
-            "reply_length": "short",
+            "tone": str(blocked_config.get("tone") or "natural and helpful"),
+            "language": str(blocked_config.get("language") or "same as user"),
+            "reply_length": str(blocked_config.get("reply_length") or "short"),
             "next_move": next_move,
-            "must_do": [
-                "ask for the missing input",
-                "do not call availability tools without branch and normalized date",
-                "ask only one question"
-            ],
-            "must_not_do": [
-                "do not say there are no available slots",
-                "do not invent slots",
-                "do not invent dates",
-                "do not claim a tool result was checked"
-            ]
+            "must_do": [str(item) for item in must_do if str(item or "").strip()],
+            "must_not_do": [str(item) for item in must_not_do if str(item or "").strip()],
         }
     }
-
 
 def validate_direct_tool_request(
     tool_name: str,
@@ -1551,6 +1637,7 @@ def validate_direct_tool_request(
             operation=operation,
             arguments=normalized_arguments,
             missing_inputs=missing_inputs,
+            agent_config=agent_config,
         ),
     }
 
@@ -1831,6 +1918,116 @@ def subagent_reasoning_node(state: AgentState):
         }
 
 
+
+def get_response_temperature(manifest: Dict[str, Any], tool_result: Dict[str, Any]) -> float:
+    """
+    Dynamic response creativity/precision.
+
+    Defaults are config-independent and generic:
+    - tool/data/action replies stay precise
+    - simple low-risk replies can be warmer
+    Per-assistant overrides can be supplied in response_temperature.
+    """
+    temperature_config = {}
+    # manifest may carry a copy through response_brief in future; keep this helper pure.
+
+    risk = str(manifest.get("risk_level") or "low").lower().strip()
+    action = str((tool_result or {}).get("action") or "").lower().strip()
+    stage = str(manifest.get("conversation_stage") or "").lower().strip()
+    has_tool_result = isinstance(tool_result, dict) and bool(tool_result)
+
+    if risk == "high":
+        return 0.1
+
+    if has_tool_result:
+        return 0.15
+
+    if action == "ask_user":
+        return 0.25
+
+    if "slot" in stage or "lookup" in stage:
+        return 0.2
+
+    if manifest.get("simple_response_mode"):
+        return 0.6
+
+    return 0.45
+
+
+def get_response_energy_instruction(agent_config: Dict[str, Any], manifest: Dict[str, Any]) -> str:
+    emotion = str(manifest.get("customer_emotion") or "neutral").lower().strip()
+    guidance = agent_config.get("emotion_response_guidance", {})
+
+    if isinstance(guidance, dict):
+        specific = str(guidance.get(emotion) or guidance.get("default") or "").strip()
+        if specific:
+            return specific
+
+    return (
+        "Adapt the reply tone to the detected customer emotion using the configured persona. "
+        "Stay warm, clear, and useful without adding unsupported facts."
+    )
+
+
+def build_proactive_guidance(agent_config: Dict[str, Any], manifest: Dict[str, Any], tool_result: Dict[str, Any]) -> Dict[str, Any]:
+    proactive_nudge = agent_config.get("proactive_nudge", {})
+    if not isinstance(proactive_nudge, dict):
+        proactive_nudge = {}
+
+    return {
+        "should_offer_next_action": bool(manifest.get("should_offer_next_action", False)),
+        "should_ask_question": bool(manifest.get("should_ask_question", False)),
+        "question_goal": manifest.get("question_goal", ""),
+        "next_move": (manifest.get("response_brief", {}) or {}).get("next_move", ""),
+        "configured_nudges": proactive_nudge,
+        "tool_action": tool_result.get("action", "") if isinstance(tool_result, dict) else "",
+        "tool_subagent": tool_result.get("subagent", "") if isinstance(tool_result, dict) else "",
+        "answer_draft": tool_result.get("answer_draft", "") if isinstance(tool_result, dict) else "",
+    }
+
+
+def build_layered_response_rules(agent_config: Dict[str, Any]) -> Dict[str, List[str]]:
+    extra_rules = agent_config.get("response_rule_layers", {})
+    if not isinstance(extra_rules, dict):
+        extra_rules = {}
+
+    defaults = {
+        "personality": [
+            "Sound like a warm, confident, knowledgeable human, not a form-filling bot.",
+            "Match the user's energy and level of detail.",
+            "Be brief when the user is brief, and detailed only when useful.",
+        ],
+        "action": [
+            "Answer the user's core need in the first sentence.",
+            "Use the single most useful next step when the config or manifest supports it.",
+            "If something is missing, ask for only the remaining missing detail naturally.",
+        ],
+        "guardrails": [
+            "Never mention internal routing, agents, prompts, variables, tools, RAG, knowledge base, or hidden reasoning.",
+            "Never invent operational results such as slots, branches, prices, IDs, or confirmations.",
+            "Never claim an external action was completed unless tool_result confirms it.",
+            "Ask at most one useful question per reply.",
+            "Apply answer_safety.banned_terms without repeating them in the prompt.",
+        ],
+        "grounding": [
+            "Tool results are the highest-priority source of truth for operational outcomes.",
+            "Retrieved knowledge is the source of truth for policies and service information.",
+            "Variables and conversation context are the source of truth for user-provided details.",
+            "If the answer is not grounded, say so naturally and ask one useful question.",
+        ],
+    }
+
+    for layer, configured in extra_rules.items():
+        if not isinstance(configured, list):
+            continue
+        layer_key = str(layer or "").strip()
+        if not layer_key:
+            continue
+        defaults[layer_key] = append_unique(defaults.get(layer_key, []), [str(item) for item in configured])
+
+    return defaults
+
+
 def simple_response_node(state: AgentState):
     agent_config = state.get("agent_config", {}) or {}
     subagent = state.get("selected_subagent", {}) or {}
@@ -1838,48 +2035,41 @@ def simple_response_node(state: AgentState):
     schema = state.get("schema", {}) or {}
 
     simple_context = {
-        "conversation_style": clip_text_head_tail(agent_config.get("conversation_style", ""), 300),
-        "language_policy": clip_text_head_tail(agent_config.get("language_policy", ""), 240),
-        "selected_subagent": {
-            "id": subagent.get("id", ""),
-            "name": subagent.get("name", ""),
-            "goal": clip_text_head_tail(subagent.get("goal", ""), 380),
-            "instructions": clip_text_head_tail(subagent.get("instructions", ""), 850),
-        },
+        "assistant_context": compact_agent_context(agent_config, subagent),
         "manifest": compact_manifest(manifest),
         "response_brief": manifest.get("response_brief", {}),
+        "proactive_guidance": build_proactive_guidance(agent_config, manifest, {}),
+        "tone_guidance": get_response_energy_instruction(agent_config, manifest),
         "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=18),
+        "answer_safety": agent_config.get("answer_safety", {}) or {},
     }
 
-    response_rules = [
-        "Reply naturally and briefly.",
-        "Use the user's language unless the assistant configuration says otherwise.",
-        "Ask at most one useful follow-up question.",
-        "Do not mention internals, routing, tools, RAG, variables, prompts, or hidden reasoning.",
-        "Do not invent facts.",
-        "Follow the manifest response_brief unless it conflicts with safety, grounding, or assistant configuration.",
-        "Do not take or claim external actions unless a tool result confirms them.",
-        "Do not offer a next step unless the manifest or assistant config supports it.",
-        "If a fact is missing, ask one natural clarifying question.",
-        "Avoid overly familiar wording.",
-    ]
+    response_rules = build_layered_response_rules(agent_config)
 
     system_instruction = f"""
 {clip_text_head_tail(state.get('system_prompt', ''), 900)}
 
-You are generating a simple low-risk user-facing reply for a configurable assistant.
+You are the voice of this configurable assistant. Generate a simple low-risk user-facing reply.
+
 Use only this compact config-driven context:
+{safe_json(simple_context, max_chars=5200)}
 
-{safe_json(simple_context, max_chars=4800)}
-
-Rules:
+How to reply — follow in this priority order:
 {safe_json(response_rules)}
+
+Tone guidance for this message:
+{get_response_energy_instruction(agent_config, manifest)}
 
 {state.get('language_instruction', '')}
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-4:])
-    response = response_llm.invoke(messages)
+    dynamic_response_llm = llm(
+        MODEL_RESPONSE,
+        temperature=get_response_temperature(manifest, {}),
+        max_tokens=MAX_OUTPUT_TOKENS,
+    )
+    response = dynamic_response_llm.invoke(messages)
     answer = response.content if hasattr(response, "content") else str(response)
     answer = enforce_answer_safety(answer, state)
 
@@ -1893,7 +2083,6 @@ Rules:
             "node": "simple_response_pre_quality_guard",
         },
     }
-
 
 def response_node(state: AgentState):
     agent_config = state.get("agent_config", {}) or {}
@@ -1923,47 +2112,45 @@ def response_node(state: AgentState):
         "tool_result": tool_result,
         "answer_safety": agent_config.get("answer_safety", {}) or {},
         "template_response_policy": compact_template_response_policy(agent_config, tool_result),
+        "proactive_guidance": build_proactive_guidance(agent_config, manifest, tool_result),
+        "tone_guidance": get_response_energy_instruction(agent_config, manifest),
     }
 
-    response_rules = [
-        "Write exactly one natural user-facing reply.",
-        "Sound professional, human, smooth, and conversational.",
-        "Answer the user's latest message first.",
-        "Ask at most one useful follow-up question.",
-        "Do not mention internal routing, agents, prompts, manifests, variables, tools, RAG, knowledge base, or hidden reasoning.",
-        "Do not invent facts.",
-        "Use known variables, retrieved knowledge, tool results, or conversation context only.",
-        "If a fact is missing, ask one natural helpful question.",
-        "Use the user's language unless the assistant configuration says otherwise.",
-        "If manifest.needs_tool is true and no tool_result exists, do not claim the tool result.",
-        "If tool_result exists, treat it as the highest-priority source of truth.",
-        "If tool_result contains answer_draft, use it only as a grounded draft/label; rewrite naturally.",
-        "If template_response_policy contains a policy for tool_result.answer_draft, obey its must_do, must_not_do, and safe_examples.",
-        "If tool_result.action is ask_user or answer_draft represents missing fields, do not use wording that implies an external action was completed.",
-        "Follow the manifest response_brief unless it conflicts with safety, grounding, or assistant configuration.",
-        "Do not take or claim external actions unless a tool result confirms them.",
-        "Never confirm booking unless create_booking or tool_result confirms ok=true.",
-        "If a booking is confirmed and a visit_id exists, include the visit_id.",
-        "Never invent appointment slots, branches, prices, booking IDs, reasons, or confirmations.",
-        "Do not use overly familiar words like حبيبي, يا باشا, يا معلم, يا صديقي.",
-    ]
+    response_rules = build_layered_response_rules(agent_config)
 
     system_instruction = f"""
 {clip_text_head_tail(state.get('system_prompt', ''), 1200)}
 
-You are the final user-facing response generator for a configurable multi-tenant assistant.
+You are the voice of this assistant. You are generating the exact reply the user will read.
 
-Context:
-{safe_json(response_context, max_chars=8800)}
+Context you have available:
+{safe_json(response_context, max_chars=9200)}
 
-Rules:
+How to reply — follow in this priority order:
 {safe_json(response_rules)}
+
+Customer emotion detected:
+{manifest.get('customer_emotion', 'neutral')}
+
+Tone guidance for this specific message:
+{get_response_energy_instruction(agent_config, manifest)}
+
+Expected response style:
+{manifest.get('response_style', '')}
+
+Reply length:
+{manifest.get('reply_length', '')}
 
 {state.get('language_instruction', '')}
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
-    response = response_llm.invoke(messages)
+    dynamic_response_llm = llm(
+        MODEL_RESPONSE,
+        temperature=get_response_temperature(manifest, tool_result),
+        max_tokens=MAX_OUTPUT_TOKENS,
+    )
+    response = dynamic_response_llm.invoke(messages)
     answer = response.content if hasattr(response, "content") else str(response)
     answer = enforce_answer_safety(answer, state)
 
@@ -1976,19 +2163,33 @@ Rules:
         },
     }
 
-
 def extract_visit_id_from_state(state: AgentState) -> str:
+    agent_config = state.get("agent_config", {}) or {}
     variables = state.get("variables", {}) or {}
     tool_result = state.get("tool_result", {}) or {}
 
-    visit_id = str(variables.get("visit_id") or "").strip()
-    if visit_id:
-        return visit_id
+    id_paths = as_string_list(
+        agent_config.get("confirmed_record_id_paths", [])
+        or agent_config.get("visit_id_paths", [])
+        or agent_config.get("confirmation_id_paths", [])
+    )
+
+    for path in id_paths:
+        value = str(deep_get(variables, path) or "").strip()
+        if value:
+            return value
 
     if isinstance(tool_result, dict):
-        direct = str(tool_result.get("visit_id") or "").strip()
-        if direct:
-            return direct
+        for path in id_paths:
+            value = str(deep_get(tool_result, path) or "").strip()
+            if value:
+                return value
+
+        direct_fields = as_string_list(agent_config.get("confirmed_record_id_fields", []))
+        for field in direct_fields:
+            value = str(tool_result.get(field) or "").strip()
+            if value:
+                return value
 
         observations = tool_result.get("observations")
         if isinstance(observations, list):
@@ -1996,39 +2197,77 @@ def extract_visit_id_from_state(state: AgentState) -> str:
                 if not isinstance(obs, dict):
                     continue
                 result = obs.get("result") or {}
-                if isinstance(result, dict):
-                    candidate = str(result.get("visit_id") or "").strip()
-                    if candidate:
-                        return candidate
+                if not isinstance(result, dict):
+                    continue
+
+                for path in id_paths:
+                    value = str(deep_get(result, path) or "").strip()
+                    if value:
+                        return value
+
+                for field in direct_fields:
+                    value = str(result.get(field) or "").strip()
+                    if value:
+                        return value
 
     return ""
 
-
 def create_booking_confirmed(state: AgentState) -> bool:
+    agent_config = state.get("agent_config", {}) or {}
     tool_result = state.get("tool_result", {}) or {}
     variables = state.get("variables", {}) or {}
 
-    status = str(variables.get("booking_status") or "").lower()
-    if status in {"confirmed", "booking_confirmed", "booked"}:
-        return True
+    confirmed_statuses = as_string_list(
+        agent_config.get("booking_confirmed_statuses", [])
+        or agent_config.get("confirmed_statuses", [])
+    )
+    confirmed_status_set = {status.lower() for status in confirmed_statuses if status}
+
+    status_paths = as_string_list(
+        agent_config.get("booking_status_paths", [])
+        or [agent_config.get("booking_status_path", "")]
+    )
+
+    for status_path in status_paths:
+        status = str(deep_get(variables, status_path) or "").lower().strip()
+        if status and status in confirmed_status_set:
+            return True
+
+    confirmed_operation = str(
+        agent_config.get("booking_confirmed_operation")
+        or agent_config.get("confirmed_operation")
+        or ""
+    ).strip()
+
+    operation_ok_paths = as_string_list(agent_config.get("confirmed_operation_ok_paths", []))
 
     if isinstance(tool_result, dict):
-        if tool_result.get("operation") == "create_booking" and tool_result.get("ok") is True:
+        if confirmed_operation and tool_result.get("operation") == confirmed_operation and tool_result.get("ok") is True:
             return True
+
+        for path in operation_ok_paths:
+            value = deep_get(tool_result, path)
+            if value is True:
+                return True
 
         observations = tool_result.get("observations")
         if isinstance(observations, list):
             for obs in observations:
                 if not isinstance(obs, dict):
                     continue
-                if obs.get("operation") != "create_booking":
-                    continue
+
                 result = obs.get("result") or {}
-                if isinstance(result, dict) and result.get("ok") is True:
-                    return True
+
+                if confirmed_operation and obs.get("operation") == confirmed_operation:
+                    if isinstance(result, dict) and result.get("ok") is True:
+                        return True
+
+                for path in operation_ok_paths:
+                    value = deep_get(result if isinstance(result, dict) else obs, path)
+                    if value is True:
+                        return True
 
     return False
-
 
 def compact_template_response_policy(
     agent_config: Dict[str, Any],
@@ -2049,20 +2288,15 @@ def compact_template_response_policy(
     if answer_draft and answer_draft in policies:
         selected_keys.append(answer_draft)
 
-    common_keys = [
-        "BOOKING_CONFIRMED",
-        "BOOKING_COMPLETED_CLOSING",
-        "BOOKING_ALREADY_CONFIRMED",
-        "BOOKING_MISSING_FIELDS",
-        "BOOKING_MISSING_FULL_NAME",
-        "BOOKING_MISSING_PLATE_NUMBER",
-        "BOOKING_MISSING_NAME_AND_PLATE",
-        "BOOKING_CONFIRM_SELECTED_SLOT",
-        "BOOKING_SLOTS_FOUND",
-    ]
-
-    for key in common_keys:
+    priority_keys = as_string_list(agent_config.get("template_policy_priority_keys", []))
+    for key in priority_keys:
         if key in policies and key not in selected_keys:
+            selected_keys.append(key)
+        if len(selected_keys) >= max_policies:
+            break
+
+    for key in policies:
+        if key not in selected_keys:
             selected_keys.append(key)
         if len(selected_keys) >= max_policies:
             break
@@ -2084,18 +2318,19 @@ def compact_template_response_policy(
 
     return output
 
-
 def configured_booking_template_labels(
     agent_config: Dict[str, Any],
     key_prefixes: Optional[List[str]] = None,
     value_prefixes: Optional[List[str]] = None,
 ) -> List[str]:
-    subagents = agent_config.get("subagents", {}) or {}
-    booking_config = {}
+    """
+    Backward-compatible helper for booking template labels.
 
-    if isinstance(subagents, dict):
-        booking_config = subagents.get("booking", {}) or {}
-
+    Uses get_subagent_config so it works for both dict-format and list-format
+    subagent configs. The prefixes are caller/config supplied; no assistant
+    wording is embedded here.
+    """
+    booking_config = get_subagent_config(agent_config, "booking")
     templates = booking_config.get("templates", {}) if isinstance(booking_config, dict) else {}
 
     if not isinstance(templates, dict):
@@ -2116,7 +2351,6 @@ def configured_booking_template_labels(
             output.append(value_text)
 
     return output
-
 
 def get_tool_answer_draft(state: AgentState) -> str:
     tool_result = state.get("tool_result", {}) or {}
@@ -2195,14 +2429,41 @@ def answer_contains_any_configured_terms(answer: str, terms: Any) -> bool:
 
 
 def missing_or_pending_answer_draft_labels(agent_config: Dict[str, Any]) -> List[str]:
+    configured = as_string_list(agent_config.get("missing_or_pending_answer_draft_labels", []))
+    if configured:
+        return configured
+
+    policy_config = agent_config.get("template_response_policy_detection", {})
+    if not isinstance(policy_config, dict):
+        policy_config = {}
+
+    key_prefixes = as_string_list(policy_config.get("missing_key_prefixes", []))
+    value_prefixes = as_string_list(policy_config.get("missing_value_prefixes", []))
+
     labels = configured_booking_template_labels(
         agent_config,
-        key_prefixes=["missing_"],
-        value_prefixes=["BOOKING_MISSING"],
+        key_prefixes=key_prefixes,
+        value_prefixes=value_prefixes,
     )
 
-    return labels
+    policies = agent_config.get("template_response_policy", {}) or {}
+    if isinstance(policies, dict):
+        for key, policy in policies.items():
+            if not isinstance(policy, dict):
+                continue
 
+            state = str(policy.get("state") or "").lower()
+            is_missing = bool(policy.get("missing_fields_policy") is True)
+
+            if state and any(token in state for token in as_string_list(policy_config.get("missing_state_tokens", []))):
+                is_missing = True
+
+            if is_missing:
+                key_text = str(key or "").strip()
+                if key_text and key_text not in labels:
+                    labels.append(key_text)
+
+    return labels
 
 def should_use_safe_template_answer(answer: str, state: AgentState) -> bool:
     agent_config = state.get("agent_config", {}) or {}
@@ -2329,17 +2590,22 @@ def quality_guard_node(state: AgentState):
 
     answer = state.get("final_answer", "")
     latest_user = last_user_message(state)
+    agent_config = state.get("agent_config", {}) or {}
+    manifest = state.get("manifest", {}) or {}
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
             "Quality check the answer for a configurable assistant. "
-            "It must be natural, grounded, in the right language, not reveal internals, ask at most one question, and not hallucinate facts. "
-            "If it fails, rewrite it without unsupported facts. "
-            "Obey the configured answer_safety and template_response_policy. "
+            "Check in this order: correctness, safety, language, and energy. "
+            "Correctness means no unsupported facts, no invented operational results, and no fake confirmations. "
+            "Safety means obey configured answer_safety and template_response_policy. "
+            "Language means the reply follows the user's language and assistant language policy. "
+            "Energy means the reply sounds like the configured persona: natural, confident, helpful, and not robotic. "
+            "If correctness or safety fails, rewrite it. "
+            "If only energy fails, rewrite it to sound more natural while preserving every grounded fact. "
             "If tool_result.action is ask_user or tool_result.answer_draft is a missing-field label, never rewrite it into completed-action wording. "
-            "Never remove a required visit_id from confirmed booking replies. "
-            "Reject any overly familiar words listed in the assistant safety config.",
+            "If an ID is required by confirmed action policy, do not remove it.",
         ),
         (
             "user",
@@ -2357,28 +2623,39 @@ def quality_guard_node(state: AgentState):
     try:
         decision = (prompt | quality_llm).invoke({
             "latest_user": latest_user,
-            "manifest": safe_json(compact_manifest(state.get("manifest", {}) or {}), max_chars=2400),
+            "manifest": safe_json(compact_manifest(manifest), max_chars=2600),
             "context": safe_json({
                 **compact_agent_context(
-                    state.get("agent_config", {}) or {},
+                    agent_config,
                     state.get("selected_subagent", {}) or {},
                 ),
-                "answer_safety": (state.get("agent_config", {}) or {}).get("answer_safety", {}) or {},
+                "answer_safety": agent_config.get("answer_safety", {}) or {},
                 "template_response_policy": compact_template_response_policy(
-                    state.get("agent_config", {}) or {},
+                    agent_config,
                     state.get("tool_result", {}) or {},
                 ),
-            }, max_chars=3600),
+                "proactive_guidance": build_proactive_guidance(
+                    agent_config,
+                    manifest,
+                    state.get("tool_result", {}) or {},
+                ),
+                "tone_guidance": get_response_energy_instruction(agent_config, manifest),
+            }, max_chars=4200),
             "analysis": safe_json(compact_analysis(state.get("subagent_analysis", {}) or {}), max_chars=1800),
             "knowledge": clip_text(state.get("knowledge", ""), 1200),
-            "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2600),
-            "variables": safe_json(compact_variables(state.get("variables", {}) or {}, state.get("schema", {}) or {}), max_chars=2200),
+            "tool_result": safe_json(state.get("tool_result", {}) or {}, max_chars=2800),
+            "variables": safe_json(compact_variables(state.get("variables", {}) or {}, state.get("schema", {}) or {}), max_chars=2400),
             "answer": answer,
         })
 
         data = decision.model_dump()
 
-        if not decision.pass_check and decision.revised_answer.strip():
+        should_rewrite_for_energy = (
+            getattr(decision, "energy_ok", True) is False
+            and str(getattr(decision, "revised_answer", "") or "").strip()
+        )
+
+        if (not decision.pass_check or should_rewrite_for_energy) and decision.revised_answer.strip():
             revised = enforce_answer_safety(decision.revised_answer.strip(), state)
             data["node"] = "quality_guard_revised"
             return {
@@ -2404,8 +2681,6 @@ def quality_guard_node(state: AgentState):
                 "node": "quality_guard_error",
             }
         }
-
-
 
 def compact_graph_messages_for_memory(messages: Sequence[BaseMessage], limit: int = 14) -> List[Dict[str, str]]:
     """
