@@ -67,6 +67,12 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
         observations: List[Dict[str, Any]] = []
         tool_calls_used = 0
 
@@ -229,6 +235,12 @@ class BookingSubagent:
                 normalization=normalization,
                 message=context.user_message
             )
+        variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
 
         stage = deep_get(variables, stage_path, stage)
 
@@ -424,6 +436,12 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -468,6 +486,12 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -477,6 +501,12 @@ class BookingSubagent:
             normalization=normalization
         )
         variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+        variables = self.ensure_customer_profile_context(
             variables=variables,
             config=config,
             normalization=normalization,
@@ -584,6 +614,12 @@ class BookingSubagent:
             normalization=normalization
         )
         variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+        variables = self.ensure_customer_profile_context(
             variables=variables,
             config=config,
             normalization=normalization,
@@ -969,6 +1005,12 @@ class BookingSubagent:
             normalization=context.assistant_config.get("normalization", {})
         )
         variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization=context.assistant_config.get("normalization", {}),
+            message=context.user_message
+        )
+        variables = self.ensure_customer_profile_context(
             variables=variables,
             config=config,
             normalization=context.assistant_config.get("normalization", {}),
@@ -2109,14 +2151,35 @@ class BookingSubagent:
         config: Dict[str, Any],
         variables: Dict[str, Any]
     ) -> List[str]:
+        variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization={},
+            message=""
+        )
+        variables = self.ensure_phone_context(
+            variables=variables,
+            config=config,
+            normalization={},
+            message=""
+        )
+
         missing = get_missing_paths(
             config.get("required_before_create", []),
             variables
         )
 
-        return [path for path in missing if not self.is_ignorable_create_missing(path, variables)]
+        return [
+            path for path in missing
+            if not self.is_ignorable_create_missing(path, variables, config)
+        ]
 
-    def is_ignorable_create_missing(self, path: str, variables: Dict[str, Any]) -> bool:
+    def is_ignorable_create_missing(
+        self,
+        path: str,
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> bool:
         if path == "variables.customer_profile.phone":
             return bool(self.get_existing_phone(variables, config, {}))
 
@@ -2302,6 +2365,202 @@ class BookingSubagent:
         return output
 
 
+    def ensure_customer_profile_context(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Preserve and merge customer_profile fields across booking turns.
+
+        This is intentionally generic and config-driven:
+        - field names are read from customer_profile_persistence.fields
+        - source/backup paths are read from customer_profile_persistence.source_paths
+        - backup targets are read from customer_profile_persistence.backup_paths
+
+        It prevents a later partial extraction, such as only plate_number,
+        from causing a previously captured full_name or phone to disappear.
+        """
+        persistence_config = config.get("customer_profile_persistence", {})
+        if not isinstance(persistence_config, dict):
+            persistence_config = {}
+
+        fields_config = persistence_config.get("fields", {})
+        if not isinstance(fields_config, dict):
+            fields_config = {}
+
+        default_fields = {
+            "full_name": {
+                "target_path": "customer_profile.full_name",
+                "source_paths": [
+                    "customer_profile.full_name",
+                    "booking.customer_profile.full_name",
+                    "booking.pending.customer_profile.full_name",
+                    "booking.confirmed.full_name"
+                ],
+                "backup_paths": [
+                    "booking.customer_profile.full_name"
+                ],
+                "validator": "full_name"
+            },
+            "phone": {
+                "target_path": "customer_profile.phone",
+                "source_paths": [
+                    "customer_profile.phone",
+                    "booking.customer_profile.phone",
+                    "booking.pending.customer_profile.phone",
+                    "booking.confirmed.phone",
+                    "phone",
+                    "customer_phone",
+                    "user_id"
+                ],
+                "backup_paths": [
+                    "booking.customer_profile.phone"
+                ],
+                "validator": "phone"
+            },
+            "plate_number": {
+                "target_path": "customer_profile.plate_number",
+                "source_paths": [
+                    "customer_profile.plate_number",
+                    "booking.customer_profile.plate_number",
+                    "booking.pending.customer_profile.plate_number",
+                    "booking.confirmed.plate_number"
+                ],
+                "backup_paths": [
+                    "booking.customer_profile.plate_number"
+                ],
+                "validator": "plate_number"
+            }
+        }
+
+        updates: Dict[str, Any] = {}
+
+        for field_name, default_field_config in default_fields.items():
+            field_config = fields_config.get(field_name, {})
+            if not isinstance(field_config, dict):
+                field_config = {}
+
+            target_path = str(
+                field_config.get("target_path")
+                or default_field_config.get("target_path")
+                or ""
+            ).strip()
+
+            if not target_path:
+                continue
+
+            source_paths = field_config.get("source_paths")
+            if not isinstance(source_paths, list) or not source_paths:
+                source_paths = default_field_config.get("source_paths", [])
+
+            backup_paths = field_config.get("backup_paths")
+            if not isinstance(backup_paths, list):
+                backup_paths = default_field_config.get("backup_paths", [])
+
+            validator = str(
+                field_config.get("validator")
+                or default_field_config.get("validator")
+                or ""
+            ).strip()
+
+            value = self.first_valid_customer_profile_value(
+                variables=variables,
+                source_paths=source_paths,
+                validator=validator,
+                config=config,
+                normalization=normalization
+            )
+
+            if value in [None, ""]:
+                continue
+
+            current_value = deep_get(variables, target_path)
+
+            if current_value in [None, ""]:
+                updates[target_path] = value
+            else:
+                normalized_current = self.normalize_customer_profile_value(
+                    current_value,
+                    validator,
+                    config,
+                    normalization
+                )
+
+                if normalized_current and normalized_current != current_value:
+                    updates[target_path] = normalized_current
+
+            for backup_path in backup_paths:
+                backup_path_text = str(backup_path or "").strip()
+                if not backup_path_text:
+                    continue
+
+                backup_value = deep_get(variables, backup_path_text)
+                if backup_value in [None, ""]:
+                    updates[backup_path_text] = value
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+    def first_valid_customer_profile_value(
+        self,
+        variables: Dict[str, Any],
+        source_paths: List[str],
+        validator: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        for source_path in source_paths:
+            path_text = str(source_path or "").strip()
+
+            if not path_text:
+                continue
+
+            value = self.normalize_customer_profile_value(
+                deep_get(variables, path_text),
+                validator,
+                config,
+                normalization
+            )
+
+            if value:
+                return value
+
+        return ""
+
+    def normalize_customer_profile_value(
+        self,
+        value: Any,
+        validator: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        text = str(value or "").strip()
+
+        if not text:
+            return ""
+
+        if validator == "phone":
+            return self.normalize_phone_value(text, config, normalization)
+
+        if validator == "full_name":
+            cleaned = self.clean_name(text, config)
+            if self.looks_like_person_name(cleaned, config, normalization):
+                return cleaned
+            return ""
+
+        if validator == "plate_number":
+            plate = self.normalize_plate_number(text, normalization)
+            if self.looks_like_plate_number(plate, config, normalization):
+                return plate
+            return ""
+
+        return text
+
     def ensure_phone_context(
         self,
         variables: Dict[str, Any],
@@ -2470,19 +2729,74 @@ class BookingSubagent:
         config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """
+        Validate the active customer profile without destroying valid backups.
+
+        If customer_profile.full_name is invalid but a valid configured backup
+        exists, restore the backup instead of clearing the name entirely.
+        """
         full_name = str(deep_get(variables, "customer_profile.full_name") or "").strip()
 
         if not full_name:
-            return variables
+            return self.ensure_customer_profile_context(
+                variables=variables,
+                config=config,
+                normalization=normalization,
+                message=message
+            )
 
         if self.looks_like_person_name(full_name, config, normalization):
-            return variables
+            return self.ensure_customer_profile_context(
+                variables=variables,
+                config=config,
+                normalization=normalization,
+                message=message
+            )
+
+        persistence_config = config.get("customer_profile_persistence", {})
+        if not isinstance(persistence_config, dict):
+            persistence_config = {}
+
+        fields_config = persistence_config.get("fields", {})
+        if not isinstance(fields_config, dict):
+            fields_config = {}
+
+        full_name_config = fields_config.get("full_name", {})
+        if not isinstance(full_name_config, dict):
+            full_name_config = {}
+
+        source_paths = full_name_config.get("source_paths")
+        if not isinstance(source_paths, list) or not source_paths:
+            source_paths = [
+                "booking.customer_profile.full_name",
+                "booking.pending.customer_profile.full_name",
+                "booking.confirmed.full_name"
+            ]
+
+        restored_name = self.first_valid_customer_profile_value(
+            variables=variables,
+            source_paths=[
+                path for path in source_paths
+                if str(path or "").strip() != "customer_profile.full_name"
+            ],
+            validator="full_name",
+            config=config,
+            normalization=normalization
+        )
+
+        if restored_name:
+            return apply_variable_patch(
+                variables,
+                {"customer_profile.full_name": restored_name},
+                []
+            )
 
         return apply_variable_patch(
             variables,
             {},
             ["customer_profile.full_name"]
         )
+
 
 
     def has_customer_detail_signal(
