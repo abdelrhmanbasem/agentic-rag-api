@@ -77,6 +77,17 @@ class BookingSubagent:
         tool_calls_used = 0
 
         stage_path = config.get("stage_path", "booking.stage")
+
+        # Repair date/date_text early so availability requests do not fall into
+        # customer-detail collection because a natural date phrase was stored
+        # but not normalized. All terms/patterns come from config.
+        variables = self.ensure_resolved_date_from_existing_state(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+
         stage = deep_get(variables, stage_path, "")
 
         variables = self.ensure_selected_branch_from_context(
@@ -244,6 +255,30 @@ class BookingSubagent:
         )
 
         stage = deep_get(variables, stage_path, stage)
+
+        # If the user supplied a date while we were waiting for one, do not let
+        # stale awaiting_date state ask for create/customer fields. Continue to
+        # the availability lookup path once branch + normalized date exist.
+        if (
+            stage in config.get("active_request_stages", [])
+            and self.get_known_branch(variables, config)
+            and (
+                deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+                or deep_get(variables, "date")
+            )
+            and self.is_booking_or_availability_request(
+                context=context,
+                config=config,
+                variables=variables
+            )
+        ):
+            return self.handle_booking_request(
+                context=context,
+                config=config,
+                variables=variables,
+                observations=observations,
+                tool_calls_used=tool_calls_used
+            )
 
         if stage == config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"):
             return self.handle_awaiting_confirmation(
@@ -708,14 +743,37 @@ class BookingSubagent:
                 pending["branch"] = canonical_branch
 
         if pending.get("date") in [None, ""]:
-            pending["date"] = (
-                deep_get(variables, config.get("appointment_date_path", "appointment_date"))
-                or deep_get(variables, "date")
-                or pending.get("date_text")
-            )
+            pending["date"] = self.first_non_empty_from_paths(
+                variables=variables,
+                paths=self.get_configured_path_list(
+                    config=config,
+                    key_path="slot_selection_date_fallback_paths",
+                    default=[
+                        config.get("appointment_date_path", "appointment_date"),
+                        "date",
+                        "booking.pending.date"
+                    ]
+                )
+            ) or selected_slot.get("date") or pending.get("date_text")
 
         if pending.get("date_text") in [None, ""]:
-            pending["date_text"] = deep_get(variables, config.get("date_text_path", "date_text"), "")
+            pending["date_text"] = (
+                selected_slot.get("date_text")
+                or self.first_non_empty_from_paths(
+                    variables=variables,
+                    paths=self.get_configured_path_list(
+                        config=config,
+                        key_path="slot_selection_date_text_fallback_paths",
+                        default=[
+                            config.get("date_text_path", "date_text"),
+                            "booking.pending.date_text",
+                            config.get("appointment_date_path", "appointment_date"),
+                            "date",
+                            "booking.pending.date"
+                        ]
+                    )
+                )
+            )
 
         if pending.get("time") in [None, ""]:
             selected_time = selected_slot.get("time") if isinstance(selected_slot, dict) else ""
@@ -1627,13 +1685,28 @@ class BookingSubagent:
         if not isinstance(relative_terms, dict):
             relative_terms = {}
 
-        for offset_text, terms in relative_terms.items():
-            try:
-                offset = int(offset_text)
-            except Exception:
-                continue
+        for key, value in relative_terms.items():
+            # Supported shapes:
+            # 1) {"1": ["tomorrow", "..."]}
+            # 2) {"tomorrow": 1, "...": 1}
+            offset: Optional[int] = None
+            terms: List[Any] = []
 
-            if not isinstance(terms, list):
+            try:
+                offset = int(key)
+                if isinstance(value, list):
+                    terms = value
+                else:
+                    terms = [value]
+            except Exception:
+                try:
+                    offset = int(value)
+                    terms = [key]
+                except Exception:
+                    offset = None
+                    terms = []
+
+            if offset is None:
                 continue
 
             for term in terms:
@@ -1659,13 +1732,28 @@ class BookingSubagent:
         if not isinstance(weekday_terms, dict):
             return None
 
-        for index_text, terms in weekday_terms.items():
-            try:
-                index = int(index_text)
-            except Exception:
-                continue
+        for key, value in weekday_terms.items():
+            # Supported shapes:
+            # 1) {"6": ["sunday", "..."]}
+            # 2) {"sunday": 6, "...": 6}
+            index: Optional[int] = None
+            terms: List[Any] = []
 
-            if not isinstance(terms, list):
+            try:
+                index = int(key)
+                if isinstance(value, list):
+                    terms = value
+                else:
+                    terms = [value]
+            except Exception:
+                try:
+                    index = int(value)
+                    terms = [key]
+                except Exception:
+                    index = None
+                    terms = []
+
+            if index is None:
                 continue
 
             for term in terms:
@@ -1767,17 +1855,21 @@ class BookingSubagent:
         if not isinstance(date_resolution, dict):
             date_resolution = {}
 
-        month_terms = date_resolution.get("month_terms", {})
-        if not isinstance(month_terms, dict):
+        month_config = (
+            date_resolution.get("month_terms")
+            if isinstance(date_resolution.get("month_terms"), dict)
+            else date_resolution.get("month_names", {})
+        )
+
+        if not isinstance(month_config, dict):
             return ""
 
         normalized = normalize_text(raw, normalization)
 
         pattern = str(
-            date_resolution.get(
-                "named_month_date_regex",
-                r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
-            )
+            date_resolution.get("named_month_date_regex")
+            or date_resolution.get("named_month_pattern")
+            or r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
         )
 
         try:
@@ -1794,19 +1886,31 @@ class BookingSubagent:
 
         month = None
 
-        for month_index_text, terms in month_terms.items():
-            try:
-                month_index = int(month_index_text)
-            except Exception:
-                continue
+        for key, value in month_config.items():
+            # Supported shapes:
+            # 1) {"6": ["يونيو", "..."]}
+            # 2) {"يونيو": 6, "...": 6}
+            candidate_month = None
+            terms: List[Any] = []
 
-            if not isinstance(terms, list):
+            try:
+                candidate_month = int(key)
+                terms = value if isinstance(value, list) else [value]
+            except Exception:
+                try:
+                    candidate_month = int(value)
+                    terms = [key]
+                except Exception:
+                    candidate_month = None
+                    terms = []
+
+            if candidate_month is None:
                 continue
 
             for term in terms:
                 normalized_term = normalize_text(str(term or ""), normalization)
                 if normalized_term and normalized_term == month_name:
-                    month = month_index
+                    month = candidate_month
                     break
 
             if month is not None:
@@ -1829,6 +1933,37 @@ class BookingSubagent:
                 return ""
 
         return candidate.isoformat()
+
+    def get_configured_path_list(
+        self,
+        config: Dict[str, Any],
+        key_path: str,
+        default: Optional[List[str]] = None
+    ) -> List[str]:
+        current: Any = config
+
+        for part in str(key_path or "").split("."):
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(part)
+
+        if isinstance(current, list):
+            return [str(item) for item in current if str(item or "").strip()]
+
+        return [str(item) for item in (default or []) if str(item or "").strip()]
+
+    def first_non_empty_from_paths(
+        self,
+        variables: Dict[str, Any],
+        paths: List[str]
+    ) -> Any:
+        for path in paths or []:
+            value = deep_get(variables, str(path or "").strip())
+            if value not in [None, "", [], {}]:
+                return value
+        return ""
+
 
     def ensure_selected_branch_from_context(
         self,
@@ -2022,6 +2157,18 @@ class BookingSubagent:
         date_text = (
             patched_pending.get("date_text")
             or deep_get(variables, config.get("date_text_path", "date_text"))
+            or self.first_non_empty_from_paths(
+                variables=variables,
+                paths=self.get_configured_path_list(
+                    config=config,
+                    key_path="pending_date_text_fallback_paths",
+                    default=[
+                        config.get("appointment_date_path", "appointment_date"),
+                        "date",
+                        "booking.pending.date"
+                    ]
+                )
+            )
         )
 
         if date_text:
@@ -2303,6 +2450,9 @@ class BookingSubagent:
             return bool(
                 deep_get(variables, "booking.pending.date_text")
                 or deep_get(variables, "date_text")
+                or deep_get(variables, "booking.pending.date")
+                or deep_get(variables, "appointment_date")
+                or deep_get(variables, "date")
             )
 
         if path == "variables.booking.pending.time":
