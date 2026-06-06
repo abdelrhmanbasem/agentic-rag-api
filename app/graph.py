@@ -1,4 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
+
+# Architecture batch: 6.20-humanlike-memory-response-no-hardcoding
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1233,6 +1235,101 @@ def apply_configured_manifest_aliases(
     return output
 
 
+
+def merge_variables_intelligently(
+    existing: Dict[str, Any],
+    incoming: Dict[str, Any],
+    deletions: List[str],
+    agent_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Smart manifest variable merge.
+
+    Rules:
+    - Existing values are never lost unless the user explicitly changed/deleted them.
+    - Empty incoming values never overwrite non-empty existing values.
+    - Source-of-truth paths are protected and remain owned by tools/subagents.
+    - Deletions only apply to non-source-of-truth paths.
+    """
+    result = json.loads(json.dumps(existing or {}, ensure_ascii=False))
+
+    for path in deletions or []:
+        path_text = str(path or "").strip()
+
+        if not path_text:
+            continue
+
+        if is_source_of_truth_path(path_text, agent_config):
+            continue
+
+        parts = [part for part in path_text.split(".") if part]
+        if not parts:
+            continue
+
+        current: Any = result
+
+        for part in parts[:-1]:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(part)
+
+        if isinstance(current, dict) and parts[-1] in current:
+            del current[parts[-1]]
+
+    for key, value in (incoming or {}).items():
+        key_text = str(key or "").strip()
+
+        if not key_text:
+            continue
+
+        if is_source_of_truth_path(key_text, agent_config):
+            continue
+
+        existing_value = deep_get(result, key_text)
+
+        if existing_value not in [None, "", [], {}] and value in [None, "", [], {}]:
+            continue
+
+        if value in [None, "", [], {}] and existing_value in [None, "", [], {}]:
+            continue
+
+        parts = [part for part in key_text.split(".") if part]
+        if not parts:
+            continue
+
+        current: Any = result
+
+        for part in parts[:-1]:
+            if not isinstance(current, dict):
+                current = None
+                break
+
+            if part not in current or not isinstance(current.get(part), dict):
+                current[part] = {}
+
+            current = current[part]
+
+        if not isinstance(current, dict):
+            continue
+
+        final_key = parts[-1]
+        existing_leaf = current.get(final_key)
+
+        if isinstance(existing_leaf, dict) and isinstance(value, dict):
+            merged = dict(existing_leaf)
+            for child_key, child_value in value.items():
+                if child_value in [None, "", [], {}] and merged.get(child_key) not in [None, "", [], {}]:
+                    continue
+                if child_value not in [None, "", [], {}]:
+                    merged[child_key] = child_value
+            current[final_key] = merged
+        else:
+            current[final_key] = value
+
+    return result
+
+
 def prepare_manifest_extracted_updates(
     updates: Dict[str, Any],
     agent_config: Dict[str, Any],
@@ -1822,42 +1919,95 @@ def unified_manifest_node(state: AgentState):
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are the Unified Manifest brain of a configurable multi-tenant agentic assistant engine. "
-            "Return ONLY valid JSON. No markdown. No prose. "
-            "You decide the next move; you never write the final user-facing reply. "
-            "All domain behavior must come from the assistant manifest card, current variables, conversation summary, tool results, schema, and latest user message. "
-            "Do not use hidden business rules or domain assumptions outside the manifest card. "
-            "Detect the user's full intent, including multiple independent or sequential intents in one message. "
-            "Handle hesitation and change-of-mind naturally: when the latest message corrects or replaces an earlier preference in the same turn or recent context, the latest explicit preference wins. Do not run superseded alternatives in parallel unless the user clearly asks to compare them. "
-            "Use detected_intents for short intent labels, and multi_intents for structured intent objects. Each multi_intents item may include: intent_id, intent_type, user_goal, selected_subagent_id, needs_tool, requested_tool_name, tool_request_payload, needs_knowledge, knowledge_query, depends_on, priority, missing_inputs, and response_role. "
-            "For sequential dependencies, use selected_subagent_id plus chained_subagent_id. Example: nearest branch then availability should run location first and booking second when booking needs location output. "
-            "For independent direct tool actions that can safely run from current variables, use parallel_tool_requests. Each request should include: request_id, intent_id, tool_name, operation, arguments, purpose, and can_run_in_parallel=true. "
-            "Only use parallel_tool_requests for independent non-conflicting actions. Never parallelize two alternatives where the user corrected their mind, such as changing date, branch, slot, quantity, product, or service preference. "
-            "Do not put deterministic subagent-owned booking/location/troubleshooting flows into parallel_tool_requests unless the manifest card says direct tool calls are safe. Prefer selected_subagent_id/chained_subagent_id for stateful workflows. "
-            "For knowledge needs, set needs_knowledge=true and provide knowledge_queries when multiple distinct retrieval questions are useful. "
-            "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally for only the missing input. "
-            "If a tool can be called safely with current variables/message, set needs_tool=true and provide requested_tool_name plus tool_request_payload or parallel_tool_requests. "
-            "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, variables, conversation context, or retrieved knowledge. "
-            "For booking/availability/nearest-branch/branch-list actions, prefer needs_tool=true when inputs are available. "
-            "For symptom/problem reports, do not force a booking immediately; response_brief should guide a diagnostic response first unless user asks to book. "
-            "The manifest may extract soft user info only. Source-of-truth operational state must come from tool/subagent execution, not manifest extracted_updates. "
-            "response_synthesis should describe how the final response should combine multiple results without inventing facts. "
-            "The JSON object must use exactly these top-level keys: "
-            "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, multi_intents, parallel_tool_requests, knowledge_queries, response_synthesis, multi_intent_execution_mode, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
-            "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
-            "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, "
-            "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
-            "response_brief must be an object with keys: tone, language, reply_length, must_do, must_not_do, next_move.",
+            # IDENTITY
+            "You are the Unified Manifest — the intelligence core of a "
+            "configurable multi-tenant agentic assistant. "
+            "Return ONLY a single valid JSON object. No markdown. No prose. "
+            "\n\n"
+            # HOW TO THINK
+            "THINK LIKE A BRILLIANT HUMAN FIRST. Before classifying anything:\n"
+            "1. Read the full message and conversation context as a human would.\n"
+            "2. Understand what the person MEANS, not just what they literally typed.\n"
+            "   Examples:\n"
+            "   - 'بكرة الصبح' means tomorrow morning — extract date AND time preference.\n"
+            "   - 'الفرع القريب مني' means find nearest branch — location intent.\n"
+            "   - 'غير الموعد' means change an existing appointment — not a new independent booking.\n"
+            "   - 'تمام اتفقنا' means confirmed — move to the confirmation/next step.\n"
+            "   - 'لا معلش' or 'actually no' means cancelled or changed mind — update accordingly.\n"
+            "3. Infer implicit context: if a user said their name, phone, branch, or preference earlier and it is in variables, it is already known. Do not ask for it again.\n"
+            "4. Detect the FULL intent, including things the user implied but did not say explicitly.\n"
+            "\n\n"
+            # VARIABLE INTELLIGENCE
+            "VARIABLE AWARENESS:\n"
+            "Read current_variables carefully before deciding anything.\n"
+            "- If a value is already present in variables, do NOT ask for it again.\n"
+            "- If the user provides a new value that differs from variables, update it as soft info only when allowed.\n"
+            "- If the user confirms an existing value, keep it.\n"
+            "- If the user says 'change X to Y', set extracted_updates.X = Y and delete stale derived soft state if allowed.\n"
+            "- Never clear a variable unless the user explicitly said to remove/change it.\n"
+            "- missing_tool_inputs should ONLY contain fields genuinely absent from both the message AND current_variables.\n"
+            "\n\n"
+            # MULTI-INTENT
+            "MULTI-INTENT DETECTION:\n"
+            "Scan the full message for multiple needs. Common patterns:\n"
+            "- Action + question: 'book me + how long does it take?'\n"
+            "- Sequential dependency: 'nearest branch + available slots'\n"
+            "- Independent parallel: 'price of oil change + price of brakes'\n"
+            "When multi-intent: set multi_intent=true, populate multi_intents, use selected_subagent_id for the first executor, and chained_subagent_id when the second genuinely depends on the first output.\n"
+            "NEVER parallelize alternatives from a change of mind; the latest preference wins.\n"
+            "\n\n"
+            # CHANGE OF MIND
+            "CHANGE OF MIND HANDLING:\n"
+            "When the user changes a previous choice, the LATEST explicit preference wins.\n"
+            "- Set extracted_updates with the new soft value.\n"
+            "- Set extracted_deletions only for stale non-source-of-truth soft state.\n"
+            "- Never run both old and new choices in parallel.\n"
+            "- Do not mention the old choice unless helpful for clarity.\n"
+            "\n\n"
+            # PROACTIVE INTELLIGENCE
+            "PROACTIVE INTELLIGENCE:\n"
+            "After every tool result, think: what is the most useful NEXT step?\n"
+            "- Slots shown → ask which slot works for them.\n"
+            "- Branch found → offer/check available times if the user requested availability or asked what to do next.\n"
+            "- Troubleshooting complete → offer to book a visit if appropriate.\n"
+            "- Booking confirmed → close warmly; no more questions needed.\n"
+            "Set should_offer_next_action=true and response_brief.next_move accordingly when useful.\n"
+            "\n\n"
+            # EMOTION AND TONE
+            "CUSTOMER EMOTION:\n"
+            "Detect tone as frustrated|excited|confused|urgent|skeptical|happy|neutral.\n"
+            "Set customer_emotion and let response_brief.tone reflect it:\n"
+            "- frustrated → empathetic + solution-first, no questions first unless needed.\n"
+            "- confused → clear, step-by-step, reassuring.\n"
+            "- urgent → answer first, efficient.\n"
+            "- excited → warm, match energy.\n"
+            "\n\n"
+            # GROUNDING
+            "GROUNDING:\n"
+            "extracted_updates may ONLY contain soft user info such as name, phone, stated location, service preference, or customer-provided detail fields. "
+            "NEVER write to source-of-truth operational fields such as available slots, booking_status, visit_id, branch confirmed by tool, or tool-owned appointment results. "
+            "Those are owned by executors/tools. Never claim tool results, slots, prices, or IDs not in tool_result/variables/knowledge.\n"
+            "\n\n"
+            # OUTPUT
+            "OUTPUT: Valid JSON with exactly these top-level keys:\n"
+            "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, multi_intents, parallel_tool_requests, knowledge_queries, response_synthesis, "
+            "multi_intent_execution_mode, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, simple_response_mode, simple_response_reason, "
+            "needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, needs_subagent_reasoning, needs_quality_guard, needs_style_repair, "
+            "needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, should_ask_question, question_goal, should_offer_next_action, response_brief, "
+            "response_strategy, reasoning_summary.\n"
+            "response_brief must have: tone, language, reply_length, must_do, must_not_do, next_move.",
         ),
         (
             "user",
-            "Assistant manifest card:\n{manifest_card}\n\n"
-            "Conversation summary:\n{summary}\n\n"
-            "Current variables:\n{variables}\n\n"
-            "Tool result if any:\n{tool_result}\n\n"
-            "Latest user message:\n{message}\n\n"
-            "Return the manifest JSON. selected_subagent_id must be one configured subagent id when possible. "
-            "Use multi_intents, knowledge_queries, and parallel_tool_requests only when they add real value and are safe.",
+            "=== ASSISTANT MANIFEST CARD ===\n{manifest_card}\n\n"
+            "=== CONVERSATION SUMMARY ===\n{summary}\n\n"
+            "=== WHAT IS ALREADY KNOWN (do not ask for these again) ===\n{variables}\n\n"
+            "=== LAST TOOL RESULT (if any) ===\n{tool_result}\n\n"
+            "=== LATEST USER MESSAGE ===\n{message}\n\n"
+            "Think step by step about what the user means and needs. Then return the manifest JSON. "
+            "selected_subagent_id must be one of the configured subagent ids. "
+            "missing_tool_inputs must only list fields absent from BOTH the message AND the known variables above. "
+            "extracted_updates must only contain NEW or CHANGED soft user info not already in variables.",
         ),
     ])
 
@@ -2037,11 +2187,11 @@ def unified_manifest_node(state: AgentState):
         agent_config,
     )
 
-    updated_variables = apply_subagent_variable_patch(
-        variables,
-        safe_manifest_updates,
-        safe_manifest_deletions,
-        assistant_config=agent_config,
+    updated_variables = merge_variables_intelligently(
+        existing=variables,
+        incoming=safe_manifest_updates,
+        deletions=safe_manifest_deletions,
+        agent_config=agent_config,
     )
 
     return {
@@ -4048,30 +4198,107 @@ def response_node(state: AgentState):
 
     response_rules = build_layered_response_rules(agent_config)
 
+    persona = agent_config.get("persona", {}) or {}
+    persona_desc = ""
+
+    if isinstance(persona, dict) and persona:
+        persona_desc = "\n".join([
+            f"- Character: {persona.get('character', '')}",
+            f"- Voice: {persona.get('voice', '')}",
+            f"- When selling: {persona.get('energy_when_selling', '')}",
+            f"- When helping: {persona.get('energy_when_helping', '')}",
+            f"- When closing: {persona.get('energy_when_closing', '')}",
+        ])
+
+    user_need_summary = " | ".join(filter(None, [
+        str(manifest.get("user_intent") or ""),
+        str(manifest.get("conversation_stage") or ""),
+        str(manifest.get("response_strategy") or "")[:200],
+    ]))
+
+    facts_available: List[str] = []
+
+    if tool_result and isinstance(tool_result, dict) and tool_result.get("ok"):
+        facts_available.append(
+            f"Tool succeeded: {tool_result.get('operation', tool_result.get('subagent', 'tool'))}"
+        )
+        if tool_result.get("answer_draft"):
+            facts_available.append(f"Executor draft: {str(tool_result.get('answer_draft', ''))[:300]}")
+
+    if knowledge and "NO_CONFIDENT_KNOWLEDGE_FOUND" not in str(knowledge):
+        facts_available.append(f"Retrieved knowledge available ({len(str(knowledge))} chars)")
+
+    if memories and "No relevant memories" not in str(memories):
+        facts_available.append("User memory available")
+
+    multi_results = response_context.get("multi_tool_results", []) or []
+    synthesis_instruction = ""
+
+    if len(multi_results) > 1:
+        intent_summaries: List[str] = []
+
+        for result in multi_results:
+            if not isinstance(result, dict):
+                continue
+
+            label = result.get("intent_id") or result.get("subagent") or "intent"
+            draft = str(result.get("answer_draft") or result.get("message") or "")[:200]
+            intent_summaries.append(f"  [{label}]: {draft}")
+
+        if intent_summaries:
+            synthesis_instruction = (
+                "This turn resolved multiple intents. Synthesize all results into ONE coherent response. "
+                "Do not list them mechanically:\n"
+                + "\n".join(intent_summaries)
+            )
+
     system_instruction = f"""
 {clip_text_head_tail(state.get('system_prompt', ''), 1200)}
 
-You are the voice of this assistant. You are generating the exact reply the user will read.
+You are the voice of this assistant. Write the exact reply the user will read.
+Think like a brilliant, warm human expert — not a form-filling bot.
 
-If the context contains multi_intents, multi_tool_results, or multi_knowledge, synthesize them into one coherent answer. Keep each intent/result grounded. Do not merge facts from different tool results unless the context explicitly supports it. If one intent is completed and another is missing input, state the completed result briefly and ask only for the missing input. If the user hesitated or changed their mind, reflect only the latest selected preference and do not mention discarded alternatives unless helpful for clarity.
+=== WHO YOU ARE ===
+Goal: {clip_text(agent_config.get('assistant_goal', ''), 300)}
+Style: {clip_text(agent_config.get('conversation_style', ''), 300)}
+{f"Persona:{chr(10)}{persona_desc}" if persona_desc else ""}
 
-Context you have available:
-{safe_json(response_context, max_chars=9200)}
+=== WHAT THE USER NEEDS RIGHT NOW ===
+{user_need_summary}
 
-How to reply — follow in this priority order:
-{safe_json(response_rules)}
+Emotion detected: {manifest.get('customer_emotion', 'neutral')}
+Tone guidance: {get_response_energy_instruction(agent_config, manifest)}
 
-Customer emotion detected:
-{manifest.get('customer_emotion', 'neutral')}
+=== WHAT YOU KNOW AS FACTS ===
+Variables (user's known state):
+{safe_json(compact_variables(variables, schema), max_chars=1800)}
 
-Tone guidance for this specific message:
-{get_response_energy_instruction(agent_config, manifest)}
+{f"Tool result: {safe_json(tool_result, max_chars=1400)}" if tool_result else "No tool result this turn."}
 
-Expected response style:
-{manifest.get('response_style', '')}
+{f"Knowledge:{chr(10)}{compact_knowledge_for_final(knowledge, 1200)}" if knowledge and 'NO_CONFIDENT_KNOWLEDGE_FOUND' not in str(knowledge) else "No knowledge retrieved."}
 
-Reply length:
-{manifest.get('reply_length', '')}
+{f"User memory:{chr(10)}{compact_memories_for_final(memories)}" if memories and 'No relevant memories' not in str(memories) else ""}
+
+{f"Conversation context:{chr(10)}{clip_text(state.get('summary', ''), 400)}" if state.get('summary') else ""}
+
+{synthesis_instruction}
+
+=== HOW TO REPLY ===
+1. PERSONALITY: Sound human, warm, confident. Match the user's energy level.
+2. ACTION: Answer the core need first. Then offer the single most useful next step.
+3. VARIABLES: Everything in "Variables" is already known — never ask for it again.
+4. PROACTIVE: {(manifest.get('response_brief', {}) or {}).get('next_move', 'Help the user move forward naturally.')}
+5. GUARDRAILS: Never mention internal routing, agents, RAG, variables, or tools.
+   Never invent slots, branches, prices, IDs, or confirmations.
+   Ask at most ONE question per reply.
+
+Must do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_do', []))}
+Must not do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_not_do', []))}
+
+Layered response rules:
+{safe_json(response_rules, max_chars=1800)}
+
+Template policy (if any): {safe_json(compact_template_response_policy(agent_config, tool_result), max_chars=1200)}
 
 {state.get('language_instruction', '')}
 """
@@ -4532,14 +4759,16 @@ def quality_guard_node(state: AgentState):
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "Quality check the answer for a configurable assistant. "
-            "Check in this order: correctness, safety, language, and energy. "
-            "Correctness means no unsupported facts, no invented operational results, and no fake confirmations. "
-            "Safety means obey configured answer_safety and template_response_policy. "
-            "Language means the reply follows the user's language and assistant language policy. "
-            "Energy means the reply sounds like the configured persona: natural, confident, helpful, and not robotic. "
-            "If correctness or safety fails, rewrite it. "
-            "If only energy fails, rewrite it to sound more natural while preserving every grounded fact. "
+            "You are the quality guardian of a configurable multi-tenant assistant. "
+            "Check the assistant's answer for the user. Run five checks in this exact order:\n\n"
+            "1. CORRECTNESS — Does it contain hallucinated facts, invented slots, IDs, branch names, prices, or confirmations not present in context? If yes: rewrite.\n\n"
+            "2. SAFETY — Does it contain banned terms or claim a booking/action is confirmed when tool_result does not confirm it? If yes: rewrite.\n\n"
+            "3. LANGUAGE — Is it in the right language? Does it expose internal jargon such as RAG, variables, routing, agent, tool, JSON, or hidden logic? If yes: rewrite.\n\n"
+            "4. ENERGY — Does it sound like a warm, confident human expert? Or does it sound like a scripted bot, a list of facts, repeated user wording, overly formal language, or a generic 'Sure/Certainly/Of course' response? If yes: rewrite naturally.\n\n"
+            "5. VARIABLE AWARENESS — Does it ask for something already present in known variables, such as name, phone, branch, date, or selected appointment? If yes: rewrite to use the known value.\n\n"
+            "If all five pass: pass_check=true, revised_answer=''. "
+            "If any fail: pass_check=false, revised_answer=the corrected answer. "
+            "Keep revised_answer in the same language as the original and preserve all grounded facts. "
             "If tool_result.action is ask_user or tool_result.answer_draft is a missing-field label, never rewrite it into completed-action wording. "
             "If an ID is required by confirmed action policy, do not remove it.",
         ),
