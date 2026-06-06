@@ -4441,6 +4441,11 @@
         "over-explain internal process",
         "push aggressively",
         "use banned terms from answer_safety.banned_terms"
+      ],
+      "role": "professional service-center assistant",
+      "boundaries": [
+        "do not invent tool results",
+        "do not overpromise actions"
       ]
     },
     "emotion_response_guidance": {
@@ -4919,7 +4924,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.11-full-runtime-robustness-config",
+    "architecture_version": "6.12-code-expert-final-fixes-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -4970,7 +4975,9 @@
     "knowledge_retrieval": {
       "max_queries": 4,
       "per_query_top_k": 4,
-      "max_total_items": 8
+      "max_total_items": 8,
+      "cache_enabled": true,
+      "cache_max_age_minutes": 20
     },
     "multi_intent_execution": {
       "execute_parallel_tool_requests_with_subagents": false,
@@ -4986,7 +4993,174 @@
         "troubleshooting",
         "handoff"
       ]
-    }
+    },
+    "missing_input_variable_updates": {
+      "list_available_slots": {
+        "date": {
+          "booking.stage": "awaiting_date"
+        },
+        "branch": {
+          "location.intent": "nearest_branch"
+        }
+      },
+      "check_availability": {
+        "date": {
+          "booking.stage": "awaiting_date"
+        },
+        "branch": {
+          "location.intent": "nearest_branch"
+        },
+        "time": {
+          "booking.stage": "slot_selection"
+        }
+      },
+      "create_booking": {
+        "branch": {
+          "booking.stage": "awaiting_branch"
+        },
+        "date": {
+          "booking.stage": "awaiting_date"
+        },
+        "time": {
+          "booking.stage": "slot_selection"
+        },
+        "section": {
+          "booking.stage": "slot_selection"
+        },
+        "full_name": {
+          "booking.stage": "awaiting_customer_details"
+        },
+        "phone": {
+          "booking.stage": "awaiting_customer_details"
+        },
+        "plate_number": {
+          "booking.stage": "awaiting_customer_details"
+        },
+        "customer_confirmed_booking": {
+          "booking.stage": "awaiting_confirmation"
+        }
+      }
+    },
+    "tool_argument_injection_rules": [
+      {
+        "operations": [
+          "list_available_slots",
+          "check_availability",
+          "create_booking"
+        ],
+        "inject": [
+          {
+            "arg": "branch",
+            "from_paths": [
+              "selected_branch",
+              "location_branch",
+              "nearest_branch",
+              "booking.pending.branch"
+            ]
+          },
+          {
+            "arg": "date",
+            "from_paths": [
+              "appointment_date",
+              "date",
+              "booking.pending.date"
+            ]
+          },
+          {
+            "arg": "date_text",
+            "from_paths": [
+              "date_text",
+              "booking.pending.date_text"
+            ]
+          },
+          {
+            "arg": "service_needed",
+            "from_paths": [
+              "service_needed",
+              "troubleshooting.service_needed"
+            ]
+          }
+        ]
+      },
+      {
+        "operations": [
+          "check_availability",
+          "create_booking"
+        ],
+        "inject": [
+          {
+            "arg": "time",
+            "from_paths": [
+              "appointment_time",
+              "booking.pending.time"
+            ]
+          },
+          {
+            "arg": "time_text",
+            "from_paths": [
+              "appointment_time_text",
+              "booking.pending.time_text"
+            ]
+          }
+        ]
+      },
+      {
+        "operations": [
+          "create_booking"
+        ],
+        "inject": [
+          {
+            "arg": "full_name",
+            "from_paths": [
+              "customer_profile.full_name",
+              "full_name",
+              "customer_name"
+            ]
+          },
+          {
+            "arg": "phone",
+            "from_paths": [
+              "customer_profile.phone",
+              "phone",
+              "customer_phone"
+            ]
+          },
+          {
+            "arg": "plate_number",
+            "from_paths": [
+              "customer_profile.plate_number",
+              "plate_number",
+              "car_plate",
+              "vehicle_number"
+            ]
+          },
+          {
+            "arg": "customer_confirmed_booking",
+            "from_paths": [
+              "customer_confirmed_booking"
+            ]
+          }
+        ]
+      }
+    ],
+    "tool_pending_object_rules": [
+      {
+        "operations": [
+          "create_booking",
+          "check_availability"
+        ],
+        "pending_path": "booking.pending",
+        "fields": [
+          "branch",
+          "date",
+          "date_text",
+          "time",
+          "time_text",
+          "section"
+        ]
+      }
+    ],
+    "max_parallel_tool_workers": 3
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -5150,7 +5324,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.11-full-runtime-robustness-config",
+    "version": "6.12-code-expert-final-fixes-no-hardcoding",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -5243,7 +5417,12 @@
       "6.11 activates config_loader runtime defaults and config normalization.",
       "6.11 activates location branch/location-change cleanup to avoid stale slots after branch changes.",
       "6.11 activates troubleshooting multi-rule scoring, visit intent handoff, active rule switching, and diagnostic history.",
-      "6.11 keeps BOOKING_NO_SLOTS LLM-phrased but grounded, while selected slots and slot lists remain deterministic."
+      "6.11 keeps BOOKING_NO_SLOTS LLM-phrased but grounded, while selected slots and slot lists remain deterministic.",
+      "6.12 raises manifest planning budget and quality guard cap through config.py.",
+      "6.12 makes direct tool argument injection config-driven through tool_argument_injection_rules.",
+      "6.12 makes missing-input state updates config-driven through missing_input_variable_updates.",
+      "6.12 enables RAG cache settings for retrieve_knowledge_node.",
+      "6.12 enables bounded parallel direct tool execution with max_parallel_tool_workers."
     ]
   }
 }
