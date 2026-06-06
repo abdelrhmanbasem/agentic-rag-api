@@ -2921,7 +2921,9 @@
           "only use this template after the customer explicitly selected a slot",
           "use booking.pending.time or appointment_time exactly; never invent another time",
           "if the user selected a time phrase, the selected slot must match that time from available_slots",
-          "if slot selection is ambiguous, ask the customer to choose again instead of guessing"
+          "if slot selection is ambiguous, ask the customer to choose again instead of guessing",
+          "use variables.booking.pending.time exactly",
+          "use variables.booking.pending.branch exactly"
         ],
         "safe_examples": [
           "تمام، اخترتلك معاد 11:00 الصبح في فرع مدينة نصر. تأكدلي أكمل الحجز؟",
@@ -2941,8 +2943,14 @@
           "do not select the first available slot automatically",
           "do not change 15:00 into 11:00",
           "do not change the selected slot time from booking.pending.time",
-          "do not treat 3 العصر as option 3 when time period markers are present"
-        ]
+          "do not treat 3 العصر as option 3 when time period markers are present",
+          "do not change the selected time",
+          "do not say a different time from booking.pending.time"
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، اخترتلك معاد {{variables.booking.pending.time}} في فرع {{variables.booking.pending.branch}}. تأكدلي أكمل الحجز؟"
       },
       "BOOKING_AWAITING_EXPLICIT_CONFIRMATION": {
         "state": "waiting_for_confirmation",
@@ -2994,14 +3002,18 @@
           "include the known branch/date if available",
           "ask the customer which slot they prefer",
           "do not choose any slot for the customer",
-          "do not ask for booking confirmation yet"
+          "do not ask for booking confirmation yet",
+          "show slots from variables.available_slots_text exactly",
+          "ask the user to choose a slot"
         ],
         "must_not_do": [
           "do not say اخترتلك",
           "do not recommend 10:00 or the first slot",
           "do not ask تحب تأكد الحجز",
           "do not imply a slot has been selected",
-          "do not ask for branch again when known"
+          "do not ask for branch again when known",
+          "do not ask for date if slots were found",
+          "do not hide available slots from available_slots_text"
         ],
         "safe_examples": [
           "أقرب فرع ليك هو فرع مدينة نصر. المواعيد المتاحة يوم الأحد الجاي: 1) 10:00 صباحًا 2) 12:00 ظهرًا 3) 2:00 ظهرًا. تحب تختار أنهي معاد؟",
@@ -3012,7 +3024,11 @@
           "ممكن أساعدك في تأكيد المعاد 10:00؟",
           "أفضل معاد هو 10:00",
           "هنمشي على أول معاد"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "عندنا المواعيد المتاحة في فرع {{variables.selected_branch}} يوم {{variables.date_text}}:\n{{variables.available_slots_text}}\nإيه المعاد اللي يناسبك؟"
       },
       "BOOKING_MISSING_NAME_AND_PLATE": {
         "state": "collecting_customer_details",
@@ -3022,7 +3038,8 @@
           "do not say booking is confirmed",
           "do not ask for branch/date/time again",
           "ask only for fields still missing after deterministic extraction and phone reuse repair",
-          "do not ask for phone if a valid phone exists in configured phone source paths"
+          "do not ask for phone if a valid phone exists in configured phone source paths",
+          "ask only for the missing customer details"
         ],
         "safe_examples": [
           "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
@@ -3032,7 +3049,11 @@
           "do not say تم تأكيد الحجز",
           "do not use هل ترغب",
           "do not say booking failed when any required customer detail is still missing"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
       },
       "BOOKING_MISSING_FULL_NAME": {
         "state": "collecting_customer_name",
@@ -3043,7 +3064,8 @@
           "ask only for fields still missing after deterministic extraction and phone reuse repair",
           "do not ask for phone if a valid phone exists in configured phone source paths",
           "before asking for full name, check customer_profile.full_name and customer_profile.name aliases",
-          "do not ask for full name again if customer_profile.name contains a valid name"
+          "do not ask for full name again if customer_profile.name contains a valid name",
+          "ask only for the missing full name"
         ],
         "safe_examples": [
           "تمام، محتاج اسمك الكامل عشان أكمل الحجز."
@@ -3052,7 +3074,11 @@
           "do not ask for plate if already captured",
           "do not say الحجز اتعمل",
           "do not say booking failed when any required customer detail is still missing"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، محتاج اسمك الكامل عشان أكمل الحجز."
       },
       "BOOKING_MISSING_PLATE_NUMBER": {
         "state": "collecting_plate_number",
@@ -3060,14 +3086,19 @@
           "ask only for plate number",
           "do not say booking is confirmed",
           "ask only for fields still missing after deterministic extraction and phone reuse repair",
-          "do not ask for phone if a valid phone exists in configured phone source paths"
+          "do not ask for phone if a valid phone exists in configured phone source paths",
+          "ask only for the missing plate number"
         ],
         "safe_examples": [
           "تمام، محتاج رقم العربية عشان أكمل الحجز."
         ],
         "must_not_do": [
           "do not say booking failed when any required customer detail is still missing"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، محتاج رقم العربية عشان أكمل الحجز."
       },
       "BOOKING_CONFIRMED": {
         "state": "booking_created",
@@ -3120,7 +3151,8 @@
         "must_do": [
           "ask only for phone if no valid phone exists in customer_profile.phone, phone, customer_phone, user_id, or configured phone_reuse.source_paths",
           "if the customer says to use the same WhatsApp/current number and a phone exists in context, do not ask for phone again",
-          "do not say booking is confirmed"
+          "do not say booking is confirmed",
+          "ask only for the missing phone number"
         ],
         "safe_examples": [
           "تمام، ممكن تقولي رقم تليفونك عشان أكمل الحجز؟"
@@ -3128,7 +3160,11 @@
         "must_not_do": [
           "do not ask for phone again if a configured source path already has a valid phone",
           "do not say في مشكلة في إتمام الحجز if another customer detail is still missing"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، محتاج رقم تليفونك عشان أكمل الحجز."
       },
       "BOOKING_MISSING_NAME_AND_PHONE": {
         "state": "collecting_name_and_phone",
@@ -3285,6 +3321,28 @@
         "must_not_do": [
           "do not promise a human joined unless the backend confirms it"
         ]
+      },
+      "BOOKING_MISSING_DATE": {
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "محتاج أعرف اليوم أو التاريخ اللي يناسبك عشان أشوف المواعيد المتاحة.",
+        "must_do": [
+          "ask only for date"
+        ],
+        "must_not_do": [
+          "do not ask for name or plate when date is missing"
+        ]
+      },
+      "BOOKING_MISSING_BRANCH": {
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "محتاج أعرف الفرع أو منطقتك عشان أشوف أقرب فرع والمواعيد المتاحة.",
+        "must_do": [
+          "ask only for branch or area"
+        ],
+        "must_not_do": []
       }
     },
     "slot_context_carryover_policy": {
@@ -3479,7 +3537,10 @@
       "LOOKUP_RESULT",
       "LOOKUP_ERROR",
       "LOOKUP_MISSING_CONTEXT",
-      "HANDOFF_TRIGGERED"
+      "HANDOFF_TRIGGERED",
+      "BOOKING_MISSING_PHONE",
+      "BOOKING_MISSING_DATE",
+      "BOOKING_MISSING_BRANCH"
     ],
     "template_response_policy_detection": {
       "enabled": true,
@@ -3771,7 +3832,17 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.2-slot-time-profile-alias-routing-config"
+    "architecture_version": "6.4-deterministic-policy-answers",
+    "deterministic_answer_draft_labels": [
+      "BOOKING_SLOTS_FOUND",
+      "BOOKING_CONFIRM_SELECTED_SLOT",
+      "BOOKING_MISSING_NAME_AND_PLATE",
+      "BOOKING_MISSING_FULL_NAME",
+      "BOOKING_MISSING_PLATE_NUMBER",
+      "BOOKING_MISSING_PHONE",
+      "BOOKING_MISSING_DATE",
+      "BOOKING_MISSING_BRANCH"
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -3922,7 +3993,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.2-slot-time-profile-alias-routing-config",
+    "version": "6.4-deterministic-policy-answers",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -3992,7 +4063,10 @@
       "6.2 makes ordinal slot selection explicit-marker based, so a bare number inside a time phrase is not treated as option number.",
       "6.2 adds customer_profile alias repair so customer_profile.name can be promoted to customer_profile.full_name before required-field checks.",
       "6.2 strengthens routing policy so customer-detail turns inside an active booking flow must stay with booking, not handoff/simple response.",
-      "6.2 strengthens response policy so the final answer must use the selected slot time from booking.pending/appointment_time/tool state and must never invent a different time."
+      "6.2 strengthens response policy so the final answer must use the selected slot time from booking.pending/appointment_time/tool state and must never invent a different time.",
+      "6.4 makes high-risk operational answer drafts deterministic using template_response_policy response_template.",
+      "6.4 prevents the response LLM from changing selected slot time or omitting tool-returned slots.",
+      "6.4 keeps slots-found and selected-slot responses grounded in variables/tool_result only."
     ]
   }
 }
