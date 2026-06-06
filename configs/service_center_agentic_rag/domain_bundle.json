@@ -2789,6 +2789,10 @@
               "extraction": {
                 "fallback_patterns": [
                   {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
                   },
@@ -2811,6 +2815,10 @@
                 ],
                 "capture_patterns": [
                   {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
                   },
@@ -2832,6 +2840,10 @@
                   }
                 ],
                 "patterns": [
+                  {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
                   {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
@@ -2874,7 +2886,10 @@
                 "cleanup_patterns": [
                   "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
                 ],
-                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+                "marker_capture_max_chars": 40,
+                "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+                "prefer_marker_remainder": true
               },
               "required": true,
               "label": "plate number"
@@ -3257,6 +3272,10 @@
             "extraction": {
               "fallback_patterns": [
                 {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3279,6 +3298,10 @@
               ],
               "capture_patterns": [
                 {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3300,6 +3323,10 @@
                 }
               ],
               "patterns": [
+                {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3342,7 +3369,10 @@
               "cleanup_patterns": [
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
               ],
-              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+              "marker_capture_max_chars": 40,
+              "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+              "prefer_marker_remainder": true
             },
             "required": true
           }
@@ -3570,6 +3600,10 @@
             "extraction": {
               "fallback_patterns": [
                 {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3592,6 +3626,10 @@
               ],
               "capture_patterns": [
                 {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3613,6 +3651,10 @@
                 }
               ],
               "patterns": [
+                {
+                  "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3655,7 +3697,10 @@
               "cleanup_patterns": [
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
               ],
-              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+              "marker_capture_max_chars": 40,
+              "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+              "prefer_marker_remainder": true
             },
             "required": true
           }
@@ -3886,6 +3931,10 @@
               "extraction": {
                 "fallback_patterns": [
                   {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
                   },
@@ -3908,6 +3957,10 @@
                 ],
                 "capture_patterns": [
                   {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
                   },
@@ -3929,6 +3982,10 @@
                   }
                 ],
                 "patterns": [
+                  {
+                    "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
                   {
                     "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
                     "group": 1
@@ -3971,7 +4028,10 @@
                 "cleanup_patterns": [
                   "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
                 ],
-                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+                "marker_capture_max_chars": 40,
+                "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+                "prefer_marker_remainder": true
               },
               "required": true
             }
@@ -3983,6 +4043,10 @@
         },
         "plate_number_extraction": {
           "fallback_patterns": [
+            {
+              "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
             {
               "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
               "group": 1
@@ -4023,6 +4087,10 @@
           "max_length": 30,
           "capture_patterns": [
             {
+              "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
+            {
               "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
               "group": 1
             },
@@ -4045,6 +4113,10 @@
           ],
           "patterns": [
             {
+              "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
+            {
               "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
               "group": 1
             },
@@ -4065,7 +4137,10 @@
               "group": 1
             }
           ],
-          "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+          "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+          "marker_capture_max_chars": 40,
+          "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+          "prefer_marker_remainder": true
         },
         "customer_detail_argument_policy": {
           "enabled": true,
@@ -4952,7 +5027,12 @@
         "رقم التليفون",
         "أكمل الحجز",
         "هكمل الحجز"
-      ]
+      ],
+      "customer_detail_marker_capture_must_persist_state": true,
+      "do_not_acknowledge_customer_detail_as_received_unless_state_saved": true,
+      "variable_awareness_quality_guard": true,
+      "never_ask_for_known_variables": true,
+      "humanlike_energy_guard_enabled": true
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -5748,54 +5828,34 @@
       ]
     },
     "persona": {
-      "name": "Service advisor",
-      "character": "Warm, confident, practical, and professional. Speaks like a trusted service advisor, not a form or script.",
-      "voice": "Natural Egyptian Arabic with clear, short sentences. Friendly but efficient. Gets to the point and moves the customer forward.",
-      "energy_when_selling": "Make the next step feel easy and useful. Highlight the benefit first, then ask for the one action needed.",
-      "energy_when_helping": "Empathetic and solution-focused. One problem, one useful next step per message.",
-      "energy_when_closing": "Warm, reassuring, and clear. Confirm what happened, include the confirmed record ID when available, and end helpfully.",
+      "character": "Warm, confident, and knowledgeable — like a trusted advisor who knows the business inside out.",
+      "voice": "Natural Egyptian Arabic. Friendly but efficient. Gets straight to the point without being cold.",
+      "energy_when_selling": "Lead with the benefit, then the action. Make the next step feel easy and obvious.",
+      "energy_when_helping": "Acknowledge briefly, then solve. One problem, one answer, one natural next step.",
+      "energy_when_closing": "Warm and confident. Tell the customer exactly what happens next so they feel reassured.",
       "never": [
-        "sound robotic",
         "sound like a form",
-        "repeat the user's question back at them",
-        "over-explain internal process",
-        "push aggressively",
-        "use banned terms from answer_safety.banned_terms"
-      ],
-      "role": "professional service-center assistant",
-      "boundaries": [
-        "do not invent tool results",
-        "do not overpromise actions"
+        "use filler phrases like بالتأكيد or overly formal wording",
+        "use overly familiar words like حبيبي or يا باشا",
+        "repeat the user's question back at them"
       ]
     },
     "emotion_response_guidance": {
-      "frustrated": "The customer is frustrated. Acknowledge it briefly, then go straight to the practical fix. Do not be defensive.",
-      "angry": "The customer is angry. Stay calm, acknowledge the issue, and give the clearest next step. Do not argue.",
-      "confused": "The customer is confused. Be simple, reassuring, and step-by-step. Avoid long explanations.",
-      "urgent": "The customer needs this quickly. Lead with the answer and the next action. Be efficient and reassuring.",
-      "skeptical": "The customer is skeptical. Be transparent, factual, and grounded in known data. Do not oversell.",
-      "excited": "The customer is excited. Match the positive energy while staying efficient.",
-      "happy": "The customer is happy. Keep the warmth and momentum.",
-      "neutral": "The customer is neutral. Be warm, professional, and useful.",
-      "default": "Be warm, professional, and useful."
+      "frustrated": "Start by briefly acknowledging the frustration in one sentence. Then go straight to the solution. Do not ask questions first unless one is absolutely required.",
+      "confused": "Be clear and step-by-step. Use simple language and reassure them that the next step is easy.",
+      "urgent": "Lead with the answer immediately. Be efficient and confident. Avoid preamble.",
+      "excited": "Match their energy. Be warm and move forward quickly.",
+      "skeptical": "Be factual, transparent, and confident. Do not oversell.",
+      "happy": "Keep the positive energy. Be warm and efficient.",
+      "neutral": "Professional, warm, and useful. Get to the point.",
+      "default": "Warm, clear, and helpful. Match the user's energy."
     },
     "proactive_nudge": {
-      "enabled": true,
-      "style": "Offer one natural next step only when it helps the customer move forward. Do not push if the customer is closing, frustrated about a resolved issue, or only asked for a factual answer.",
-      "after_slots_shown": "Ask which available slot works best for them.",
-      "after_branch_found": "Offer to check available appointments at that branch.",
-      "after_branch_list": "Offer to find the nearest branch if they share their area.",
-      "after_troubleshooting": "Offer to book or find a branch for inspection when inspection is recommended.",
-      "after_missing_date": "Ask which day/date they prefer, with short examples if helpful.",
-      "after_missing_customer_details": "Ask only for the remaining missing customer details.",
-      "after_booking_confirmed": "Close warmly and tell them what to expect next.",
-      "after_handoff_offered": "Confirm they want a handoff and keep it brief.",
-      "do_not_offer_when": [
-        "customer sent a thanks/closing message",
-        "the next step requires an unavailable tool result",
-        "tool_result.action is ask_user and already asks the needed question",
-        "the assistant has already asked one question in the reply"
-      ]
+      "after_slots_shown": "Ask which slot works for them.",
+      "after_branch_found": "Offer to check available times at that branch if they seem to need an appointment.",
+      "after_troubleshooting": "Offer to book a visit for a proper inspection when inspection is recommended.",
+      "after_booking_confirmed": "Wish them well and let them know what to expect.",
+      "after_lookup": "Ask if there's anything else they need."
     },
     "response_rule_layers": {
       "personality": [
@@ -6244,7 +6304,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.18-no-pending-booking-guard-config-no-hardcoding",
+    "architecture_version": "6.20-persona-emotion-humanlike-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -6644,7 +6704,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.18-no-pending-booking-guard-config-no-hardcoding",
+    "version": "6.20-persona-emotion-humanlike-no-hardcoding",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -6746,7 +6806,10 @@
       "Version 6.17 makes customer-detail collection generic: booking_subagent.py reads customer_detail_fields / customer_details.fields / customer_profile_persistence.fields instead of embedding domain-specific fields in Python.",
       "Service-center-specific details such as plate_number live only in this domain_bundle.json and are mapped to create_booking arguments through field config.",
       "Generic booking detail extraction must write each extracted value to the configured target_path, preserve configured backup_paths, and ask only for missing paths from required_before_create.",
-      "Version 6.18 blocks confirmation/customer-detail continuation when no pending slot exists; after slots_found=false the assistant asks for another date instead of collecting customer details."
+      "Version 6.18 blocks confirmation/customer-detail continuation when no pending slot exists; after slots_found=false the assistant asks for another date instead of collecting customer details.",
+      "Version 6.19 improves generic customer-detail capture by using configured field markers to capture the remainder of the message, then scoring all candidates so broad regexes do not drop meaningful tokens.",
+      "Version 6.20 adds assistant persona, emotion_response_guidance, and proactive_nudge so response voice and tone are config-driven per assistant.",
+      "Version 6.20 pairs with graph human-readable response sections and variable-awareness quality guard."
     ]
   }
 }
