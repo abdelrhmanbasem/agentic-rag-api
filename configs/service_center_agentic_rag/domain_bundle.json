@@ -466,7 +466,7 @@
         "name": "service_center_sheet",
         "type": "http",
         "description": "Source-of-truth HTTP tool for service center branches, nearest branch lookup, appointment slots, and booking creation.",
-        "url": "https://script.google.com/macros/s/AKfycbx_Au3LPLNiZZ2gxJRp8nZcC6Vo8XUTXvymHJQOsgfgBW67dBRGHPLExbA3CTdZXR8W/exec",
+        "url": "https://script.google.com/macros/s/AKfycbyBASKZWGNQ0mvQ1_ANAlJ7IPbToZWVAQQ_xSGC7OKyoB1P3IN4MpiWk-mwujsnZcxe/exec",
         "method": "POST",
         "timeout_seconds": 30,
         "headers": {
