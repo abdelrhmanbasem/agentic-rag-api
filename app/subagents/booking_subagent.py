@@ -1121,6 +1121,22 @@ class BookingSubagent:
             if existing_phone:
                 arguments["phone"] = existing_phone
 
+        if not arguments.get("full_name") and not arguments.get("name"):
+            full_name_value = (
+                deep_get(variables, "customer_profile.full_name")
+                or deep_get(variables, "booking.customer_profile.full_name")
+            )
+            if full_name_value:
+                arguments["full_name"] = full_name_value
+
+        if not arguments.get("plate_number") and not arguments.get("vehicle_number"):
+            plate_value = (
+                deep_get(variables, "customer_profile.plate_number")
+                or deep_get(variables, "booking.customer_profile.plate_number")
+            )
+            if plate_value:
+                arguments["plate_number"] = plate_value
+
         arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
         arguments["user_id"] = deep_get(variables, "user_id", "")
 
@@ -1202,24 +1218,12 @@ class BookingSubagent:
         normalization = context.assistant_config.get("normalization", {})
         normalized_message = normalize_text(context.user_message, normalization)
 
-        ordinal_map = resolver.get("ordinal_map", {})
-
-        if isinstance(ordinal_map, dict):
-            for phrase, index in ordinal_map.items():
-                normalized_phrase = normalize_text(str(phrase), normalization)
-
-                if normalized_phrase and normalized_phrase in normalized_message:
-                    try:
-                        i = int(index)
-                    except Exception:
-                        continue
-
-                    if 0 <= i < len(slots) and isinstance(slots[i], dict):
-                        return slots[i]
-
         time_field = resolver.get("time_field")
         time_normalizer = resolver.get("time_normalizer")
 
+        # Time intent must win before ordinal matching.
+        # Example: a phrase containing a configured afternoon/evening marker plus "3"
+        # must resolve to a 15:00 time slot, not option number 3.
         if time_field and time_normalizer == "hour_exact_or_same_hour":
             requested_time = self.extract_time(context.user_message, config, normalization)
 
@@ -1237,6 +1241,28 @@ class BookingSubagent:
 
                     if slot_time and slot_time.split(":")[0] == requested_hour:
                         return slot
+
+        ordinal_map = resolver.get("ordinal_map", {})
+
+        if isinstance(ordinal_map, dict):
+            for phrase, index in ordinal_map.items():
+                normalized_phrase = normalize_text(str(phrase), normalization)
+
+                if not self.ordinal_phrase_matches(
+                    normalized_message=normalized_message,
+                    normalized_phrase=normalized_phrase,
+                    resolver=resolver,
+                    normalization=normalization
+                ):
+                    continue
+
+                try:
+                    i = int(index)
+                except Exception:
+                    continue
+
+                if 0 <= i < len(slots) and isinstance(slots[i], dict):
+                    return slots[i]
 
         return None
 
@@ -1275,10 +1301,169 @@ class BookingSubagent:
         if suffix == "am" and hour == 12:
             hour = 0
 
+        if not suffix:
+            period_adjusted_hour = self.apply_configured_time_period(
+                hour=hour,
+                normalized_text=normalized,
+                config=config,
+                normalization=normalization
+            )
+
+            if period_adjusted_hour is not None:
+                hour = period_adjusted_hour
+
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
             return ""
 
         return f"{hour:02d}:{minute:02d}"
+
+
+    def apply_configured_time_period(
+        self,
+        hour: int,
+        normalized_text: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Optional[int]:
+        """
+        Apply AM/PM or custom day-period rules using config only.
+
+        Supported config shapes:
+        1. time_normalization.periods = [
+             {"markers": [...], "min_hour": 1, "max_hour": 11, "add_hours": 12}
+           ]
+
+        2. time_normalization.period_markers = {
+             "pm": [...],
+             "am": [...]
+           }
+
+        3. time_periods = same as shape #1 at booking config root.
+        """
+        periods: List[Dict[str, Any]] = []
+        time_config = config.get("time_normalization", {})
+        if not isinstance(time_config, dict):
+            time_config = {}
+
+        configured_periods = time_config.get("periods", config.get("time_periods", []))
+        if isinstance(configured_periods, list):
+            periods.extend([item for item in configured_periods if isinstance(item, dict)])
+
+        period_markers = time_config.get("period_markers", {})
+        if isinstance(period_markers, dict):
+            for period_name, markers in period_markers.items():
+                if not isinstance(markers, list):
+                    continue
+
+                period_key = str(period_name or "").strip().lower()
+                period_rule: Dict[str, Any] = {
+                    "markers": markers
+                }
+
+                if period_key == "pm":
+                    period_rule.update({"min_hour": 1, "max_hour": 11, "add_hours": 12})
+                elif period_key == "am":
+                    period_rule.update({"hour_12_maps_to": 0})
+                else:
+                    configured_defaults = time_config.get("period_defaults", {})
+                    if isinstance(configured_defaults, dict):
+                        default_rule = configured_defaults.get(period_key, {})
+                        if isinstance(default_rule, dict):
+                            period_rule.update(default_rule)
+
+                periods.append(period_rule)
+
+        if not periods:
+            return None
+
+        for period in periods:
+            markers = period.get("markers", [])
+            if not isinstance(markers, list):
+                continue
+
+            if not self.message_has_configured_marker(
+                normalized_text=normalized_text,
+                markers=markers,
+                normalization=normalization
+            ):
+                continue
+
+            min_hour = int(period.get("min_hour", 0) or 0)
+            max_hour = int(period.get("max_hour", 23) or 23)
+
+            if hour < min_hour or hour > max_hour:
+                if "hour_12_maps_to" in period and hour == 12:
+                    return int(period.get("hour_12_maps_to") or 0)
+                continue
+
+            if "set_hour" in period:
+                return int(period.get("set_hour") or hour)
+
+            add_hours = int(period.get("add_hours", 0) or 0)
+            adjusted = hour + add_hours
+
+            if "hour_12_maps_to" in period and hour == 12:
+                adjusted = int(period.get("hour_12_maps_to") or 0)
+
+            if 0 <= adjusted <= 23:
+                return adjusted
+
+        return None
+
+    @staticmethod
+    def message_has_configured_marker(
+        normalized_text: str,
+        markers: List[Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        for marker in markers or []:
+            normalized_marker = normalize_text(str(marker or ""), normalization)
+            if normalized_marker and normalized_marker in str(normalized_text or ""):
+                return True
+
+        return False
+
+    def ordinal_phrase_matches(
+        self,
+        normalized_message: str,
+        normalized_phrase: str,
+        resolver: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        if not normalized_phrase:
+            return False
+
+        message = str(normalized_message or "").strip()
+        phrase = str(normalized_phrase or "").strip()
+
+        if not message or not phrase:
+            return False
+
+        if message == phrase:
+            return True
+
+        if phrase not in message:
+            return False
+
+        # Bare numeric ordinal phrases are ambiguous with time requests.
+        # They only match inside a longer message when configured ordinal markers
+        # are present. Non-numeric phrases can match directly.
+        if not re.fullmatch(r"\d+", phrase):
+            return True
+
+        require_marker = bool(resolver.get("ordinal_requires_explicit_marker", True))
+        if not require_marker:
+            return True
+
+        markers = resolver.get("ordinal_markers", [])
+        if not isinstance(markers, list):
+            markers = []
+
+        return self.message_has_configured_marker(
+            normalized_text=message,
+            markers=markers,
+            normalization=normalization
+        )
 
 
     @staticmethod
@@ -2626,6 +2811,89 @@ class BookingSubagent:
         return output
 
 
+    def ensure_customer_profile_aliases(
+        self,
+        variables: Dict[str, Any],
+        persistence_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Repair profile aliases before required-field checks.
+
+        Alias rules are config-driven through:
+        customer_profile_persistence.aliases = [
+          {"source_path": "customer_profile.name", "target_path": "customer_profile.full_name", "validator": "full_name"},
+          ...
+        ]
+
+        A small generic compatibility rule also maps sibling "name" to
+        "full_name" for customer_profile-like objects when no explicit alias
+        list is configured.
+        """
+        alias_rules = persistence_config.get("aliases", [])
+        if not isinstance(alias_rules, list):
+            alias_rules = []
+
+        if not alias_rules:
+            alias_rules = [
+                {
+                    "source_path": "customer_profile.name",
+                    "target_path": "customer_profile.full_name",
+                    "backup_paths": ["booking.customer_profile.full_name"],
+                    "validator": "full_name"
+                },
+                {
+                    "source_path": "booking.customer_profile.name",
+                    "target_path": "booking.customer_profile.full_name",
+                    "backup_paths": ["customer_profile.full_name"],
+                    "validator": "full_name"
+                }
+            ]
+
+        updates: Dict[str, Any] = {}
+
+        for rule in alias_rules:
+            if not isinstance(rule, dict):
+                continue
+
+            source_path = str(rule.get("source_path") or "").strip()
+            target_path = str(rule.get("target_path") or "").strip()
+            validator = str(rule.get("validator") or "").strip()
+
+            if not source_path or not target_path:
+                continue
+
+            target_value = deep_get(variables, target_path)
+            if target_value not in [None, "", [], {}]:
+                continue
+
+            value = self.normalize_customer_profile_value(
+                deep_get(variables, source_path),
+                validator,
+                config,
+                normalization
+            )
+
+            if not value:
+                continue
+
+            updates[target_path] = value
+
+            backup_paths = rule.get("backup_paths", [])
+            if isinstance(backup_paths, list):
+                for backup_path in backup_paths:
+                    backup_path_text = str(backup_path or "").strip()
+                    if backup_path_text and deep_get(variables, backup_path_text) in [None, "", [], {}]:
+                        updates[backup_path_text] = value
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+
+
     def ensure_customer_profile_context(
         self,
         variables: Dict[str, Any],
@@ -2652,14 +2920,25 @@ class BookingSubagent:
         if not isinstance(fields_config, dict):
             fields_config = {}
 
+        variables = self.ensure_customer_profile_aliases(
+            variables=variables,
+            persistence_config=persistence_config,
+            config=config,
+            normalization=normalization
+        )
+
         default_fields = {
             "full_name": {
                 "target_path": "customer_profile.full_name",
                 "source_paths": [
                     "customer_profile.full_name",
+                    "customer_profile.name",
                     "booking.customer_profile.full_name",
+                    "booking.customer_profile.name",
                     "booking.pending.customer_profile.full_name",
-                    "booking.confirmed.full_name"
+                    "booking.pending.customer_profile.name",
+                    "booking.confirmed.full_name",
+                    "booking.confirmed.name"
                 ],
                 "backup_paths": [
                     "booking.customer_profile.full_name"
@@ -3621,6 +3900,12 @@ class BookingSubagent:
                 output["customer_profile.plate_number"] = plate_text
             else:
                 output.pop("customer_profile.plate_number", None)
+
+        if (
+            output.get("customer_profile.full_name") in [None, "", [], {}]
+            and output.get("customer_profile.name") not in [None, "", [], {}]
+        ):
+            output["customer_profile.full_name"] = output.get("customer_profile.name")
 
         full_name = output.get("customer_profile.full_name")
 
