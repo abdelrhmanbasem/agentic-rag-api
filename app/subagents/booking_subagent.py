@@ -4892,6 +4892,15 @@ class BookingSubagent:
         config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> str:
+        """
+        Extract one configured customer-detail field from the current message.
+
+        This is intentionally generic:
+        - field-specific markers/patterns come from domain_bundle.json
+        - no domain field names or Arabic car phrases are embedded here
+        - all candidates are scored, so a broad regex that captures only digits
+          does not beat a richer marker-based capture from the same message
+        """
         extraction_config = field_config.get("extraction", {})
         if not isinstance(extraction_config, dict):
             extraction_config = {}
@@ -4903,6 +4912,7 @@ class BookingSubagent:
                 patterns.extend(values)
 
         normalized_digits = normalize_digits(str(message or ""), normalization.get("digit_map", {}))
+        candidates: List[Dict[str, Any]] = []
 
         for item in patterns:
             if isinstance(item, dict):
@@ -4919,20 +4929,127 @@ class BookingSubagent:
                 continue
 
             try:
-                match = re.search(pattern_text, normalized_digits, flags=re.IGNORECASE)
+                matches = list(re.finditer(pattern_text, normalized_digits, flags=re.IGNORECASE))
             except re.error:
                 continue
 
-            if not match:
+            for match in matches:
+                try:
+                    candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
+                except Exception:
+                    candidate = match.group(0).strip()
+
+                normalized_value = self.normalize_customer_profile_value(
+                    value=candidate,
+                    validator=str(field_config.get("validator") or ""),
+                    config=config,
+                    normalization=normalization,
+                    field_config=field_config
+                )
+
+                if normalized_value:
+                    candidates.append({
+                        "value": normalized_value,
+                        "source": "pattern",
+                        "raw": candidate
+                    })
+
+        # Marker-remainder fallback:
+        # If a configured field has markers and the message contains a marker,
+        # capture the text after the marker up to punctuation/newline. This is
+        # what prevents broad domain regexes from losing meaningful tokens.
+        marker_candidates = self.extract_configured_marker_remainder_candidates(
+            message=normalized_digits,
+            field_config=field_config,
+            config=config,
+            normalization=normalization
+        )
+        candidates.extend(marker_candidates)
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda item: self.score_configured_customer_detail_candidate(
+                value=str(item.get("value") or ""),
+                raw=str(item.get("raw") or ""),
+                source=str(item.get("source") or ""),
+                field_config=field_config,
+                normalization=normalization
+            ),
+            reverse=True
+        )
+
+        return str(candidates[0].get("value") or "").strip()
+
+
+    def extract_configured_marker_remainder_candidates(
+        self,
+        message: str,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        markers = field_config.get("markers", [])
+        if not isinstance(markers, list):
+            markers = []
+
+        output: List[Dict[str, Any]] = []
+
+        if not markers:
+            return output
+
+        try:
+            max_chars = int(extraction_config.get("marker_capture_max_chars", extraction_config.get("max_length", 80)) or 80)
+        except Exception:
+            max_chars = 80
+
+        if max_chars < 10:
+            max_chars = 10
+        if max_chars > 300:
+            max_chars = 300
+
+        stop_pattern = str(
+            extraction_config.get("marker_capture_stop_pattern")
+            or r"[\n،,.!?؟]+"
+        )
+
+        for marker in markers:
+            marker_text = normalize_digits(str(marker or "").strip(), normalization.get("digit_map", {}))
+            if not marker_text:
                 continue
 
             try:
-                candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
-            except Exception:
-                candidate = match.group(0).strip()
+                marker_match = re.search(re.escape(marker_text), message, flags=re.IGNORECASE)
+            except re.error:
+                marker_match = None
+
+            if not marker_match:
+                continue
+
+            remainder = message[marker_match.end():]
+            remainder = re.sub(r"^\s*[:：\-–—ـ]*\s*", "", remainder).strip()
+
+            if not remainder:
+                continue
+
+            try:
+                stop_match = re.search(stop_pattern, remainder)
+            except re.error:
+                stop_match = None
+
+            if stop_match:
+                remainder = remainder[:stop_match.start()].strip()
+
+            if len(remainder) > max_chars:
+                remainder = remainder[:max_chars].strip()
 
             normalized_value = self.normalize_customer_profile_value(
-                value=candidate,
+                value=remainder,
                 validator=str(field_config.get("validator") or ""),
                 config=config,
                 normalization=normalization,
@@ -4940,9 +5057,58 @@ class BookingSubagent:
             )
 
             if normalized_value:
-                return normalized_value
+                output.append({
+                    "value": normalized_value,
+                    "source": "marker_remainder",
+                    "raw": remainder
+                })
 
-        return ""
+        return output
+
+
+    def score_configured_customer_detail_candidate(
+        self,
+        value: str,
+        raw: str,
+        source: str,
+        field_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> int:
+        text = str(value or "").strip()
+        raw_text = str(raw or "").strip()
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        score = 0
+
+        if source == "marker_remainder":
+            score += 50
+
+        if text:
+            score += min(len(text), 80)
+
+        token_count = len([part for part in re.split(r"\s+", text) if part.strip()])
+        score += min(token_count * 8, 48)
+
+        if re.search(r"\d", text):
+            score += 20
+
+        if re.search(r"[A-Za-z\u0600-\u06FF]", text):
+            score += 20
+
+        if re.search(r"\d", text) and re.search(r"[A-Za-z\u0600-\u06FF]", text):
+            score += 30
+
+        # Prefer richer captures over regexes that captured only the final digits.
+        if raw_text and len(raw_text) > len(text):
+            score += min(len(raw_text) - len(text), 20)
+
+        if extraction_config.get("prefer_marker_remainder") is True and source == "marker_remainder":
+            score += 40
+
+        return score
+
 
     def normalize_configured_customer_detail_value(
         self,
