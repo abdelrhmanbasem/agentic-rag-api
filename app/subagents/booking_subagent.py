@@ -144,6 +144,23 @@ class BookingSubagent:
             normalization=normalization
         )
 
+        # Critical universal slot-selection guard:
+        # A user can choose a slot even if booking.stage was not persisted as
+        # slot_selection by an older config/tool-update path. If fresh
+        # available_slots exist, time/ordinal selection must be handled before
+        # any new availability request or missing-date path can relist slots or
+        # ask for a date again.
+        existing_slot_selection_result = self.handle_existing_slot_selection_if_present(
+            context=context,
+            config=config,
+            variables=variables,
+            observations=observations,
+            tool_calls_used=tool_calls_used
+        )
+
+        if existing_slot_selection_result:
+            return existing_slot_selection_result
+
         # Critical slot-selection guard:
         # In slot_selection stage, a time-only reply must be resolved
         # must be resolved against the existing available_slots before any
@@ -807,6 +824,106 @@ class BookingSubagent:
         )
 
 
+    def handle_existing_slot_selection_if_present(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        observations: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_used: int = 0
+    ) -> Optional[SubagentResult]:
+        """
+        Resolve a user's slot/time/ordinal reply against already-fetched slots.
+
+        This intentionally does NOT depend only on booking.stage. In production,
+        a stage can be missing because of legacy state, tool update config, or a
+        previous deployment. The authoritative signal is: current available_slots
+        exist and the current message looks like a slot choice.
+
+        No branch/service/date phrases are hardcoded here. The recognizers use:
+        - slot_resolver.time_field / time_normalization / time_only_slot_selection
+        - slot_resolver.ordinal_map / ordinal_markers
+        - configured templates
+        """
+        slots = deep_get(variables, config.get("available_slots_path", "available_slots"), [])
+
+        if not isinstance(slots, list) or not slots:
+            return None
+
+        normalization = context.assistant_config.get("normalization", {})
+
+        # Date-only questions should remain date-only answers, not slot choices.
+        if self.is_date_only_question(context.user_message, config, normalization):
+            return None
+
+        selected_slot = self.resolve_slot_selection(
+            context=context,
+            config=config,
+            variables=variables
+        )
+
+        if selected_slot:
+            return self.handle_slot_selected(
+                context=context,
+                config=config,
+                variables=variables,
+                selected_slot=selected_slot
+            )
+
+        if self.message_contains_time_intent_without_stored_context(
+            context.user_message,
+            config,
+            normalization
+        ):
+            answer = render_template(
+                config.get("templates", {}).get(
+                    "requested_time_not_available",
+                    config.get("templates", {}).get("choose_slot_again", "")
+                ),
+                {
+                    "variables": variables,
+                    "message": context.user_message
+                }
+            )
+
+            return SubagentResult(
+                handled=True,
+                action="ask_user",
+                answer=answer,
+                variable_updates=variables,
+                selected_subagent=self.name,
+                observations=observations or [],
+                tool_calls_used=tool_calls_used,
+                notes="time selection did not match any current available slot"
+            )
+
+        if self.message_contains_ordinal_selection_intent(
+            message=context.user_message,
+            config=config,
+            normalization=normalization
+        ):
+            answer = render_template(
+                config.get("templates", {}).get("choose_slot_again", ""),
+                {
+                    "variables": variables,
+                    "message": context.user_message
+                }
+            )
+
+            return SubagentResult(
+                handled=True,
+                action="ask_user",
+                answer=answer,
+                variable_updates=variables,
+                selected_subagent=self.name,
+                observations=observations or [],
+                tool_calls_used=tool_calls_used,
+                notes="ordinal selection did not match any current available slot"
+            )
+
+        return None
+
+
     def selected_slot_differs_from_pending(
         self,
         selected_slot: Dict[str, Any],
@@ -935,6 +1052,16 @@ class BookingSubagent:
                 pending["section"] = selected_section
 
         updates = dict(config.get("on_slot_selected_updates", {}))
+
+        stage_path = config.get("stage_path", "booking.stage")
+        awaiting_confirmation_stage = config.get("stages", {}).get(
+            "awaiting_confirmation",
+            "awaiting_confirmation"
+        )
+
+        if stage_path and stage_path not in updates:
+            updates[stage_path] = awaiting_confirmation_stage
+
         updates[pending_booking_path] = pending
         updates["booking.pending_summary"] = self.build_pending_summary(pending)
 
@@ -1151,6 +1278,24 @@ class BookingSubagent:
             if "slots_found" in tool_result:
                 repair_updates["slots_found"] = tool_result.get("slots_found")
 
+        slots_found_path = config.get("slots_found_result_path", "slots_found")
+        slots_found_value = deep_get(tool_result, slots_found_path, False)
+
+        stage_path = config.get("stage_path", "booking.stage")
+        stages = config.get("stages", {})
+        if not isinstance(stages, dict):
+            stages = {}
+
+        if tool_result.get("ok") is not False and stage_path:
+            if slots_found_value is True:
+                repair_updates[stage_path] = stages.get("slot_selection", "slot_selection")
+            else:
+                repair_updates[stage_path] = (
+                    config.get("no_slots_stage")
+                    or stages.get("awaiting_date")
+                    or "awaiting_date"
+                )
+
         if repair_updates:
             updated_variables = apply_variable_patch(updated_variables, repair_updates, [])
 
@@ -1161,8 +1306,7 @@ class BookingSubagent:
             "message": context.user_message
         }
 
-        slots_found_path = config.get("slots_found_result_path", "slots_found")
-        slots_found = deep_get(tool_result, slots_found_path, False)
+        slots_found = slots_found_value
 
         if tool_result.get("ok") is False:
             template = config.get("templates", {}).get("tool_error", "")
@@ -1385,61 +1529,204 @@ class BookingSubagent:
             return None
 
         resolver = config.get("slot_resolver", {})
+        if not isinstance(resolver, dict):
+            resolver = {}
+
         normalization = context.assistant_config.get("normalization", {})
         normalized_message = normalize_text(context.user_message, normalization)
 
-        time_field = resolver.get("time_field")
-        time_normalizer = resolver.get("time_normalizer")
+        time_field = self.get_slot_time_field(resolver, config)
 
-        # Time intent must win before ordinal matching.
-        # Example: a phrase containing a configured afternoon/evening marker plus "3"
-        # must resolve to a 15:00 time slot, not option number 3.
-        if time_field and time_normalizer == "hour_exact_or_same_hour":
-            requested_time = self.resolve_requested_slot_time(
-                context=context,
+        # Explicit ordinal choices such as "option 2" / configured equivalents
+        # should win over bare time parsing. This is config-driven through
+        # slot_resolver.ordinal_markers and ordinal_map.
+        ordinal_slot = self.resolve_ordinal_slot_selection(
+            slots=slots,
+            resolver=resolver,
+            normalized_message=normalized_message,
+            normalization=normalization
+        )
+
+        if ordinal_slot and self.message_prefers_ordinal_selection(
+            message=context.user_message,
+            resolver=resolver,
+            config=config,
+            normalization=normalization
+        ):
+            return ordinal_slot
+
+        # Time intent must be attempted before fallback ordinal matching.
+        # Example: a phrase containing a configured afternoon/evening marker plus
+        # "3" should resolve to a 15:00 time slot, not option number 3.
+        requested_time = self.resolve_requested_slot_time(
+            context=context,
+            config=config,
+            variables=variables
+        )
+
+        if requested_time:
+            matched_slot = self.match_requested_time_to_slot(
+                requested_time=requested_time,
+                slots=slots,
+                time_field=time_field,
                 config=config,
-                variables=variables
+                normalization=normalization,
+                message=context.user_message
             )
 
-            if requested_time:
-                matched_slot = self.match_requested_time_to_slot(
-                    requested_time=requested_time,
-                    slots=slots,
-                    time_field=str(time_field),
-                    config=config,
-                    normalization=normalization,
-                    message=context.user_message
-                )
+            if matched_slot:
+                return matched_slot
 
-                if matched_slot:
-                    return matched_slot
+            if self.message_contains_time_intent(context.user_message, config, normalization):
+                return None
 
-                if self.message_contains_time_intent(context.user_message, config, normalization):
-                    return None
-
-        ordinal_map = resolver.get("ordinal_map", {})
-
-        if isinstance(ordinal_map, dict):
-            for phrase, index in ordinal_map.items():
-                normalized_phrase = normalize_text(str(phrase), normalization)
-
-                if not self.ordinal_phrase_matches(
-                    normalized_message=normalized_message,
-                    normalized_phrase=normalized_phrase,
-                    resolver=resolver,
-                    normalization=normalization
-                ):
-                    continue
-
-                try:
-                    i = int(index)
-                except Exception:
-                    continue
-
-                if 0 <= i < len(slots) and isinstance(slots[i], dict):
-                    return slots[i]
+        if ordinal_slot:
+            return ordinal_slot
 
         return None
+
+    def get_slot_time_field(
+        self,
+        resolver: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> str:
+        """
+        Return the configured slot time field.
+
+        The fallback "time" is a generic schema field, not a domain-specific
+        hardcode. It keeps older bundles working when slot_resolver.time_field
+        is omitted.
+        """
+        for value in [
+            resolver.get("time_field"),
+            config.get("slot_time_field"),
+            config.get("available_slot_time_field")
+        ]:
+            text = str(value or "").strip()
+            if text:
+                return text
+
+        return "time"
+
+    def resolve_ordinal_slot_selection(
+        self,
+        slots: List[Dict[str, Any]],
+        resolver: Dict[str, Any],
+        normalized_message: str,
+        normalization: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        ordinal_map = resolver.get("ordinal_map", {})
+
+        if not isinstance(ordinal_map, dict):
+            return None
+
+        for phrase, index in ordinal_map.items():
+            normalized_phrase = normalize_text(str(phrase), normalization)
+
+            if not self.ordinal_phrase_matches(
+                normalized_message=normalized_message,
+                normalized_phrase=normalized_phrase,
+                resolver=resolver,
+                normalization=normalization
+            ):
+                continue
+
+            try:
+                i = int(index)
+            except Exception:
+                continue
+
+            if 0 <= i < len(slots) and isinstance(slots[i], dict):
+                return slots[i]
+
+        return None
+
+    def message_prefers_ordinal_selection(
+        self,
+        message: str,
+        resolver: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        """
+        True when configured ordinal markers are present and no explicit time
+        marker/period marker is present.
+
+        This prevents "option 2" from being parsed as 02:00, while preserving
+        "2 PM" or "الساعة 2" as time selection.
+        """
+        normalized = normalize_text(str(message or ""), normalization)
+
+        ordinal_markers = resolver.get("ordinal_markers", [])
+        if not isinstance(ordinal_markers, list):
+            ordinal_markers = []
+
+        has_ordinal_marker = self.message_has_configured_marker(
+            normalized_text=normalized,
+            markers=ordinal_markers,
+            normalization=normalization
+        )
+
+        if not has_ordinal_marker:
+            return False
+
+        time_only_config = config.get("time_only_slot_selection", {})
+        if not isinstance(time_only_config, dict):
+            time_only_config = {}
+
+        time_markers = time_only_config.get("time_markers", [])
+        if not isinstance(time_markers, list):
+            time_markers = []
+
+        has_time_marker = self.message_has_configured_marker(
+            normalized_text=normalized,
+            markers=time_markers,
+            normalization=normalization
+        )
+
+        return not has_time_marker and not self.message_has_explicit_period_marker(
+            message,
+            config,
+            normalization
+        )
+
+    def message_contains_ordinal_selection_intent(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        resolver = config.get("slot_resolver", {})
+        if not isinstance(resolver, dict):
+            resolver = {}
+
+        normalized_message = normalize_text(str(message or ""), normalization)
+        ordinal_map = resolver.get("ordinal_map", {})
+
+        if not isinstance(ordinal_map, dict):
+            return False
+
+        for phrase in ordinal_map.keys():
+            normalized_phrase = normalize_text(str(phrase), normalization)
+
+            if self.ordinal_phrase_matches(
+                normalized_message=normalized_message,
+                normalized_phrase=normalized_phrase,
+                resolver=resolver,
+                normalization=normalization
+            ):
+                return True
+
+        markers = resolver.get("ordinal_markers", [])
+        if isinstance(markers, list):
+            return self.message_has_configured_marker(
+                normalized_text=normalized_message,
+                markers=markers,
+                normalization=normalization
+            )
+
+        return False
+
 
     def extract_time(self, text: str, config: Dict[str, Any], normalization: Dict[str, Any]) -> str:
         time_config = config.get("time_normalization", {})
