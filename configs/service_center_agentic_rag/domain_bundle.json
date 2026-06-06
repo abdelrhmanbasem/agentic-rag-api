@@ -1542,6 +1542,18 @@
         ],
         "extraction_patterns": [
           {
+            "variable": "customer_profile.plate_number",
+            "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+            "group": 1,
+            "when_missing": "customer_profile.plate_number"
+          },
+          {
+            "variable": "customer_profile.plate_number",
+            "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+            "group": 1,
+            "when_missing": "customer_profile.plate_number"
+          },
+          {
             "variable": "customer_profile.full_name",
             "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الاسم|الإسم|name is|my name is)\\s*[:：\\-]?\\s*([^\\n،,.]+)",
             "group": 1
@@ -1854,7 +1866,22 @@
             "تليفون",
             "تلفون",
             "رقمي",
-            "phone"
+            "phone",
+            "رقم العربيه",
+            "رقم عربيتى",
+            "رقم عربيتي",
+            "نمر العربيه",
+            "نمرة العربيه",
+            "نمره العربية",
+            "نمره العربيه",
+            "رقم اللوحه بتاعتي",
+            "رقم اللوحة بتاعتي",
+            "لوحتي",
+            "لوحتى",
+            "plate",
+            "plate number",
+            "car plate",
+            "vehicle number"
           ],
           "if_name_missing_after_plate": "ask_only_for_full_name",
           "if_name_and_plate_missing_after_confirmation": "ask_for_full_name_and_plate"
@@ -1921,7 +1948,19 @@
             "اللوحة",
             "لوحتي",
             "لوحتى",
-            "plate"
+            "plate",
+            "رقم العربيه",
+            "رقم عربيتى",
+            "رقم عربيتي",
+            "نمر العربيه",
+            "نمرة العربيه",
+            "نمره العربية",
+            "نمره العربيه",
+            "رقم اللوحه بتاعتي",
+            "رقم اللوحة بتاعتي",
+            "plate number",
+            "car plate",
+            "vehicle number"
           ],
           "general_markers": [
             "اسمي",
@@ -1970,7 +2009,19 @@
             "same number",
             "use this number",
             "whatsapp number",
-            "same whatsapp number"
+            "same whatsapp number",
+            "رقم العربيه",
+            "رقم عربيتى",
+            "رقم عربيتي",
+            "نمر العربيه",
+            "نمرة العربيه",
+            "نمره العربية",
+            "نمره العربيه",
+            "رقم اللوحه بتاعتي",
+            "رقم اللوحة بتاعتي",
+            "plate number",
+            "car plate",
+            "vehicle number"
           ],
           "same_phone_markers": [
             "نفس الرقم",
@@ -2113,7 +2164,28 @@
             "phone",
             "mobile",
             "plate",
-            "name"
+            "name",
+            "عربيتي",
+            "عربيتى",
+            "رقم العربية",
+            "رقم العربيه",
+            "رقم عربيتى",
+            "رقم عربيتي",
+            "نمر العربية",
+            "نمر العربيه",
+            "نمرة العربية",
+            "نمرة العربيه",
+            "نمره العربية",
+            "نمره العربيه",
+            "رقم اللوحه",
+            "رقم اللوحة",
+            "رقم اللوحه بتاعتي",
+            "رقم اللوحة بتاعتي",
+            "لوحتي",
+            "لوحتى",
+            "plate number",
+            "car plate",
+            "vehicle number"
           ],
           "min_name_parts": 2,
           "max_name_parts": 6,
@@ -2151,6 +2223,14 @@
         "plate_extraction": {
           "fallback_patterns": [
             {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
+            {
               "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
               "group": 1
             }
@@ -2171,7 +2251,31 @@
           "require_digit": true,
           "require_letter_or_digit": true,
           "min_length": 2,
-          "max_length": 30
+          "max_length": 40,
+          "capture_patterns": [
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            }
+          ],
+          "patterns": [
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            }
+          ],
+          "marker_capture_max_chars": 40,
+          "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+          "prefer_marker_remainder": true,
+          "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
         },
         "branch_inference_stopwords": [
           "انا",
@@ -3267,10 +3371,30 @@
               "اللوحة",
               "لوحتي",
               "لوحتى",
-              "plate"
+              "plate",
+              "رقم العربيه",
+              "رقم عربيتى",
+              "رقم عربيتي",
+              "نمر العربيه",
+              "نمرة العربيه",
+              "نمره العربية",
+              "نمره العربيه",
+              "رقم اللوحه بتاعتي",
+              "رقم اللوحة بتاعتي",
+              "plate number",
+              "car plate",
+              "vehicle number"
             ],
             "extraction": {
               "fallback_patterns": [
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3298,6 +3422,14 @@
               ],
               "capture_patterns": [
                 {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3323,6 +3455,14 @@
                 }
               ],
               "patterns": [
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3364,7 +3504,7 @@
               "require_digit": true,
               "require_letter_or_digit": true,
               "min_length": 2,
-              "max_length": 30,
+              "max_length": 40,
               "separator_pattern": "[،,.!?؟:;]+",
               "cleanup_patterns": [
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
@@ -3595,10 +3735,30 @@
               "اللوحة",
               "لوحتي",
               "لوحتى",
-              "plate"
+              "plate",
+              "رقم العربيه",
+              "رقم عربيتى",
+              "رقم عربيتي",
+              "نمر العربيه",
+              "نمرة العربيه",
+              "نمره العربية",
+              "نمره العربيه",
+              "رقم اللوحه بتاعتي",
+              "رقم اللوحة بتاعتي",
+              "plate number",
+              "car plate",
+              "vehicle number"
             ],
             "extraction": {
               "fallback_patterns": [
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3626,6 +3786,14 @@
               ],
               "capture_patterns": [
                 {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
                 },
@@ -3651,6 +3819,14 @@
                 }
               ],
               "patterns": [
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
                 {
                   "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                   "group": 1
@@ -3692,7 +3868,7 @@
               "require_digit": true,
               "require_letter_or_digit": true,
               "min_length": 2,
-              "max_length": 30,
+              "max_length": 40,
               "separator_pattern": "[،,.!?؟:;]+",
               "cleanup_patterns": [
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
@@ -3926,10 +4102,30 @@
                 "اللوحة",
                 "لوحتي",
                 "لوحتى",
-                "plate"
+                "plate",
+                "رقم العربيه",
+                "رقم عربيتى",
+                "رقم عربيتي",
+                "نمر العربيه",
+                "نمرة العربيه",
+                "نمره العربية",
+                "نمره العربيه",
+                "رقم اللوحه بتاعتي",
+                "رقم اللوحة بتاعتي",
+                "plate number",
+                "car plate",
+                "vehicle number"
               ],
               "extraction": {
                 "fallback_patterns": [
+                  {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
                   {
                     "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                     "group": 1
@@ -3957,6 +4153,14 @@
                 ],
                 "capture_patterns": [
                   {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
                     "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                     "group": 1
                   },
@@ -3982,6 +4186,14 @@
                   }
                 ],
                 "patterns": [
+                  {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
                   {
                     "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
                     "group": 1
@@ -4023,7 +4235,7 @@
                 "require_digit": true,
                 "require_letter_or_digit": true,
                 "min_length": 2,
-                "max_length": 30,
+                "max_length": 40,
                 "separator_pattern": "[،,.!?؟:;]+",
                 "cleanup_patterns": [
                   "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
@@ -4043,6 +4255,14 @@
         },
         "plate_number_extraction": {
           "fallback_patterns": [
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
             {
               "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
               "group": 1
@@ -4084,8 +4304,16 @@
           "require_digit": true,
           "require_letter_or_digit": true,
           "min_length": 2,
-          "max_length": 30,
+          "max_length": 40,
           "capture_patterns": [
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
             {
               "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
               "group": 1
@@ -4112,6 +4340,14 @@
             }
           ],
           "patterns": [
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
             {
               "regex": "(?:رقم\\ العربية|نمر\\ العربية|نمرة\\ العربية|رقم\\ اللوحه|رقم\\ اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,30})",
               "group": 1
@@ -5032,7 +5268,8 @@
       "do_not_acknowledge_customer_detail_as_received_unless_state_saved": true,
       "variable_awareness_quality_guard": true,
       "never_ask_for_known_variables": true,
-      "humanlike_energy_guard_enabled": true
+      "humanlike_energy_guard_enabled": true,
+      "plate_marker_variants_configured": true
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -6304,7 +6541,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.20-persona-emotion-humanlike-no-hardcoding",
+    "architecture_version": "6.24-plate-marker-variants-config-fix",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -6704,7 +6941,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.20-persona-emotion-humanlike-no-hardcoding",
+    "version": "6.24-plate-marker-variants-config-fix",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -6809,7 +7046,8 @@
       "Version 6.18 blocks confirmation/customer-detail continuation when no pending slot exists; after slots_found=false the assistant asks for another date instead of collecting customer details.",
       "Version 6.19 improves generic customer-detail capture by using configured field markers to capture the remainder of the message, then scoring all candidates so broad regexes do not drop meaningful tokens.",
       "Version 6.20 adds assistant persona, emotion_response_guidance, and proactive_nudge so response voice and tone are config-driven per assistant.",
-      "Version 6.20 pairs with graph human-readable response sections and variable-awareness quality guard."
+      "Version 6.20 pairs with graph human-readable response sections and variable-awareness quality guard.",
+      "Version 6.24 fixes Arabic car-plate detail capture by moving spelling variants for configured plate markers into domain_bundle.json, including العربية/العربيه forms. No Python domain hardcoding is required."
     ]
   }
 }
