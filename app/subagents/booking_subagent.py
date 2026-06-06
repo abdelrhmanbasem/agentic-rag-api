@@ -90,6 +90,16 @@ class BookingSubagent:
 
         stage = deep_get(variables, stage_path, "")
 
+        date_question_result = self.handle_date_only_question_if_needed(
+            context=context,
+            config=config,
+            variables=variables,
+            normalization=normalization
+        )
+
+        if date_question_result:
+            return date_question_result
+
         variables = self.ensure_selected_branch_from_context(
             variables=variables,
             assistant_config=context.assistant_config,
@@ -206,6 +216,16 @@ class BookingSubagent:
             message=context.user_message
         )
 
+        date_question_result = self.handle_date_only_question_if_needed(
+            context=context,
+            config=config,
+            variables=variables,
+            normalization=normalization
+        )
+
+        if date_question_result:
+            return date_question_result
+
         variables = self.ensure_pending_booking_context(
             variables=variables,
             config=config,
@@ -255,6 +275,20 @@ class BookingSubagent:
         )
 
         stage = deep_get(variables, stage_path, stage)
+
+        selected_slot_before_request = self.resolve_slot_selection(
+            context=context,
+            config=config,
+            variables=variables
+        )
+
+        if selected_slot_before_request:
+            return self.handle_slot_selected(
+                context=context,
+                config=config,
+                variables=variables,
+                selected_slot=selected_slot_before_request
+            )
 
         # If the user supplied a date while we were waiting for one, do not let
         # stale awaiting_date state ask for create/customer fields. Continue to
@@ -1225,22 +1259,27 @@ class BookingSubagent:
         # Example: a phrase containing a configured afternoon/evening marker plus "3"
         # must resolve to a 15:00 time slot, not option number 3.
         if time_field and time_normalizer == "hour_exact_or_same_hour":
-            requested_time = self.extract_time(context.user_message, config, normalization)
+            requested_time = self.resolve_requested_slot_time(
+                context=context,
+                config=config,
+                variables=variables
+            )
 
             if requested_time:
-                for slot in slots:
-                    slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+                matched_slot = self.match_requested_time_to_slot(
+                    requested_time=requested_time,
+                    slots=slots,
+                    time_field=str(time_field),
+                    config=config,
+                    normalization=normalization,
+                    message=context.user_message
+                )
 
-                    if slot_time == requested_time:
-                        return slot
+                if matched_slot:
+                    return matched_slot
 
-                requested_hour = requested_time.split(":")[0]
-
-                for slot in slots:
-                    slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
-
-                    if slot_time and slot_time.split(":")[0] == requested_hour:
-                        return slot
+                if self.message_contains_time_intent(context.user_message, config, normalization):
+                    return None
 
         ordinal_map = resolver.get("ordinal_map", {})
 
@@ -1489,6 +1528,344 @@ class BookingSubagent:
             output = re.sub(rf"\b{re.escape(word_text)}\b", number_text, output)
 
         return output
+
+    def handle_date_only_question_if_needed(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Optional[SubagentResult]:
+        if not self.is_date_only_question(
+            message=context.user_message,
+            config=config,
+            normalization=normalization
+        ):
+            return None
+
+        date_text = self.extract_date_text(
+            message=context.user_message,
+            config=config,
+            normalization=normalization
+        )
+
+        resolved_date = ""
+
+        if date_text:
+            resolved_date = self.resolve_date_text(
+                date_text=date_text,
+                message=context.user_message,
+                normalization=normalization,
+                config=config
+            )
+
+        if not resolved_date:
+            resolved_date = (
+                deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+                or deep_get(variables, "date")
+                or deep_get(variables, "booking.pending.date")
+            )
+
+        updates: Dict[str, Any] = {}
+
+        if date_text:
+            updates[config.get("date_text_path", "date_text")] = date_text
+
+        if resolved_date:
+            updates[config.get("appointment_date_path", "appointment_date")] = resolved_date
+            updates["date"] = resolved_date
+
+        patched = apply_variable_patch(variables, updates, []) if updates else variables
+
+        template_key = str(
+            config.get("date_question", {}).get("template_key")
+            if isinstance(config.get("date_question", {}), dict)
+            else ""
+        ).strip() or "date_resolved"
+
+        answer = render_template(
+            config.get("templates", {}).get(template_key, ""),
+            {
+                "variables": patched,
+                "date_text": date_text,
+                "resolved_date": resolved_date,
+                "message": context.user_message
+            }
+        )
+
+        if not answer:
+            answer = render_template(
+                config.get("templates", {}).get("date_resolved", ""),
+                {
+                    "variables": patched,
+                    "date_text": date_text,
+                    "resolved_date": resolved_date,
+                    "message": context.user_message
+                }
+            )
+
+        return SubagentResult(
+            handled=True,
+            action="reply",
+            answer=answer,
+            variable_updates=patched,
+            selected_subagent=self.name,
+            notes="date-only question answered without listing slots"
+        )
+
+    def is_date_only_question(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        question_config = config.get("date_question", {})
+        if not isinstance(question_config, dict) or not question_config.get("enabled", False):
+            return False
+
+        normalized = normalize_text(str(message or ""), normalization)
+
+        if not normalized:
+            return False
+
+        exclude_terms = question_config.get("exclude_if_any", [])
+        if isinstance(exclude_terms, list) and matches_any(message, exclude_terms, normalization):
+            return False
+
+        require_any = question_config.get("require_any", [])
+        if isinstance(require_any, list) and require_any:
+            if not matches_any(message, require_any, normalization):
+                return False
+
+        date_text = self.extract_date_text(
+            message=message,
+            config=config,
+            normalization=normalization
+        )
+
+        if not date_text:
+            return False
+
+        allow_when_booking_active = bool(question_config.get("allow_during_active_booking", True))
+
+        if not allow_when_booking_active:
+            return False
+
+        return True
+
+    def resolve_requested_slot_time(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any]
+    ) -> str:
+        normalization = context.assistant_config.get("normalization", {})
+        resolver = config.get("slot_resolver", {})
+        if not isinstance(resolver, dict):
+            resolver = {}
+
+        message_time = self.extract_time(context.user_message, config, normalization)
+
+        if message_time:
+            return message_time
+
+        requested_time_paths = resolver.get("requested_time_paths", [])
+        if not isinstance(requested_time_paths, list):
+            requested_time_paths = []
+
+        for path in requested_time_paths:
+            value = deep_get(variables, str(path or "").strip())
+            if value in [None, "", [], {}]:
+                continue
+
+            resolved = self.extract_time(str(value), config, normalization)
+            if resolved:
+                return resolved
+
+            value_text = str(value or "").strip()
+            if re.fullmatch(r"\d{1,2}:\d{2}", value_text):
+                return value_text
+
+        return ""
+
+    def match_requested_time_to_slot(
+        self,
+        requested_time: str,
+        slots: List[Dict[str, Any]],
+        time_field: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str
+    ) -> Optional[Dict[str, Any]]:
+        if not requested_time:
+            return None
+
+        exact_matches: List[Dict[str, Any]] = []
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+
+            slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+
+            if slot_time == requested_time:
+                exact_matches.append(slot)
+
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        if len(exact_matches) > 1:
+            return None
+
+        alternate_times = self.get_12_hour_alternative_times(
+            requested_time=requested_time,
+            slots=slots,
+            time_field=time_field,
+            config=config,
+            normalization=normalization,
+            message=message
+        )
+
+        alternate_matches: List[Dict[str, Any]] = []
+
+        for alternate in alternate_times:
+            for slot in slots:
+                if not isinstance(slot, dict):
+                    continue
+
+                slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+
+                if slot_time == alternate:
+                    alternate_matches.append(slot)
+
+        if len(alternate_matches) == 1:
+            return alternate_matches[0]
+
+        requested_hour = requested_time.split(":")[0]
+
+        same_hour_matches: List[Dict[str, Any]] = []
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+
+            slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+
+            if slot_time and slot_time.split(":")[0] == requested_hour:
+                same_hour_matches.append(slot)
+
+        if len(same_hour_matches) == 1:
+            return same_hour_matches[0]
+
+        return None
+
+    def get_12_hour_alternative_times(
+        self,
+        requested_time: str,
+        slots: List[Dict[str, Any]],
+        time_field: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str
+    ) -> List[str]:
+        resolver = config.get("slot_resolver", {})
+        if not isinstance(resolver, dict):
+            resolver = {}
+
+        policy = resolver.get("twelve_hour_policy", {})
+        if not isinstance(policy, dict):
+            policy = {}
+
+        if not policy.get("enabled", False):
+            return []
+
+        if self.message_has_explicit_period_marker(message, config, normalization):
+            return []
+
+        try:
+            hour_text, minute_text = requested_time.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except Exception:
+            return []
+
+        if hour < 1 or hour > 12:
+            return []
+
+        candidates = []
+
+        for candidate_hour in [hour + 12, hour - 12]:
+            if 0 <= candidate_hour <= 23:
+                candidates.append(f"{candidate_hour:02d}:{minute:02d}")
+
+        available_slot_times = set()
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+
+            slot_time = self.extract_time(str(deep_get(slot, time_field, "")), config, normalization)
+            if slot_time:
+                available_slot_times.add(slot_time)
+
+        return [
+            candidate
+            for candidate in candidates
+            if candidate in available_slot_times
+        ]
+
+    def message_has_explicit_period_marker(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        time_config = config.get("time_normalization", {})
+        if not isinstance(time_config, dict):
+            time_config = {}
+
+        marker_groups = []
+
+        period_markers = time_config.get("period_markers", {})
+        if isinstance(period_markers, dict):
+            for markers in period_markers.values():
+                if isinstance(markers, list):
+                    marker_groups.extend(markers)
+
+        periods = time_config.get("periods", [])
+        if isinstance(periods, list):
+            for period in periods:
+                if isinstance(period, dict) and isinstance(period.get("markers"), list):
+                    marker_groups.extend(period.get("markers", []))
+
+        return self.message_has_configured_marker(
+            normalized_text=normalize_text(message, normalization),
+            markers=marker_groups,
+            normalization=normalization
+        )
+
+    def message_contains_time_intent(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        requested_time = self.extract_time(message, config, normalization)
+
+        if requested_time:
+            return True
+
+        time_only_config = config.get("time_only_slot_selection", {})
+        if not isinstance(time_only_config, dict):
+            time_only_config = {}
+
+        markers = time_only_config.get("time_markers", [])
+        if isinstance(markers, list) and matches_any(message, markers, normalization):
+            return True
+
+        return False
+
+
 
     def should_extract_date(self, context: SubagentContext, config: Dict[str, Any], stage: str) -> bool:
         active_stages = config.get("active_request_stages", [])
