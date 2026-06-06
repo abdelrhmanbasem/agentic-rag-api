@@ -7,8 +7,8 @@
     "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
-    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection. During booking.stage awaiting_customer_details, customer detail messages such as name, phone, same-phone confirmation, or plate number must route to booking, not handoff and not simple response. During booking.stage awaiting_customer_details, if the customer provides one detail, booking must preserve previous customer_profile fields and ask only for the remaining missing detail. During booking.stage awaiting_confirmation, confirmation words must route to booking. During booking.stage slot_selection, time phrases like 3 العصر, 10 الصبح, or ordinal choices must route to booking and resolve only against current available_slots. When a selected slot exists, final wording must use booking.pending.time or appointment_time from state. Never invent or rewrite a different time. If the customer says 3 العصر, treat it as a time selection, not option number 3, unless the user explicitly says option/choice/number 3. If the customer asks a date-only question like what date a day corresponds to, answer the date only and do not list available slots. During active booking flow, date-only clarification questions must not trigger list_available_slots unless the latest message also asks for availability/appointments. If the customer selects a time and that time matches a current available slot after 12-hour normalization, select that slot and ask for confirmation instead of listing slots again. If the customer says الساعة 1 and 13:00 is the only matching 12-hour available slot, treat it as 13:00. When list_available_slots returns no slots, keep the fact grounded as BOOKING_NO_SLOTS and let the response phrasing be natural under template_response_policy constraints. Do not force a fixed no-slots sentence; the LLM can phrase it naturally only after slots_found=false is grounded. If the customer changes the requested date while slots or a pending slot are active, booking must clear stale slots and pending time before checking the new date. A date-change message such as actually, بدل, غير, خليها, what about, or a different resolved weekday/date should trigger fresh availability for the new date when branch is known. After date_change, never treat the message as a slot selection against the old available_slots.",
-    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details. If the customer asks to use the same/current WhatsApp number and a valid phone exists in configured phone source paths, treat phone as present and ask only for remaining missing customer details. If list_available_slots returns slots_found=false, the response LLM may phrase the no-slots message naturally, but it must not invent alternative dates, reasons, or slots. BOOKING_NO_SLOTS is allowed only when the booking executor/tool result proves slots_found=false for the requested branch/date. After booking.date_changed=true, available_slots and booking.pending from the previous date must not be used for final answers or booking creation. Fresh list_available_slots results are required before showing slots for a changed date.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection. During booking.stage awaiting_customer_details, customer detail messages such as name, phone, same-phone confirmation, or plate number must route to booking, not handoff and not simple response. During booking.stage awaiting_customer_details, if the customer provides one detail, booking must preserve previous customer_profile fields and ask only for the remaining missing detail. During booking.stage awaiting_confirmation, confirmation words must route to booking. During booking.stage slot_selection, time phrases like 3 العصر, 10 الصبح, or ordinal choices must route to booking and resolve only against current available_slots. When a selected slot exists, final wording must use booking.pending.time or appointment_time from state. Never invent or rewrite a different time. If the customer says 3 العصر, treat it as a time selection, not option number 3, unless the user explicitly says option/choice/number 3. If the customer asks a date-only question like what date a day corresponds to, answer the date only and do not list available slots. During active booking flow, date-only clarification questions must not trigger list_available_slots unless the latest message also asks for availability/appointments. If the customer selects a time and that time matches a current available slot after 12-hour normalization, select that slot and ask for confirmation instead of listing slots again. If the customer says الساعة 1 and 13:00 is the only matching 12-hour available slot, treat it as 13:00. When list_available_slots returns no slots, keep the fact grounded as BOOKING_NO_SLOTS and let the response phrasing be natural under template_response_policy constraints. Do not force a fixed no-slots sentence; the LLM can phrase it naturally only after slots_found=false is grounded. If the customer changes the requested date while slots or a pending slot are active, booking must clear stale slots and pending time before checking the new date. A date-change message such as actually, بدل, غير, خليها, what about, or a different resolved weekday/date should trigger fresh availability for the new date when branch is known. After date_change, never treat the message as a slot selection against the old available_slots. For hesitant or corrected messages, latest explicit preference wins unless the user clearly asks to compare alternatives. Do not parallelize changed date, branch, slot, service, or booking alternatives; use the latest selected preference. If a branch/location changes while slots or a pending booking are active, clear stale slots and pending time before any new availability or booking action. If the customer gives multiple symptoms, troubleshooting should score all configured matching rules and use the strongest primary rule while preserving matched_rules for response synthesis. If the customer asks for inspection/visit after troubleshooting, stop diagnostics and continue toward location/booking using configured visit intent policy.",
+    "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details. If the customer asks to use the same/current WhatsApp number and a valid phone exists in configured phone source paths, treat phone as present and ask only for remaining missing customer details. If list_available_slots returns slots_found=false, the response LLM may phrase the no-slots message naturally, but it must not invent alternative dates, reasons, or slots. BOOKING_NO_SLOTS is allowed only when the booking executor/tool result proves slots_found=false for the requested branch/date. After booking.date_changed=true, available_slots and booking.pending from the previous date must not be used for final answers or booking creation. Fresh list_available_slots results are required before showing slots for a changed date. After location.branch_changed=true or location.changed=true, available_slots and booking.pending from the previous branch/location must not be used. Fresh list_available_slots results are required before showing slots after branch/location/date changes. Tool result ok=false is a tool/config/runtime failure; ok=true with slots_found=false is a successful no-slots lookup.",
     "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic like: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز. Avoid formal wording like هل ترغب. لو العميل قال يستخدم نفس الرقم أو الرقم اللي بيتكلم منه وكان الرقم موجود في السياق، ما تطلبش رقم التليفون تاني؛ اسأل بس عن البيانات الناقصة.",
     "branch_aliases": {
       "Nasr City": [
@@ -409,12 +409,19 @@
       "If the customer changes the requested date after slots were shown, clear old slots and fetch fresh availability for the new date when branch is known.",
       "After a date change, do not show slots, selected time, or pending booking details from the previous date.",
       "Bare weekday names should resolve to the soonest upcoming occurrence; explicit next-week markers force the following week; explicit this-week markers prefer the current week occurrence.",
-      "If a changed date has no slots, say naturally that there are no slots for that branch/date and ask for another date."
+      "If a changed date has no slots, say naturally that there are no slots for that branch/date and ask for another date.",
+      "If the user changes branch/location after slots were shown, clear old slots and do not use old pending appointment details.",
+      "If the user changes date after slots were shown, clear old slots and do not use old pending appointment details.",
+      "If the user asks multiple things in one message, answer completed grounded parts briefly and ask only for the missing input.",
+      "If the user corrects themselves in the same message, follow the latest correction and do not mention discarded alternatives unless helpful.",
+      "Troubleshooting responses should use configured rule metadata and ask only one useful diagnostic question unless inspection is recommended.",
+      "If troubleshooting detects visit intent, stop asking diagnostic questions and move toward branch/date."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
       "max_tool_calls": "محتاج أتأكد من البيانات الأول. ممكن تعيد طلبك بشكل أوضح؟",
-      "default_final": "محتاج تفاصيل أكتر عشان أساعدك."
+      "default_final": "محتاج تفاصيل أكتر عشان أساعدك.",
+      "graph_error": "حصلت مشكلة بسيطة وأنا بعالج طلبك. ممكن تعيد رسالتك؟"
     },
     "normalization": {
       "digit_map": {
@@ -468,7 +475,15 @@
         "operations": {
           "list_branches": {
             "required": [],
-            "optional": []
+            "optional": [],
+            "result_type": "branch_list",
+            "result_defaults": {
+              "branches": [],
+              "branches_text": ""
+            },
+            "required_result_fields": [
+              "ok"
+            ]
           },
           "find_nearest_branch": {
             "required": [],
@@ -476,7 +491,29 @@
               "location",
               "latitude",
               "longitude"
-            ]
+            ],
+            "result_type": "nearest_branch",
+            "result_defaults": {
+              "branch_found": false
+            },
+            "required_result_fields": [
+              "ok"
+            ],
+            "argument_aliases": {
+              "location": [
+                "user_area",
+                "area"
+              ],
+              "latitude": [
+                "lat",
+                "user_coordinates.latitude"
+              ],
+              "longitude": [
+                "lng",
+                "lon",
+                "user_coordinates.longitude"
+              ]
+            }
           },
           "list_available_slots": {
             "required": [
@@ -487,7 +524,28 @@
               "date_text",
               "section",
               "limit"
-            ]
+            ],
+            "result_type": "available_slots",
+            "result_defaults": {
+              "slots_found": false,
+              "available_slots": [],
+              "available_slots_text": ""
+            },
+            "required_result_fields": [
+              "ok",
+              "slots_found"
+            ],
+            "argument_aliases": {
+              "branch": [
+                "selected_branch",
+                "location_branch",
+                "nearest_branch"
+              ],
+              "date": [
+                "appointment_date",
+                "booking.pending.date"
+              ]
+            }
           },
           "check_availability": {
             "required": [
@@ -515,8 +573,55 @@
             "optional": [
               "conversation_id",
               "user_id"
-            ]
+            ],
+            "result_type": "booking_creation",
+            "required_result_fields": [
+              "ok"
+            ],
+            "argument_aliases": {
+              "full_name": [
+                "name",
+                "customer_name",
+                "customer_profile.full_name"
+              ],
+              "phone": [
+                "customer_phone",
+                "customer_profile.phone"
+              ],
+              "plate_number": [
+                "vehicle_number",
+                "car_plate",
+                "customer_profile.plate_number"
+              ]
+            },
+            "idempotency": {
+              "enabled": true,
+              "header": "Idempotency-Key",
+              "fields": [
+                "conversation_id",
+                "branch",
+                "date",
+                "time",
+                "phone",
+                "plate_number"
+              ]
+            }
           }
+        },
+        "retry": {
+          "attempts": 3,
+          "min_seconds": 0.5,
+          "max_seconds": 4,
+          "multiplier": 0.5,
+          "http_statuses": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ]
         }
       }
     ],
@@ -913,7 +1018,154 @@
             ]
           }
         },
-        "template_fallback_prefix": "LOCATION"
+        "template_fallback_prefix": "LOCATION",
+        "direct_branch_resolution": {
+          "enabled": true,
+          "set_updates": {
+            "location.direct_branch_match": true
+          }
+        },
+        "known_branch_paths": [
+          "selected_branch",
+          "location_branch",
+          "nearest_branch",
+          "booking.pending.branch"
+        ],
+        "known_location_paths": [
+          "user_area",
+          "location.user_area",
+          "location.previous_location"
+        ],
+        "stale_state_clear_paths": [
+          "available_slots",
+          "available_slots_text",
+          "slots_found",
+          "appointment_time",
+          "appointment_time_text",
+          "booking.pending",
+          "booking.pending_summary",
+          "selected_slot",
+          "customer_confirmed_booking"
+        ],
+        "branch_change": {
+          "clear_paths": [
+            "available_slots",
+            "available_slots_text",
+            "slots_found",
+            "appointment_time",
+            "appointment_time_text",
+            "booking.pending",
+            "booking.pending_summary",
+            "selected_slot",
+            "customer_confirmed_booking"
+          ],
+          "active_when_any_path": [
+            "available_slots",
+            "booking.pending",
+            "selected_branch",
+            "location_branch",
+            "nearest_branch"
+          ],
+          "changed_path": "location.branch_changed"
+        },
+        "location_change": {
+          "enabled": true,
+          "clear_paths": [
+            "available_slots",
+            "available_slots_text",
+            "slots_found",
+            "appointment_time",
+            "appointment_time_text",
+            "booking.pending",
+            "booking.pending_summary",
+            "selected_slot",
+            "customer_confirmed_booking"
+          ],
+          "active_when_any_path": [
+            "available_slots",
+            "booking.pending",
+            "selected_branch",
+            "location_branch",
+            "nearest_branch",
+            "user_area"
+          ],
+          "changed_path": "location.changed",
+          "previous_location_path": "location.previous_location",
+          "coordinates_changed_path": "location.coordinates_changed",
+          "coordinate_tolerance": 1e-05,
+          "set_updates": {
+            "location.changed": true
+          }
+        },
+        "coordinate_patterns": [
+          {
+            "regex": "(-?\\d{1,2}\\.\\d+)\\s*,\\s*(-?\\d{1,3}\\.\\d+)",
+            "latitude_group": 1,
+            "longitude_group": 2
+          }
+        ],
+        "branch_aliases": {
+          "Nasr City": [
+            "Nasr City",
+            "nasr city",
+            "مدينة نصر",
+            "مدينه نصر",
+            "فرع مدينة نصر",
+            "فرع مدينه نصر",
+            "مدينة مصر",
+            "مدينه مصر",
+            "فرع مدينة مصر",
+            "فرع مدينه مصر",
+            "نصر سيتي",
+            "ناصر سيتي"
+          ],
+          "Maadi": [
+            "Maadi",
+            "maadi",
+            "المعادي",
+            "معادي",
+            "فرع المعادي",
+            "فرع معادي"
+          ],
+          "Dokki": [
+            "Dokki",
+            "dokki",
+            "الدقي",
+            "دقي",
+            "فرع الدقي",
+            "فرع دقي"
+          ],
+          "6th October": [
+            "6th October",
+            "6 October",
+            "october",
+            "اكتوبر",
+            "أكتوبر",
+            "٦ اكتوبر",
+            "6 اكتوبر",
+            "فرع اكتوبر",
+            "فرع أكتوبر",
+            "السادس من اكتوبر",
+            "السادس من أكتوبر"
+          ],
+          "Alexandria": [
+            "Alexandria",
+            "alexandria",
+            "اسكندرية",
+            "إسكندرية",
+            "الاسكندرية",
+            "الإسكندرية",
+            "فرع اسكندرية",
+            "فرع إسكندرية",
+            "فرع الاسكندرية",
+            "فرع الإسكندرية"
+          ]
+        },
+        "branch_update_paths": [
+          "selected_branch",
+          "location_branch",
+          "nearest_branch"
+        ]
       },
       "booking": {
         "id": "booking",
@@ -2110,19 +2362,24 @@
         },
         "date_resolution": {
           "relative_day_offsets": {
-            "بعد بكره": 2,
-            "بعد بكرة": 2,
-            "بعد غد": 2,
-            "بعد الغد": 2,
-            "بكره": 1,
-            "بكرة": 1,
-            "غدا": 1,
-            "غد": 1,
-            "tomorrow": 1,
-            "النهارده": 0,
-            "انهارده": 0,
-            "اليوم": 0,
-            "today": 0
+            "0": [
+              "النهارده",
+              "انهارده",
+              "اليوم",
+              "today"
+            ],
+            "1": [
+              "بكرة",
+              "بكره",
+              "غدا",
+              "غداً",
+              "tomorrow"
+            ],
+            "2": [
+              "بعد بكرة",
+              "بعد بكره",
+              "day after tomorrow"
+            ]
           },
           "weekday_terms": {
             "الاثنين": 0,
@@ -2205,7 +2462,90 @@
           "weekday_same_day_policy": "bare_weekday_can_mean_today_or_next_occurrence",
           "bare_weekday_policy": "soonest_upcoming",
           "next_week_policy": "force_following_week_even_if_weekday_is_today",
-          "this_week_policy": "current_week_occurrence_else_next_week_if_passed"
+          "this_week_policy": "current_week_occurrence_else_next_week_if_passed",
+          "numeric_date_orders": [
+            "DMY"
+          ],
+          "month_terms": {
+            "1": [
+              "يناير",
+              "january",
+              "jan"
+            ],
+            "2": [
+              "فبراير",
+              "february",
+              "feb"
+            ],
+            "3": [
+              "مارس",
+              "march",
+              "mar"
+            ],
+            "4": [
+              "ابريل",
+              "أبريل",
+              "april",
+              "apr"
+            ],
+            "5": [
+              "مايو",
+              "may"
+            ],
+            "6": [
+              "يونيو",
+              "يونيه",
+              "june",
+              "jun"
+            ],
+            "7": [
+              "يوليو",
+              "يوليه",
+              "july",
+              "jul"
+            ],
+            "8": [
+              "اغسطس",
+              "أغسطس",
+              "august",
+              "aug"
+            ],
+            "9": [
+              "سبتمبر",
+              "september",
+              "sep"
+            ],
+            "10": [
+              "اكتوبر",
+              "أكتوبر",
+              "october",
+              "oct"
+            ],
+            "11": [
+              "نوفمبر",
+              "november",
+              "nov"
+            ],
+            "12": [
+              "ديسمبر",
+              "december",
+              "dec"
+            ]
+          },
+          "named_month_patterns": [
+            {
+              "regex": "\\b(\\d{1,2})\\s+([^\\s\\d]+)(?:\\s+(\\d{4}))?\\b",
+              "day_group": 1,
+              "month_group": 2,
+              "year_group": 3
+            },
+            {
+              "regex": "\\b([^\\s\\d]+)\\s+(\\d{1,2})(?:\\s+(\\d{4}))?\\b",
+              "day_group": 2,
+              "month_group": 1,
+              "year_group": 3
+            }
+          ]
         },
         "missing_template_by_paths": {
           "variables.date_text": "missing_date",
@@ -2381,7 +2721,7 @@
         ],
         "date_change": {
           "enabled": true,
-          "description": "Config-driven date-change handling. When the customer changes the requested date while slots or a pending slot are active, clear stale slot state and let booking fetch fresh availability for the newly resolved date.",
+          "description": "Config-driven date-change handling. Changing date during active slots/pending booking clears stale slot and time state.",
           "change_markers": [
             "بدل",
             "بدلاً",
@@ -2442,7 +2782,13 @@
           "preserve_customer_profile": true,
           "preserve_known_branch": true,
           "preserve_service_needed": true
-        }
+        },
+        "slot_change_compare_fields": [
+          "branch",
+          "date",
+          "time",
+          "section"
+        ]
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -2598,8 +2944,10 @@
         "phase_actions": {
           "started": "ask_user",
           "continued": "ask_user",
-          "complete": "ask_user",
-          "default": "ask_user"
+          "complete": "reply",
+          "default": "ask_user",
+          "switched": "ask_user",
+          "visit_requested": "reply"
         },
         "default_action": "ask_user",
         "default_template_key": "default",
@@ -2608,6 +2956,12 @@
           "started": {},
           "continued": {},
           "complete": {
+            "troubleshooting.inspection_recommended": true
+          },
+          "switched": {
+            "troubleshooting.rule_switched": true
+          },
+          "visit_requested": {
             "troubleshooting.inspection_recommended": true
           }
         },
@@ -2698,14 +3052,119 @@
             {
               "path": "selected_branch",
               "exists": true
+            },
+            {
+              "path": "available_slots",
+              "exists": true
             }
+          ],
+          "active_owner_paths": [
+            "booking.pending",
+            "booking.stage",
+            "customer_confirmed_booking",
+            "available_slots",
+            "location.intent",
+            "handoff_requested"
           ]
         },
         "notes": {
           "started": "troubleshooting:started:{rule_id}",
           "continued": "troubleshooting:continued:{rule_id}",
           "complete": "troubleshooting:complete:{rule_id}"
-        }
+        },
+        "rule_scoring": {
+          "phrase_weight": 1.0,
+          "regex_weight": 1.25,
+          "required_condition_weight": 0.25
+        },
+        "allow_rule_switch_during_active": true,
+        "rule_switch_score_margin": 0.25,
+        "max_matched_rules": 5,
+        "matched_rules_path": "troubleshooting.matched_rules",
+        "primary_score_path": "troubleshooting.primary_rule_score",
+        "history": {
+          "enabled": true,
+          "path": "troubleshooting.history",
+          "max_items": 8
+        },
+        "visit_or_next_action_intent": {
+          "phase": "visit_requested",
+          "phrases": [
+            "احجز",
+            "عايز احجز",
+            "أحجز",
+            "حجز",
+            "عايز معاد",
+            "عايز ميعاد",
+            "عايز موعد",
+            "مواعيد",
+            "المواعيد",
+            "حابب اكشف",
+            "حابب أكشف",
+            "عايز اكشف",
+            "عايز أكشف",
+            "عاوز اكشف",
+            "عاوز أكشف",
+            "اكشف واطمن",
+            "أكشف واطمن",
+            "اطمن على العربية",
+            "أطمن على العربية",
+            "اتطمن على العربية",
+            "عايز اطمن على العربية",
+            "عايز أطمن على العربية",
+            "عاوز اطمن على العربية",
+            "عاوز أطمن على العربية",
+            "عاوز اطمن",
+            "عاوز أطمن",
+            "عاوز اطمن عليها",
+            "عاوز أطمن عليها",
+            "اطمن عليها",
+            "أطمن عليها",
+            "اكشف عليها",
+            "أكشف عليها",
+            "اكشف على العربية",
+            "أكشف على العربية",
+            "اودي العربية",
+            "أودي العربية",
+            "اوديها",
+            "أوديها",
+            "اروح اكشف",
+            "أروح أكشف",
+            "اروح اطمن",
+            "أروح أطمن",
+            "اشوفها",
+            "أشوفها",
+            "اه ياريت",
+            "أه ياريت",
+            "ايوه ياريت",
+            "أيوه ياريت",
+            "ياريت",
+            "تمام اكشف",
+            "تمام نكشف",
+            "ماشي اكشف",
+            "ماشي نكشف",
+            "موعد كشف",
+            "معاد كشف",
+            "حجز كشف",
+            "زيارة للكشف",
+            "book",
+            "appointment"
+          ],
+          "updates": {
+            "troubleshooting.stage": "complete",
+            "troubleshooting.inspection_recommended": true,
+            "booking.stage": "awaiting_date"
+          },
+          "clear": []
+        },
+        "phase_template_labels": {
+          "started": "TROUBLESHOOTING_STARTED",
+          "continued": "TROUBLESHOOTING_CONTINUED",
+          "complete": "TROUBLESHOOTING_COMPLETE",
+          "switched": "TROUBLESHOOTING_SWITCHED",
+          "visit_requested": "TROUBLESHOOTING_VISIT_REQUESTED"
+        },
+        "continue_phase_rules": []
       }
     },
     "tool_update_rules": {
@@ -2717,7 +3176,35 @@
       },
       "find_nearest_branch": {
         "set": {
-          "user_area": "result.user_area"
+          "user_area": {
+            "first_present": [
+              "result.user_area",
+              "result.location",
+              "arguments.location",
+              "variables.user_area"
+            ]
+          },
+          "nearest_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          },
+          "location_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          },
+          "selected_branch": {
+            "first_present": [
+              "result.branch",
+              "result.nearest_branch",
+              "result.location_branch"
+            ]
+          }
         },
         "conditional": [
           {
@@ -2746,7 +3233,8 @@
               "available_branches_text": "result.branches_text"
             }
           }
-        ]
+        ],
+        "clear": []
       },
       "list_available_slots": {
         "clear": [
@@ -2848,6 +3336,34 @@
               "booking.stage": "booking_failed"
             }
           }
+        ],
+        "set": {
+          "visit_id": {
+            "first_present": [
+              "result.visit_id",
+              "result.booking_id",
+              "result.id"
+            ]
+          },
+          "booking_status": {
+            "first_present": [
+              "result.booking_status",
+              "result.status"
+            ]
+          },
+          "booking.confirmed": "result",
+          "booking.confirmed_at": {
+            "first_present": [
+              "result.confirmed_at",
+              "result.created_at"
+            ]
+          }
+        },
+        "clear": [
+          "available_slots",
+          "available_slots_text",
+          "selected_slot",
+          "booking.date_changed"
         ]
       }
     },
@@ -3212,7 +3728,10 @@
           "do not list slots again after a valid time selection",
           "do not select a different time from the matched available slot",
           "do not confirm a slot if booking.date_changed is true and booking.pending.date is not the current appointment_date",
-          "do not use stale booking.pending.time after a date change"
+          "do not use stale booking.pending.time after a date change",
+          "do not change selected time",
+          "do not use stale pending time after date or branch changes",
+          "do not imply booking was created"
         ],
         "deterministic_response": true,
         "force_template_answer": true,
@@ -3275,7 +3794,9 @@
           "show variables.available_slots_text exactly as prepared by the booking executor",
           "do not choose a slot for the customer",
           "show only fresh variables.available_slots_text for the current appointment_date",
-          "if booking.date_changed is true, ensure slots correspond to the new appointment_date"
+          "if booking.date_changed is true, ensure slots correspond to the new appointment_date",
+          "show variables.available_slots_text exactly as prepared by booking executor",
+          "show only fresh slots for the current appointment_date"
         ],
         "must_not_do": [
           "do not say اخترتلك",
@@ -3288,7 +3809,10 @@
           "do not use for date-only questions",
           "do not answer بكرة موافق تاريخ إيه by listing slots",
           "do not show slots from booking.previous_date",
-          "do not reuse stale available_slots_text after a date change"
+          "do not reuse stale available_slots_text after a date change",
+          "do not invent slots",
+          "do not show stale slots after date or branch changes",
+          "do not ask for confirmation immediately after listing slots"
         ],
         "safe_examples": [
           "أقرب فرع ليك هو فرع مدينة نصر. المواعيد المتاحة يوم الأحد الجاي: 1) 10:00 صباحًا 2) 12:00 ظهرًا 3) 2:00 ظهرًا. تحب تختار أنهي معاد؟",
@@ -3625,15 +4149,12 @@
         "must_use_grounded_template": true,
         "response_template": "{{date_text}} هيكون موافق {{resolved_date}}.",
         "must_do": [
-          "answer the date-only question only",
+          "answer date-only questions only",
           "do not list slots",
-          "do not ask the customer to choose a slot",
-          "do not call or imply availability lookup"
+          "do not ask for slot selection"
         ],
         "must_not_do": [
-          "do not show available_slots_text",
-          "do not say عندنا المواعيد المتاحة",
-          "do not move booking stage forward"
+          "do not call availability unless latest message asks for availability"
         ]
       },
       "BOOKING_REQUESTED_TIME_NOT_AVAILABLE": {
@@ -3642,12 +4163,12 @@
         "must_use_grounded_template": true,
         "response_template": "المعاد ده مش ظاهر ضمن المواعيد المتاحة عندي. المواعيد المتاحة هي:\n{{variables.available_slots_text}}\nتحب تختار أنهي معاد؟",
         "must_do": [
-          "do not select another slot when the requested time is not available",
+          "do not select another slot when requested time is not available",
           "show current available slots exactly",
-          "ask the customer to choose again"
+          "ask customer to choose again"
         ],
         "must_not_do": [
-          "do not fallback to an old appointment_time",
+          "do not fallback to old appointment_time",
           "do not select first slot",
           "do not invent a matching slot"
         ]
@@ -3686,7 +4207,9 @@
           "make it clear this is about appointment slots, not a generic failure",
           "say no slots were found for the current requested branch/date",
           "ask for another date",
-          "do not reuse slots from a previous date after booking.date_changed is true"
+          "do not reuse slots from a previous date after booking.date_changed is true",
+          "ask for another day/date",
+          "do not reuse slots from a previous date or branch"
         ],
         "must_not_do": [
           "do not invent alternative slots",
@@ -3696,7 +4219,10 @@
           "do not mention tools, sheets, variables, or internal state",
           "do not invent another date",
           "do not invent availability",
-          "do not show stale available_slots_text from a previous date"
+          "do not show stale available_slots_text from a previous date",
+          "do not invent unavailable reasons",
+          "do not suggest a specific alternative date unless tool/config provides it",
+          "do not say no slots unless list_available_slots proved slots_found=false"
         ],
         "safe_examples": [
           "للأسف مش لاقي مواعيد متاحة في فرع مدينة نصر يوم الأحد. تحب أشوفلك يوم تاني؟",
@@ -3728,6 +4254,86 @@
           "do not keep old booking.pending.time after date changes",
           "do not ask for branch again if selected_branch/location_branch/nearest_branch exists",
           "do not confirm or create a booking from a stale pending slot"
+        ]
+      },
+      "TROUBLESHOOTING_STARTED": {
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "must_do": [
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "ask at most one useful next diagnostic question unless inspection is recommended"
+        ],
+        "must_not_do": [
+          "do not continue troubleshooting after visit intent is clear",
+          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+        ]
+      },
+      "TROUBLESHOOTING_CONTINUED": {
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "must_do": [
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "ask at most one useful next diagnostic question unless inspection is recommended"
+        ],
+        "must_not_do": [
+          "do not continue troubleshooting after visit intent is clear",
+          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+        ]
+      },
+      "TROUBLESHOOTING_COMPLETE": {
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "must_do": [
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "ask at most one useful next diagnostic question unless inspection is recommended"
+        ],
+        "must_not_do": [
+          "do not continue troubleshooting after visit intent is clear",
+          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+        ]
+      },
+      "TROUBLESHOOTING_SWITCHED": {
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "must_do": [
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "ask at most one useful next diagnostic question unless inspection is recommended"
+        ],
+        "must_not_do": [
+          "do not continue troubleshooting after visit intent is clear",
+          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+        ]
+      },
+      "TROUBLESHOOTING_VISIT_REQUESTED": {
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "must_do": [
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "ask at most one useful next diagnostic question unless inspection is recommended"
+        ],
+        "must_not_do": [
+          "do not continue troubleshooting after visit intent is clear",
+          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
         ]
       }
     },
@@ -3931,7 +4537,11 @@
       "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
       "BOOKING_REQUESTED_TIME_AMBIGUOUS",
       "BOOKING_NO_SLOTS",
-      "BOOKING_DATE_CHANGED"
+      "BOOKING_DATE_CHANGED",
+      "TROUBLESHOOTING_STARTED",
+      "TROUBLESHOOTING_CONTINUED",
+      "TROUBLESHOOTING_COMPLETE",
+      "TROUBLESHOOTING_VISIT_REQUESTED"
     ],
     "template_response_policy_detection": {
       "enabled": true,
@@ -3963,7 +4573,25 @@
       "booking.date_changed",
       "booking.previous_date",
       "appointment_time_text",
-      "booking.pending.time_text"
+      "booking.pending.time_text",
+      "selected_slot",
+      "user_area",
+      "date_text",
+      "customer_profile.full_name",
+      "customer_profile.phone",
+      "customer_profile.plate_number",
+      "booking.pending.branch",
+      "booking.pending.date",
+      "booking.pending.date_text",
+      "booking.pending.time",
+      "booking.pending.section",
+      "location.changed",
+      "location.branch_changed",
+      "location.previous_location",
+      "troubleshooting.stage",
+      "troubleshooting.selected_rule_id",
+      "troubleshooting.diagnostic_count",
+      "troubleshooting.inspection_recommended"
     ],
     "source_of_truth_prefixes": [
       "booking",
@@ -3975,7 +4603,10 @@
       "troubleshooting.",
       "exact_slot",
       "nearest_slots",
-      "unavailable_reason"
+      "unavailable_reason",
+      "booking.pending",
+      "booking.confirmed",
+      "customer_profile"
     ],
     "confirmed_action": {
       "enabled": true,
@@ -4185,7 +4816,29 @@
         "exact_slot",
         "nearest_slots",
         "nearest_slots_text",
-        "unavailable_reason"
+        "unavailable_reason",
+        "booking.date_changed",
+        "booking.previous_date",
+        "appointment_time_text",
+        "booking.pending.time_text",
+        "selected_slot",
+        "user_area",
+        "date_text",
+        "customer_profile.full_name",
+        "customer_profile.phone",
+        "customer_profile.plate_number",
+        "booking.pending.branch",
+        "booking.pending.date",
+        "booking.pending.date_text",
+        "booking.pending.time",
+        "booking.pending.section",
+        "location.changed",
+        "location.branch_changed",
+        "location.previous_location",
+        "troubleshooting.stage",
+        "troubleshooting.selected_rule_id",
+        "troubleshooting.diagnostic_count",
+        "troubleshooting.inspection_recommended"
       ],
       "source_of_truth_prefixes": [
         "booking",
@@ -4197,8 +4850,46 @@
         "troubleshooting.",
         "exact_slot",
         "nearest_slots",
-        "unavailable_reason"
-      ]
+        "unavailable_reason",
+        "booking.pending",
+        "booking.confirmed",
+        "customer_profile"
+      ],
+      "flatten_nested_updates": true,
+      "allow_empty_updates": false,
+      "allow_empty_update_paths": [
+        "available_slots",
+        "available_slots_text",
+        "slots_found",
+        "nearest_slots",
+        "nearest_slots_text",
+        "booking.pending",
+        "booking.pending.time",
+        "booking.pending.time_text",
+        "booking.pending.section",
+        "booking.pending_summary",
+        "appointment_time",
+        "appointment_time_text"
+      ],
+      "tool_update_policy": {
+        "list_available_slots": {
+          "allow_source_of_truth": true,
+          "allow_empty_updates": true,
+          "allow_empty_paths": [
+            "available_slots",
+            "available_slots_text",
+            "slots_found"
+          ]
+        },
+        "find_nearest_branch": {
+          "allow_source_of_truth": true,
+          "allow_empty_updates": true
+        },
+        "create_booking": {
+          "allow_source_of_truth": true,
+          "allow_empty_updates": true
+        }
+      }
     },
     "subagent_aliases": {
       "handoff": [
@@ -4228,7 +4919,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.8-date-change-aware-booking-config",
+    "architecture_version": "6.11-full-runtime-robustness-config",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -4241,7 +4932,61 @@
       "BOOKING_DATE_RESOLVED",
       "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
       "BOOKING_REQUESTED_TIME_AMBIGUOUS"
-    ]
+    ],
+    "request_handling": {
+      "max_stored_messages": 80,
+      "max_stored_traces": 50,
+      "max_history_messages": 24,
+      "max_processed_requests": 160,
+      "conversation_lock_timeout_seconds": 30,
+      "max_message_chars": 12000,
+      "return_error_answer": true,
+      "idempotency_metadata_keys": [
+        "idempotency_key",
+        "message_id",
+        "request_id",
+        "wamid",
+        "webhook_event_id",
+        "evolution_message_id"
+      ]
+    },
+    "request_variable_policy": {
+      "allow_source_of_truth": false,
+      "allow_empty_updates": false
+    },
+    "tool_runner": {
+      "raw_preview_chars": 600,
+      "allow_relaxed_json": false,
+      "sensitive_keys": [
+        "authorization",
+        "api_key",
+        "x-api-key",
+        "token",
+        "secret",
+        "password",
+        "cookie"
+      ]
+    },
+    "knowledge_retrieval": {
+      "max_queries": 4,
+      "per_query_top_k": 4,
+      "max_total_items": 8
+    },
+    "multi_intent_execution": {
+      "execute_parallel_tool_requests_with_subagents": false,
+      "latest_correction_wins": true,
+      "never_parallelize_changed_preferences": true,
+      "parallel_tool_requests_allowed_for": [
+        "read_only_lookup",
+        "independent_non_conflicting_tools"
+      ],
+      "stateful_subagents_must_not_parallelize": [
+        "booking",
+        "location",
+        "troubleshooting",
+        "handoff"
+      ]
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -4266,7 +5011,8 @@
             "type": "string",
             "alias_for": "full_name"
           }
-        }
+        },
+        "operational_state": true
       },
       "booking": {
         "type": "object",
@@ -4392,11 +5138,19 @@
       "date_question": {
         "type": "object",
         "description": "Transient date-only question metadata. Date clarification should not imply availability lookup."
+      },
+      "request_key": {
+        "type": "string",
+        "description": "Idempotency/request key for the current turn."
+      },
+      "trace_id": {
+        "type": "string",
+        "description": "Debug trace identifier for the current turn."
       }
     }
   },
   "domain_playbook": {
-    "version": "6.8-date-change-aware-booking-config",
+    "version": "6.11-full-runtime-robustness-config",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -4481,7 +5235,15 @@
       "6.8 adds config for booking_subagent date-change detection so changing from one requested day to another clears stale slots and pending slot selections.",
       "6.8 adds this-week markers to date_resolution so weekday resolution can distinguish this week from next week.",
       "6.8 strengthens next-week markers and date-change marker phrases without Python domain hardcoding.",
-      "6.8 ensures list_available_slots clears appointment_time_text and stale pending slot data when a new availability lookup runs."
+      "6.8 ensures list_available_slots clears appointment_time_text and stale pending slot data when a new availability lookup runs.",
+      "6.11 activates hardened base.py state merge/source-of-truth/empty-update behavior.",
+      "6.11 activates tool_runner result contracts, retries, idempotency, argument aliases/defaults, and strict JSON boundary.",
+      "6.11 activates main.py request locking, idempotency metadata, state limits, and safe request-variable policy.",
+      "6.11 activates db.py assistant-scoped conversation keys, idempotency, state versioning, and advisory-lock-ready persistence.",
+      "6.11 activates config_loader runtime defaults and config normalization.",
+      "6.11 activates location branch/location-change cleanup to avoid stale slots after branch changes.",
+      "6.11 activates troubleshooting multi-rule scoring, visit intent handoff, active rule switching, and diagnostic history.",
+      "6.11 keeps BOOKING_NO_SLOTS LLM-phrased but grounded, while selected slots and slot lists remain deterministic."
     ]
   }
 }
