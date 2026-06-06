@@ -4072,6 +4072,19 @@
           "source": "customer_detail_fields.argument_names",
           "fallback_create_booking_arguments": "create_booking_arguments",
           "do_not_hardcode_domain_fields_in_python": true
+        },
+        "no_pending_booking_guard": {
+          "enabled": true,
+          "description": "Generic guard used by booking_subagent.py. If the user sends confirmation or configured customer-detail fields before a pending selected slot exists, preserve extracted details but ask for a slot/date instead of requesting more customer details or attempting create_booking.",
+          "requires_pending_selection_paths": [
+            "booking.pending.time",
+            "booking.pending.branch",
+            "booking.pending.date"
+          ],
+          "when_slots_found_false_template": "BOOKING_NO_SLOTS",
+          "when_slots_exist_without_selection_template": "BOOKING_SLOT_SELECTION_UNCLEAR",
+          "do_not_collect_customer_details_before_slot_selection": true,
+          "do_not_create_booking_without_pending_selection": true
         }
       },
       "troubleshooting": {
@@ -4926,7 +4939,20 @@
       "no_slots_answer_draft_labels": [
         "BOOKING_NO_SLOTS"
       ],
-      "no_slots_must_not_invent_alternatives": true
+      "no_slots_must_not_invent_alternatives": true,
+      "no_customer_detail_collection_without_pending_slot": true,
+      "pending_slot_required_paths": [
+        "booking.pending.time",
+        "booking.pending.branch",
+        "booking.pending.date"
+      ],
+      "banned_no_slots_followup_terms": [
+        "اسمك الكامل",
+        "رقم العربية",
+        "رقم التليفون",
+        "أكمل الحجز",
+        "هكمل الحجز"
+      ]
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -5045,12 +5071,15 @@
           "do not ask again for fields already captured",
           "do not ask for branch if booking.pending.branch or selected_branch exists",
           "ask only for fields still missing after deterministic extraction and phone reuse repair",
-          "do not ask for phone if a valid phone exists in configured phone source paths"
+          "do not ask for phone if a valid phone exists in configured phone source paths",
+          "only ask for customer details when booking.pending.time exists or a selected slot exists"
         ],
         "must_not_do": [
           "do not say ده ملخص الحجز",
           "do not ask which branch the customer prefers",
-          "do not say booking failed when any required customer detail is still missing"
+          "do not say booking failed when any required customer detail is still missing",
+          "do not ask for customer details after BOOKING_NO_SLOTS",
+          "do not ask for customer details before slot selection"
         ]
       },
       "BOOKING_SLOT_SELECTION_UNCLEAR": {
@@ -5473,10 +5502,10 @@
       },
       "BOOKING_NO_SLOTS": {
         "state": "no_slots_found_after_tool",
-        "deterministic_response": false,
-        "force_template_answer": false,
-        "must_use_grounded_template": false,
-        "llm_phrasing_allowed": true,
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "llm_phrasing_allowed": false,
         "source_of_truth": {
           "required_answer_draft": "BOOKING_NO_SLOTS",
           "required_tool_operation": "list_available_slots",
@@ -5493,7 +5522,9 @@
           "ask for another date",
           "do not reuse slots from a previous date after booking.date_changed is true",
           "ask for another day/date",
-          "do not reuse slots from a previous date or branch"
+          "do not reuse slots from a previous date or branch",
+          "do not collect customer details without a selected slot",
+          "do not ask for name, phone, or configured customer details when no pending slot exists"
         ],
         "must_not_do": [
           "do not invent alternative slots",
@@ -5506,7 +5537,11 @@
           "do not show stale available_slots_text from a previous date",
           "do not invent unavailable reasons",
           "do not suggest a specific alternative date unless tool/config provides it",
-          "do not say no slots unless list_available_slots proved slots_found=false"
+          "do not say no slots unless list_available_slots proved slots_found=false",
+          "do not ask for customer details",
+          "do not say booking can continue",
+          "do not imply a slot is selected",
+          "do not use waiting phrases like لحظة واحدة after the lookup has completed"
         ],
         "safe_examples": [
           "للأسف مش لاقي مواعيد متاحة في فرع مدينة نصر يوم الأحد. تحب أشوفلك يوم تاني؟",
@@ -5517,7 +5552,8 @@
           "مفيش مواعيد عشان الفرع مقفول",
           "اختارلك أقرب معاد تاني؟",
           "السيستم واقع"
-        ]
+        ],
+        "response_template": "للأسف مش لاقي مواعيد متاحة في فرع {{variables.selected_branch}} يوم {{variables.date_text}}. تحب أشوفلك يوم تاني؟"
       },
       "BOOKING_DATE_CHANGED": {
         "state": "date_changed_fetching_or_ready_for_new_availability",
@@ -6208,7 +6244,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.17-generic-customer-details-config-no-hardcoding",
+    "architecture_version": "6.18-no-pending-booking-guard-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -6608,7 +6644,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.17-generic-customer-details-config-no-hardcoding",
+    "version": "6.18-no-pending-booking-guard-config-no-hardcoding",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -6709,7 +6745,8 @@
       "6.12 enables bounded parallel direct tool execution with max_parallel_tool_workers.",
       "Version 6.17 makes customer-detail collection generic: booking_subagent.py reads customer_detail_fields / customer_details.fields / customer_profile_persistence.fields instead of embedding domain-specific fields in Python.",
       "Service-center-specific details such as plate_number live only in this domain_bundle.json and are mapped to create_booking arguments through field config.",
-      "Generic booking detail extraction must write each extracted value to the configured target_path, preserve configured backup_paths, and ask only for missing paths from required_before_create."
+      "Generic booking detail extraction must write each extracted value to the configured target_path, preserve configured backup_paths, and ask only for missing paths from required_before_create.",
+      "Version 6.18 blocks confirmation/customer-detail continuation when no pending slot exists; after slots_found=false the assistant asks for another date instead of collecting customer details."
     ]
   }
 }
