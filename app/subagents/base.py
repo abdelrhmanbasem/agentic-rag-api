@@ -1,3 +1,5 @@
+import copy
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -7,6 +9,8 @@ from typing import Any, Dict, List, Optional
 # These empty defaults are kept only for backward compatibility with imports.
 SOURCE_OF_TRUTH_EXACT_VARIABLES = set()
 SOURCE_OF_TRUTH_PREFIXES = tuple()
+
+MISSING = object()
 
 
 def as_list(value: Any) -> List[Any]:
@@ -39,13 +43,20 @@ def get_config_path_value(config: Dict[str, Any], path: str, default: Any = None
         if not part:
             continue
 
-        if not isinstance(current, dict):
-            return default
+        if isinstance(current, dict):
+            if part not in current:
+                return default
+            current = current.get(part)
+            continue
 
-        if part not in current:
-            return default
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index < 0 or index >= len(current):
+                return default
+            current = current[index]
+            continue
 
-        current = current.get(part)
+        return default
 
     return current if current is not None else default
 
@@ -69,9 +80,7 @@ def collect_source_of_truth_exact_variables(assistant_config: Optional[Dict[str,
 
     schema_vars = get_config_path_value(assistant_config, "schema.variables", {})
     if isinstance(schema_vars, dict):
-        for key, cfg in schema_vars.items():
-            if isinstance(cfg, dict) and (cfg.get("source_of_truth") is True or cfg.get("operational_state") is True):
-                values.append(str(key))
+        values.extend(collect_schema_source_paths(schema_vars))
 
     return unique_list(values)
 
@@ -107,6 +116,16 @@ def path_matches_policy_list(path: str, patterns: Optional[List[str]]) -> bool:
         if not pattern:
             continue
 
+        if pattern in ["*", ".*"]:
+            return True
+
+        if pattern.startswith("re:"):
+            try:
+                if re.search(pattern[3:], path_text):
+                    return True
+            except re.error:
+                continue
+
         if pattern == path_text:
             return True
 
@@ -118,79 +137,209 @@ def path_matches_policy_list(path: str, patterns: Optional[List[str]]) -> bool:
         if pattern.endswith(".") and path_text.startswith(pattern):
             return True
 
+        if any(ch in pattern for ch in ["*", "?", "["]):
+            if fnmatch.fnmatch(path_text, pattern):
+                return True
+
     return False
 
+
+
+def path_parts(path: str) -> List[str]:
+    return [part for part in str(path or "").split(".") if part]
+
+
+def is_missing(value: Any) -> bool:
+    return value is MISSING
+
+
+def deep_has(data: Any, path: str) -> bool:
+    return deep_get(data, path, MISSING) is not MISSING
+
+
+def flatten_update_paths(
+    updates: Dict[str, Any],
+    prefix: str = "",
+    *,
+    keep_empty_dicts: bool = False
+) -> Dict[str, Any]:
+    output: Dict[str, Any] = {}
+
+    if not isinstance(updates, dict):
+        return output
+
+    for key, value in updates.items():
+        key_text = str(key or "").strip()
+
+        if not key_text:
+            continue
+
+        path = f"{prefix}.{key_text}" if prefix else key_text
+
+        if isinstance(value, dict) and "." not in key_text:
+            nested = flatten_update_paths(value, path, keep_empty_dicts=keep_empty_dicts)
+            if nested:
+                output.update(nested)
+            elif keep_empty_dicts:
+                output[path] = {}
+        else:
+            output[path] = value
+
+    return output
+
+
+def collect_schema_source_paths(schema_vars: Any, prefix: str = "") -> List[str]:
+    paths: List[str] = []
+
+    if not isinstance(schema_vars, dict):
+        return paths
+
+    for key, cfg in schema_vars.items():
+        key_text = str(key or "").strip()
+        if not key_text:
+            continue
+
+        path = f"{prefix}.{key_text}" if prefix else key_text
+
+        if isinstance(cfg, dict):
+            if cfg.get("source_of_truth") is True or cfg.get("operational_state") is True:
+                paths.append(path)
+
+            properties = cfg.get("properties")
+            if isinstance(properties, dict):
+                paths.extend(collect_schema_source_paths(properties, path))
+
+    return paths
 
 
 def is_empty(value: Any) -> bool:
     return value in [None, "", [], {}]
 
 
-def deep_get(data: Dict[str, Any], path: str, default: Any = None) -> Any:
+def deep_get(data: Any, path: str, default: Any = None) -> Any:
     if not path:
         return default
 
     current: Any = data
 
-    for part in str(path).split("."):
-        if not isinstance(current, dict):
-            return default
+    for part in path_parts(path):
+        if isinstance(current, dict):
+            if part not in current:
+                return default
+            current = current.get(part)
+            continue
 
-        if part not in current:
-            return default
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index < 0 or index >= len(current):
+                return default
+            current = current[index]
+            continue
 
-        current = current.get(part)
+        return default
 
     return current if current is not None else default
 
 
-def deep_set(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
+def deep_set(
+    data: Dict[str, Any],
+    path: str,
+    value: Any,
+    *,
+    merge_dicts: bool = False,
+    copy_value: bool = True
+) -> Dict[str, Any]:
     if not path:
         return data
 
-    target = data
-    parts = str(path).split(".")
+    if not isinstance(data, dict):
+        return data
+
+    target: Any = data
+    parts = path_parts(path)
+
+    if not parts:
+        return data
 
     for part in parts[:-1]:
-        if part not in target or not isinstance(target.get(part), dict):
-            target[part] = {}
+        if isinstance(target, dict):
+            if part not in target or not isinstance(target.get(part), dict):
+                target[part] = {}
+            target = target[part]
+            continue
 
-        target = target[part]
+        return data
 
-    target[parts[-1]] = value
+    final_key = parts[-1]
+    incoming = copy.deepcopy(value) if copy_value else value
+
+    if (
+        merge_dicts
+        and isinstance(target, dict)
+        and isinstance(target.get(final_key), dict)
+        and isinstance(incoming, dict)
+    ):
+        target[final_key] = deep_merge(target.get(final_key, {}), incoming, allow_empty=True)
+    elif isinstance(target, dict):
+        target[final_key] = incoming
+
     return data
 
 
-def deep_delete(data: Dict[str, Any], path: str) -> Dict[str, Any]:
-    if not path:
+def deep_delete(data: Dict[str, Any], path: str, *, prune_empty: bool = False) -> Dict[str, Any]:
+    if not path or not isinstance(data, dict):
         return data
 
-    target = data
-    parts = str(path).split(".")
+    target: Any = data
+    parts = path_parts(path)
+    parents: List[Any] = []
+
+    if not parts:
+        return data
 
     for part in parts[:-1]:
         if not isinstance(target, dict) or part not in target:
             return data
 
+        parents.append((target, part))
         target = target[part]
 
     if isinstance(target, dict):
         target.pop(parts[-1], None)
 
+    if prune_empty:
+        for parent, key in reversed(parents):
+            child = parent.get(key)
+            if child == {}:
+                parent.pop(key, None)
+            else:
+                break
+
     return data
 
 
-def deep_merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(base or {})
+def deep_merge(
+    base: Dict[str, Any],
+    incoming: Dict[str, Any],
+    *,
+    allow_empty: bool = False,
+    replace_lists: bool = True
+) -> Dict[str, Any]:
+    merged = copy.deepcopy(base or {})
 
     if not isinstance(incoming, dict):
         return merged
 
     for key, value in incoming.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        elif not is_empty(value):
-            merged[key] = value
+            merged[key] = deep_merge(
+                merged[key],
+                value,
+                allow_empty=allow_empty,
+                replace_lists=replace_lists
+            )
+        elif allow_empty or not is_empty(value):
+            merged[key] = copy.deepcopy(value)
 
     return merged
 
@@ -211,6 +360,7 @@ def normalize_digits(text: str, digit_map: Dict[str, str]) -> str:
 
 
 def normalize_text(text: str, normalization_config: Dict[str, Any]) -> str:
+    normalization_config = normalization_config if isinstance(normalization_config, dict) else {}
     digit_map = normalization_config.get("digit_map", {})
     replacements = normalization_config.get("replacements", {})
 
@@ -220,17 +370,67 @@ def normalize_text(text: str, normalization_config: Dict[str, Any]) -> str:
         for old, new in replacements.items():
             output = output.replace(str(old), str(new))
 
+    strip_diacritics = bool(normalization_config.get("strip_diacritics", True))
+    if strip_diacritics:
+        output = re.sub(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]", "", output)
+
+    punctuation_replacements = normalization_config.get("punctuation_replacements", {})
+    if isinstance(punctuation_replacements, dict):
+        for old, new in punctuation_replacements.items():
+            output = output.replace(str(old), str(new))
+
     output = re.sub(r"\s+", " ", output)
     return output.strip()
 
 
-def matches_any(message: str, phrases: List[str], normalization_config: Dict[str, Any]) -> bool:
+def matches_phrase(message: str, phrase: Any, normalization_config: Dict[str, Any]) -> bool:
     normalized = normalize_text(message, normalization_config)
 
-    for phrase in phrases or []:
-        normalized_phrase = normalize_text(str(phrase), normalization_config)
+    if isinstance(phrase, dict):
+        exclude = phrase.get("exclude")
+        if exclude and matches_any(message, as_list(exclude), normalization_config):
+            return False
 
-        if normalized_phrase and normalized_phrase in normalized:
+        if "regex" in phrase:
+            pattern = str(phrase.get("regex") or "")
+            if not pattern:
+                return False
+            try:
+                return bool(re.search(pattern, str(message or ""), flags=re.IGNORECASE))
+            except re.error:
+                return False
+
+        if "all" in phrase:
+            return all(matches_phrase(message, item, normalization_config) for item in as_list(phrase.get("all")))
+
+        if "any" in phrase:
+            return any(matches_phrase(message, item, normalization_config) for item in as_list(phrase.get("any")))
+
+        phrase_value = phrase.get("phrase", phrase.get("text", phrase.get("value", "")))
+        normalized_phrase = normalize_text(str(phrase_value), normalization_config)
+        mode = str(phrase.get("match", phrase.get("mode", "contains")) or "contains").strip().lower()
+
+        if not normalized_phrase:
+            return False
+
+        if mode == "exact":
+            return normalized == normalized_phrase
+        if mode == "prefix":
+            return normalized.startswith(normalized_phrase)
+        if mode == "suffix":
+            return normalized.endswith(normalized_phrase)
+        if mode == "word":
+            return bool(re.search(rf"(?<!\w){re.escape(normalized_phrase)}(?!\w)", normalized))
+
+        return normalized_phrase in normalized
+
+    normalized_phrase = normalize_text(str(phrase), normalization_config)
+    return bool(normalized_phrase and normalized_phrase in normalized)
+
+
+def matches_any(message: str, phrases: List[str], normalization_config: Dict[str, Any]) -> bool:
+    for phrase in phrases or []:
+        if matches_phrase(message, phrase, normalization_config):
             return True
 
     return False
@@ -240,16 +440,40 @@ def render_template(template: str, context: Dict[str, Any]) -> str:
     """
     Rendering is used for internal draft labels / fallback hints only.
     Final customer-facing wording belongs to graph.response_node.
+
+    Supported placeholders:
+    - {{path.to.value}}
+    - {{path.to.value|fallback text}}
+    - {{path.one||path.two||fallback text}} for first-present selection
     """
     if not isinstance(template, str):
         return ""
 
     pattern = re.compile(r"{{\s*([^}]+)\s*}}")
 
+    def resolve_placeholder(expr: str) -> str:
+        options = [part.strip() for part in str(expr or "").split("||") if part.strip()]
+
+        if not options:
+            return ""
+
+        for option in options:
+            path_and_default = [part.strip() for part in option.split("|", 1)]
+            path = path_and_default[0]
+            fallback = path_and_default[1] if len(path_and_default) > 1 else ""
+
+            value = deep_get(context, path, MISSING)
+
+            if value is not MISSING and value is not None:
+                return str(value)
+
+            if fallback:
+                return fallback
+
+        return ""
+
     def replace(match: re.Match) -> str:
-        path = match.group(1).strip()
-        value = deep_get(context, path, "")
-        return "" if value is None else str(value)
+        return resolve_placeholder(match.group(1).strip())
 
     return pattern.sub(replace, template)
 
@@ -281,13 +505,16 @@ def filter_updates_by_policy(
     allow_source_of_truth: bool = True,
     allow_paths: Optional[List[str]] = None,
     deny_paths: Optional[List[str]] = None,
-    assistant_config: Optional[Dict[str, Any]] = None
+    assistant_config: Optional[Dict[str, Any]] = None,
+    allow_empty_updates: bool = False,
+    allow_empty_paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     if not isinstance(updates, dict):
         return {}
 
     allow_paths = allow_paths or []
     deny_paths = deny_paths or []
+    allow_empty_paths = allow_empty_paths or []
 
     filtered: Dict[str, Any] = {}
 
@@ -297,7 +524,9 @@ def filter_updates_by_policy(
         if not path_text:
             continue
 
-        if is_empty(value):
+        empty_allowed = allow_empty_updates or path_matches_policy_list(path_text, allow_empty_paths)
+
+        if is_empty(value) and not empty_allowed:
             continue
 
         if deny_paths and path_matches_policy_list(path_text, deny_paths):
@@ -331,6 +560,9 @@ def filter_clear_by_policy(
     filtered: List[str] = []
 
     for path in clear:
+        if isinstance(path, dict):
+            path = path.get("path", "")
+
         path_text = str(path or "").strip()
 
         if not path_text:
@@ -347,7 +579,7 @@ def filter_clear_by_policy(
 
         filtered.append(path_text)
 
-    return filtered
+    return unique_list(filtered)
 
 
 def apply_variable_patch(
@@ -358,9 +590,31 @@ def apply_variable_patch(
     allow_source_of_truth: bool = True,
     allow_paths: Optional[List[str]] = None,
     deny_paths: Optional[List[str]] = None,
-    assistant_config: Optional[Dict[str, Any]] = None
+    assistant_config: Optional[Dict[str, Any]] = None,
+    allow_empty_updates: Optional[bool] = None,
+    allow_empty_paths: Optional[List[str]] = None,
+    flatten_nested_updates: Optional[bool] = None,
+    prune_empty_on_clear: bool = False
 ) -> Dict[str, Any]:
-    patched = dict(variables or {})
+    assistant_config = assistant_config if isinstance(assistant_config, dict) else {}
+    state_engine = assistant_config.get("state_engine", {}) if isinstance(assistant_config, dict) else {}
+
+    if not isinstance(state_engine, dict):
+        state_engine = {}
+
+    if allow_empty_updates is None:
+        allow_empty_updates = bool(state_engine.get("allow_empty_updates", False))
+
+    configured_empty_paths = state_engine.get("allow_empty_update_paths", [])
+    if not isinstance(configured_empty_paths, list):
+        configured_empty_paths = []
+
+    allow_empty_paths = unique_list((allow_empty_paths or []) + configured_empty_paths)
+
+    if flatten_nested_updates is None:
+        flatten_nested_updates = bool(state_engine.get("flatten_nested_updates", True))
+
+    patched = copy.deepcopy(variables or {})
 
     safe_clear = filter_clear_by_policy(
         clear,
@@ -371,14 +625,21 @@ def apply_variable_patch(
     )
 
     for path in safe_clear:
-        deep_delete(patched, path)
+        deep_delete(patched, path, prune_empty=prune_empty_on_clear)
+
+    update_payload = updates if isinstance(updates, dict) else {}
+
+    if flatten_nested_updates:
+        update_payload = flatten_update_paths(update_payload)
 
     safe_updates = filter_updates_by_policy(
-        updates,
+        update_payload,
         allow_source_of_truth=allow_source_of_truth,
         allow_paths=allow_paths,
         deny_paths=deny_paths,
-        assistant_config=assistant_config
+        assistant_config=assistant_config,
+        allow_empty_updates=bool(allow_empty_updates),
+        allow_empty_paths=allow_empty_paths
     )
 
     for path, value in safe_updates.items():
@@ -562,32 +823,94 @@ def get_subagent_variable_scope(
     return pick_variable_scope(variables, include_paths)
 
 
-def build_object_from_mapping(mapping: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_mapping_value(source: Any, context: Dict[str, Any]) -> Any:
+    if isinstance(source, dict):
+        if "literal" in source:
+            return source.get("literal")
+
+        if "path" in source:
+            return deep_get(context, str(source.get("path") or ""), MISSING)
+
+        if "source" in source:
+            return deep_get(context, str(source.get("source") or ""), MISSING)
+
+        if "first_present" in source:
+            for path in as_list(source.get("first_present")):
+                value = deep_get(context, str(path or ""), MISSING)
+                if value is not MISSING and not is_empty(value):
+                    return value
+            return MISSING
+
+        if "template" in source:
+            return render_template(str(source.get("template") or ""), context)
+
+        if "concat" in source:
+            separator = str(source.get("separator", "") or "")
+            parts: List[str] = []
+            for item in as_list(source.get("concat")):
+                value = resolve_mapping_value(item, context)
+                if value is not MISSING and not is_empty(value):
+                    parts.append(str(value))
+            return separator.join(parts)
+
+        output: Dict[str, Any] = {}
+        for key, value_source in source.items():
+            value = resolve_mapping_value(value_source, context)
+            if value is not MISSING and not is_empty(value):
+                output[str(key)] = value
+        return output if output else MISSING
+
+    return deep_get(context, str(source), MISSING)
+
+
+def build_object_from_mapping(
+    mapping: Dict[str, Any],
+    context: Dict[str, Any],
+    *,
+    allow_empty: bool = False
+) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
 
     if not isinstance(mapping, dict):
         return result
 
     for target, source in mapping.items():
-        value = deep_get(context, str(source), "")
+        target_text = str(target or "").strip()
 
-        if not is_empty(value):
-            deep_set(result, str(target), value)
+        if not target_text:
+            continue
+
+        value = resolve_mapping_value(source, context)
+        source_allows_empty = isinstance(source, dict) and bool(source.get("allow_empty", False))
+
+        if value is not MISSING and (allow_empty or source_allows_empty or not is_empty(value)):
+            deep_set(result, target_text, value)
 
     return result
 
 
-def build_updates_from_mapping(mapping: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
+def build_updates_from_mapping(
+    mapping: Dict[str, Any],
+    context: Dict[str, Any],
+    *,
+    allow_empty: bool = False
+) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
 
     if not isinstance(mapping, dict):
         return result
 
     for target, source in mapping.items():
-        value = deep_get(context, str(source), "")
+        target_text = str(target or "").strip()
 
-        if not is_empty(value):
-            result[str(target)] = value
+        if not target_text:
+            continue
+
+        value = resolve_mapping_value(source, context)
+        source_allows_empty = isinstance(source, dict) and bool(source.get("allow_empty", False))
+
+        if value is not MISSING and (allow_empty or source_allows_empty or not is_empty(value)):
+            result[target_text] = value
 
     return result
 
@@ -610,8 +933,7 @@ def extract_by_patterns(
         return updates
 
     raw_message = normalize_digits(message, normalization_config.get("digit_map", {}))
-
-    working_variables = dict(variables or {})
+    working_variables = copy.deepcopy(variables or {})
 
     for item in patterns:
         if not isinstance(item, dict):
@@ -620,25 +942,44 @@ def extract_by_patterns(
         if item.get("enabled", True) is False:
             continue
 
-        variable = item.get("variable")
-        regex = item.get("regex")
-        group = int(item.get("group", 1))
-        when_missing = item.get("when_missing")
+        variable = str(item.get("variable") or item.get("target") or "").strip()
+        regex = str(item.get("regex") or "").strip()
 
-        if when_missing:
-            current_value = deep_get(working_variables, str(when_missing))
+        try:
+            group = int(item.get("group", 1))
+        except Exception:
+            group = 1
 
-            if not is_empty(current_value):
+        when_missing_values = as_list(item.get("when_missing"))
+        if when_missing_values:
+            should_skip = False
+            for when_missing in when_missing_values:
+                current_value = deep_get(working_variables, str(when_missing))
+                if not is_empty(current_value):
+                    should_skip = True
+                    break
+            if should_skip:
                 continue
 
         when_path = str(item.get("when_path") or "").strip()
         if when_path:
-            current = deep_get(working_variables, when_path)
-            if "when_equals" in item and current != item.get("when_equals"):
+            condition = {
+                "path": when_path,
+                "equals": item.get("when_equals") if "when_equals" in item else MISSING,
+                "exists": item.get("when_exists") if "when_exists" in item else MISSING,
+            }
+            condition = {k: v for k, v in condition.items() if v is not MISSING}
+            if condition and not evaluate_condition(condition, {"variables": working_variables, **working_variables}):
                 continue
-            if item.get("when_exists") is True and is_empty(current):
-                continue
-            if item.get("when_exists") is False and not is_empty(current):
+
+        conditions = item.get("conditions", [])
+        if isinstance(conditions, list) and conditions:
+            context = {
+                "variables": working_variables,
+                "message": raw_message,
+                "normalization": normalization_config,
+            }
+            if not all(evaluate_condition(condition, context) for condition in conditions if isinstance(condition, dict)):
                 continue
 
         if not variable or not regex:
@@ -649,12 +990,17 @@ def extract_by_patterns(
         except re.error:
             continue
 
-        if match:
-            value = match.group(group).strip()
+        if not match:
+            continue
 
-            if value:
-                updates[str(variable)] = value
-                deep_set(working_variables, str(variable), value)
+        try:
+            value = match.group(group).strip()
+        except Exception:
+            continue
+
+        if value:
+            updates[variable] = value
+            deep_set(working_variables, variable, value)
 
     return updates
 
@@ -687,13 +1033,30 @@ def evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any]) -> bo
     if not isinstance(condition, dict):
         return False
 
-    path = str(condition.get("path", "") or "").strip()
-    actual = deep_get(context, path) if path else None
+    if "all" in condition:
+        return all(evaluate_condition(item, context) for item in as_list(condition.get("all")) if isinstance(item, dict))
 
-    if condition.get("exists") is True and is_empty(actual):
+    if "any" in condition:
+        return any(evaluate_condition(item, context) for item in as_list(condition.get("any")) if isinstance(item, dict))
+
+    if "not" in condition and isinstance(condition.get("not"), dict):
+        return not evaluate_condition(condition.get("not"), context)
+
+    path = str(condition.get("path", "") or "").strip()
+    actual = deep_get(context, path, MISSING) if path else context
+
+    exists = actual is not MISSING and not is_empty(actual)
+
+    if condition.get("exists") is True and not exists:
         return False
 
-    if condition.get("exists") is False and not is_empty(actual):
+    if condition.get("exists") is False and exists:
+        return False
+
+    if condition.get("empty") is True and exists:
+        return False
+
+    if condition.get("not_empty") is True and not exists:
         return False
 
     if "equals" in condition and actual != condition.get("equals"):
@@ -710,11 +1073,45 @@ def evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any]) -> bo
     if isinstance(disallowed_values, list) and actual in disallowed_values:
         return False
 
-    if condition.get("truthy") is True and not bool(actual):
+    if condition.get("truthy") is True and not bool(None if actual is MISSING else actual):
         return False
 
-    if condition.get("falsy") is True and bool(actual):
+    if condition.get("falsy") is True and bool(None if actual is MISSING else actual):
         return False
+
+    normalization = context.get("normalization", {}) if isinstance(context, dict) else {}
+
+    if "equals_normalized" in condition:
+        if normalize_text(str(actual if actual is not MISSING else ""), normalization) != normalize_text(str(condition.get("equals_normalized")), normalization):
+            return False
+
+    if "in_normalized" in condition and isinstance(condition.get("in_normalized"), list):
+        normalized_actual = normalize_text(str(actual if actual is not MISSING else ""), normalization)
+        normalized_allowed = {
+            normalize_text(str(item), normalization)
+            for item in condition.get("in_normalized", [])
+        }
+        if normalized_actual not in normalized_allowed:
+            return False
+
+    if "contains" in condition:
+        if str(condition.get("contains")) not in str(actual if actual is not MISSING else ""):
+            return False
+
+    if "not_contains" in condition:
+        if str(condition.get("not_contains")) in str(actual if actual is not MISSING else ""):
+            return False
+
+    if "regex" in condition:
+        try:
+            if not re.search(str(condition.get("regex") or ""), str(actual if actual is not MISSING else ""), flags=re.IGNORECASE):
+                return False
+        except re.error:
+            return False
+
+    if "matches_any" in condition:
+        if not matches_any(str(actual if actual is not MISSING else ""), as_list(condition.get("matches_any")), normalization):
+            return False
 
     return True
 
@@ -771,10 +1168,12 @@ def apply_tool_update_rules(
     context = {
         "variables": variables,
         "arguments": arguments or {},
-        "result": result or {}
+        "result": result or {},
+        "assistant_config": assistant_config or {},
+        "normalization": (assistant_config or {}).get("normalization", {})
     }
 
-    patched = dict(variables or {})
+    patched = copy.deepcopy(variables or {})
 
     policy = get_tool_update_policy(
         assistant_config=assistant_config,
@@ -785,12 +1184,17 @@ def apply_tool_update_rules(
     allow_paths = policy.get("allow_paths")
     deny_paths = policy.get("deny_paths")
     allow_source_of_truth = bool(policy.get("allow_source_of_truth", True))
+    allow_empty_updates = bool(policy.get("allow_empty_updates", True))
+    allow_empty_paths = policy.get("allow_empty_paths", [])
 
     if not isinstance(allow_paths, list):
         allow_paths = None
 
     if not isinstance(deny_paths, list):
         deny_paths = None
+
+    if not isinstance(allow_empty_paths, list):
+        allow_empty_paths = []
 
     clear = rule.get("clear", [])
 
@@ -808,7 +1212,11 @@ def apply_tool_update_rules(
     set_mapping = rule.get("set", {})
 
     if isinstance(set_mapping, dict):
-        updates = build_updates_from_mapping(set_mapping, context)
+        updates = build_updates_from_mapping(
+            set_mapping,
+            context,
+            allow_empty=allow_empty_updates
+        )
         patched = apply_variable_patch(
             patched,
             updates,
@@ -816,7 +1224,9 @@ def apply_tool_update_rules(
             allow_source_of_truth=allow_source_of_truth,
             allow_paths=allow_paths,
             deny_paths=deny_paths,
-            assistant_config=assistant_config
+            assistant_config=assistant_config,
+            allow_empty_updates=allow_empty_updates,
+            allow_empty_paths=allow_empty_paths
         )
 
     context["variables"] = patched
@@ -840,7 +1250,8 @@ def apply_tool_update_rules(
                     c_clear,
                     allow_source_of_truth=allow_source_of_truth,
                     allow_paths=allow_paths,
-                    deny_paths=deny_paths
+                    deny_paths=deny_paths,
+                    assistant_config=assistant_config
                 )
 
                 for path_to_clear in safe_c_clear:
@@ -849,14 +1260,21 @@ def apply_tool_update_rules(
                 c_set = item.get("set", {})
 
                 if isinstance(c_set, dict):
-                    updates = build_updates_from_mapping(c_set, context)
+                    updates = build_updates_from_mapping(
+                        c_set,
+                        context,
+                        allow_empty=allow_empty_updates
+                    )
                     patched = apply_variable_patch(
                         patched,
                         updates,
                         [],
                         allow_source_of_truth=allow_source_of_truth,
                         allow_paths=allow_paths,
-                        deny_paths=deny_paths
+                        deny_paths=deny_paths,
+                        assistant_config=assistant_config,
+                        allow_empty_updates=allow_empty_updates,
+                        allow_empty_paths=allow_empty_paths
                     )
 
                 context["variables"] = patched
