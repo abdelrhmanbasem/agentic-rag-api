@@ -847,6 +847,13 @@ class BookingSubagent:
 
         if pending.get("time"):
             updates["appointment_time"] = pending.get("time")
+            time_text = self.format_time_for_display(str(pending.get("time")), config)
+            if time_text:
+                pending["time_text"] = time_text
+                updates["appointment_time_text"] = time_text
+
+        updates[pending_booking_path] = pending
+        updates["booking.pending_summary"] = self.build_pending_summary(pending)
 
         patched = apply_variable_patch(variables, updates, [])
 
@@ -990,7 +997,13 @@ class BookingSubagent:
 
         tool_result = self.filter_slots_by_service_needed(
             tool_result=tool_result,
-            variables=variables
+            variables=variables,
+            config=config
+        )
+
+        tool_result = self.prepare_slots_display(
+            tool_result=tool_result,
+            config=config
         )
 
         observations.append({
@@ -1022,6 +1035,14 @@ class BookingSubagent:
 
         if date_text:
             repair_updates[config.get("date_text_path", "date_text")] = date_text
+
+        if isinstance(tool_result, dict):
+            if tool_result.get("available_slots") not in [None, "", [], {}]:
+                repair_updates["available_slots"] = tool_result.get("available_slots")
+            if tool_result.get("available_slots_text") not in [None, "", [], {}]:
+                repair_updates["available_slots_text"] = tool_result.get("available_slots_text")
+            if tool_result.get("slots_found") is not None:
+                repair_updates["slots_found"] = tool_result.get("slots_found")
 
         if repair_updates:
             updated_variables = apply_variable_patch(updated_variables, repair_updates, [])
@@ -2954,20 +2975,42 @@ class BookingSubagent:
         variables: Dict[str, Any]
     ) -> bool:
         normalization = context.assistant_config.get("normalization", {})
-        phrases = config.get("trigger_phrases", [])
 
-        if matches_any(context.user_message, phrases, normalization):
+        if self.is_date_only_question(context.user_message, config, normalization):
+            return False
+
+        phrases = config.get("trigger_phrases", [])
+        availability_terms = config.get("availability_request_terms", [])
+
+        has_trigger_intent = matches_any(context.user_message, phrases, normalization)
+        has_availability_intent = matches_any(context.user_message, availability_terms, normalization)
+
+        if has_trigger_intent:
             return True
 
         date_text = self.extract_date_text(context.user_message, config, normalization)
-
-        if date_text and self.get_known_branch(variables, config):
-            return True
-
         stage_path = config.get("stage_path", "booking.stage")
         stage = deep_get(variables, stage_path, "")
 
-        return stage in config.get("active_request_stages", [])
+        date_only_request_stages = config.get("date_only_booking_request_stages", [
+            "awaiting_date",
+            "needs_date"
+        ])
+
+        if (
+            date_text
+            and self.get_known_branch(variables, config)
+            and (
+                has_availability_intent
+                or stage in date_only_request_stages
+            )
+        ):
+            return True
+
+        if stage in config.get("active_request_stages", []):
+            return bool(has_availability_intent or date_text)
+
+        return False
 
     def is_new_availability_request(
         self,
@@ -4108,7 +4151,7 @@ class BookingSubagent:
 
         branch = str(pending.get("branch") or "").strip()
         date = str(pending.get("date_text") or pending.get("date") or "").strip()
-        time = str(pending.get("time") or "").strip()
+        time = str(pending.get("time_text") or pending.get("time") or "").strip()
         section = str(pending.get("section") or "").strip()
 
         if branch:
@@ -4128,7 +4171,8 @@ class BookingSubagent:
     def filter_slots_by_service_needed(
         self,
         tool_result: Dict[str, Any],
-        variables: Dict[str, Any]
+        variables: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if not isinstance(tool_result, dict):
             return tool_result
@@ -4156,16 +4200,46 @@ class BookingSubagent:
         patched["slots_found"] = len(filtered) > 0
 
         if filtered:
-            patched["available_slots_text"] = self.render_slots_text(filtered)
+            patched["available_slots_text"] = self.render_slots_text(filtered, config=config)
         else:
             patched["available_slots_text"] = ""
 
         return patched
 
-    def render_slots_text(self, slots: List[Dict[str, Any]]) -> str:
+    def prepare_slots_display(
+        self,
+        tool_result: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        if not isinstance(tool_result, dict):
+            return tool_result
+
+        slots = tool_result.get("available_slots")
+        if not isinstance(slots, list):
+            return tool_result
+
+        patched = dict(tool_result)
+        patched["available_slots_text"] = self.render_slots_text(slots, config=config)
+        patched["slots_found"] = len(slots) > 0
+
+        return patched
+
+    def render_slots_text(
+        self,
+        slots: List[Dict[str, Any]],
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
+        display_config = config.get("slot_display", {})
+        if not isinstance(display_config, dict):
+            display_config = {}
+
         lines = []
 
         for index, slot in enumerate(slots, 1):
+            if not isinstance(slot, dict):
+                continue
+
             time = str(slot.get("time") or "").strip()
             section = str(slot.get("section") or "").strip()
             remaining = (
@@ -4174,20 +4248,65 @@ class BookingSubagent:
                 else slot.get("places_left")
             )
 
-            parts = [f"{index})"]
+            display_time = self.format_time_for_display(time, config) or time
+            parts: List[str] = []
 
-            if time:
-                parts.append(time)
+            if bool(display_config.get("include_index", True)):
+                parts.append(f"{index})")
 
-            if section:
+            if display_time:
+                parts.append(display_time)
+
+            if bool(display_config.get("include_section", True)) and section:
                 parts.append(section)
 
-            if remaining is not None and str(remaining).strip() != "":
-                parts.append(f"remaining={remaining}")
+            if (
+                bool(display_config.get("include_remaining", True))
+                and remaining is not None
+                and str(remaining).strip() != ""
+            ):
+                remaining_label = str(display_config.get("remaining_label", "available") or "available")
+                parts.append(f"{remaining} {remaining_label}".strip())
 
-            lines.append(" - ".join(parts))
+            separator = str(display_config.get("separator", " - ") or " - ")
+            lines.append(separator.join(parts))
 
         return "\n".join(lines)
+
+    def format_time_for_display(
+        self,
+        value: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
+        display_config = config.get("slot_display", {})
+        if not isinstance(display_config, dict):
+            display_config = {}
+
+        time_format = str(display_config.get("time_format", "raw") or "raw").strip().lower()
+
+        if time_format not in ["12h", "12-hour", "ampm"]:
+            return str(value or "").strip()
+
+        match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\b", str(value or "").strip())
+        if not match:
+            return str(value or "").strip()
+
+        hour = int(match.group(1))
+        minute = int(match.group(2) or "0")
+
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return str(value or "").strip()
+
+        am_label = str(display_config.get("am_label", "AM") or "AM")
+        pm_label = str(display_config.get("pm_label", "PM") or "PM")
+
+        suffix = am_label if hour < 12 else pm_label
+        display_hour = hour % 12
+        if display_hour == 0:
+            display_hour = 12
+
+        return f"{display_hour}:{minute:02d} {suffix}"
 
     def is_booking_completed(
         self,
