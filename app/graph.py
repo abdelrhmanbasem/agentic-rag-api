@@ -52,8 +52,14 @@ class AgentState(TypedDict, total=False):
     language_instruction: str
     schema: Dict[str, Any]
     tool_result: Dict[str, Any]
+    multi_tool_results: List[Dict[str, Any]]
 
     manifest: Dict[str, Any]
+    multi_intents: List[Dict[str, Any]]
+    parallel_tool_requests: List[Dict[str, Any]]
+    knowledge_queries: List[str]
+    multi_knowledge: List[Dict[str, Any]]
+    response_synthesis: Dict[str, Any]
     planner: Dict[str, Any]
 
     selected_subagent: Dict[str, Any]
@@ -61,13 +67,7 @@ class AgentState(TypedDict, total=False):
 
     knowledge: str
     knowledge_items: List[Dict[str, Any]]
-    multi_knowledge: List[Dict[str, Any]]
     memories: str
-
-    multi_tool_results: List[Dict[str, Any]]
-    parallel_tool_results: List[Dict[str, Any]]
-    completed_intents: List[Dict[str, Any]]
-    failed_intents: List[Dict[str, Any]]
 
     final_answer: str
     quality: Dict[str, Any]
@@ -198,12 +198,11 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "chained_subagent_id": "",
         "chained_subagent_reason": "",
         "detected_intents": [],
-        "intent_plan": [],
-        "parallel_tool_calls": [],
+        "multi_intents": [],
+        "parallel_tool_requests": [],
         "knowledge_queries": [],
-        "multi_intent_response_plan": [],
-        "allow_parallel_tools": False,
-        "requires_sequential_tools": False,
+        "response_synthesis": {},
+        "multi_intent_execution_mode": "",
         "conversation_stage": "",
         "workflow_stage": "",
         "customer_emotion": "",
@@ -260,29 +259,33 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(out.get("detected_intents"), list):
         out["detected_intents"] = []
 
-    if not isinstance(out.get("intent_plan"), list):
-        out["intent_plan"] = []
+    if not isinstance(out.get("multi_intents"), list):
+        out["multi_intents"] = []
 
-    if not isinstance(out.get("parallel_tool_calls"), list):
-        out["parallel_tool_calls"] = []
+    out["multi_intents"] = [
+        item for item in out.get("multi_intents", [])
+        if isinstance(item, dict)
+    ]
+
+    if not isinstance(out.get("parallel_tool_requests"), list):
+        out["parallel_tool_requests"] = []
+
+    out["parallel_tool_requests"] = [
+        item for item in out.get("parallel_tool_requests", [])
+        if isinstance(item, dict)
+    ]
 
     if not isinstance(out.get("knowledge_queries"), list):
         out["knowledge_queries"] = []
 
-    if not isinstance(out.get("multi_intent_response_plan"), list):
-        out["multi_intent_response_plan"] = []
+    out["knowledge_queries"] = [
+        str(item).strip()
+        for item in out.get("knowledge_queries", [])
+        if str(item or "").strip()
+    ]
 
-    out["allow_parallel_tools"] = bool(out.get("allow_parallel_tools", False))
-    out["requires_sequential_tools"] = bool(out.get("requires_sequential_tools", False))
-
-    normalized_parallel_calls = []
-    for item in out.get("parallel_tool_calls", []):
-        if not isinstance(item, dict):
-            continue
-        call = dict(item)
-        call["subagent_id"] = unify_subagent_id(call.get("subagent_id", ""))
-        normalized_parallel_calls.append(call)
-    out["parallel_tool_calls"] = normalized_parallel_calls
+    if not isinstance(out.get("response_synthesis"), dict):
+        out["response_synthesis"] = {}
 
     out["selected_subagent_id"] = unify_subagent_id(out.get("selected_subagent_id", ""))
     out["chained_subagent_id"] = unify_subagent_id(out.get("chained_subagent_id", ""))
@@ -698,12 +701,11 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "chained_subagent_id": manifest.get("chained_subagent_id", ""),
         "chained_subagent_reason": manifest.get("chained_subagent_reason", ""),
         "detected_intents": manifest.get("detected_intents", [])[:8],
-        "intent_plan": compact_intent_plan(manifest),
-        "parallel_tool_calls": compact_parallel_tool_calls(manifest),
-        "knowledge_queries": manifest.get("knowledge_queries", [])[:5] if isinstance(manifest.get("knowledge_queries"), list) else [],
-        "multi_intent_response_plan": manifest.get("multi_intent_response_plan", [])[:6] if isinstance(manifest.get("multi_intent_response_plan"), list) else [],
-        "allow_parallel_tools": manifest.get("allow_parallel_tools", False),
-        "requires_sequential_tools": manifest.get("requires_sequential_tools", False),
+        "multi_intents": manifest.get("multi_intents", [])[:6],
+        "parallel_tool_requests": manifest.get("parallel_tool_requests", [])[:6],
+        "knowledge_queries": manifest.get("knowledge_queries", [])[:6],
+        "response_synthesis": manifest.get("response_synthesis", {}),
+        "multi_intent_execution_mode": manifest.get("multi_intent_execution_mode", ""),
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
         "customer_emotion": manifest.get("customer_emotion", ""),
@@ -834,12 +836,11 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "chained_subagent_id": manifest.get("chained_subagent_id", ""),
         "chained_subagent_reason": manifest.get("chained_subagent_reason", ""),
         "detected_intents": manifest.get("detected_intents", []),
-        "intent_plan": manifest.get("intent_plan", []),
-        "parallel_tool_calls": manifest.get("parallel_tool_calls", []),
+        "multi_intents": manifest.get("multi_intents", []),
+        "parallel_tool_requests": manifest.get("parallel_tool_requests", []),
         "knowledge_queries": manifest.get("knowledge_queries", []),
-        "multi_intent_response_plan": manifest.get("multi_intent_response_plan", []),
-        "allow_parallel_tools": manifest.get("allow_parallel_tools", False),
-        "requires_sequential_tools": manifest.get("requires_sequential_tools", False),
+        "response_synthesis": manifest.get("response_synthesis", {}),
+        "multi_intent_execution_mode": manifest.get("multi_intent_execution_mode", ""),
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
         "needs_knowledge": manifest.get("needs_knowledge", False),
@@ -1365,159 +1366,6 @@ def active_deterministic_flow_subagent_id_from_state(state: AgentState) -> str:
 
 
 
-def compact_intent_plan(manifest: Dict[str, Any], max_items: int = 6) -> List[Dict[str, Any]]:
-    plan = manifest.get("intent_plan", [])
-    if not isinstance(plan, list):
-        return []
-
-    output: List[Dict[str, Any]] = []
-    for item in plan[:max_items]:
-        if not isinstance(item, dict):
-            continue
-        output.append({
-            "id": item.get("id", ""),
-            "intent": item.get("intent", ""),
-            "subagent_id": unify_subagent_id(item.get("subagent_id", "")),
-            "tool_name": item.get("tool_name", ""),
-            "operation": item.get("operation", ""),
-            "depends_on": item.get("depends_on", []),
-            "status": item.get("status", ""),
-            "missing_inputs": item.get("missing_inputs", []),
-            "response_role": item.get("response_role", ""),
-        })
-    return output
-
-
-def compact_parallel_tool_calls(manifest: Dict[str, Any], max_items: int = 6) -> List[Dict[str, Any]]:
-    calls = manifest.get("parallel_tool_calls", [])
-    if not isinstance(calls, list):
-        return []
-
-    output: List[Dict[str, Any]] = []
-    for idx, item in enumerate(calls[:max_items]):
-        if not isinstance(item, dict):
-            continue
-        payload = normalize_tool_payload(item.get("tool_request_payload", {}) or {})
-        output.append({
-            "id": str(item.get("id") or item.get("intent_id") or f"call_{idx+1}"),
-            "intent": item.get("intent", ""),
-            "subagent_id": unify_subagent_id(item.get("subagent_id", "")),
-            "tool_name": item.get("tool_name", ""),
-            "operation": item.get("operation") or payload.get("operation", ""),
-            "arguments": item.get("arguments") or payload.get("arguments", {}),
-            "depends_on": item.get("depends_on", []),
-            "can_run_parallel": bool(item.get("can_run_parallel", True)),
-        })
-    return output
-
-
-def compact_multi_tool_results(results: Any, max_items: int = 8) -> List[Dict[str, Any]]:
-    if not isinstance(results, list):
-        return []
-
-    output: List[Dict[str, Any]] = []
-    for item in results[:max_items]:
-        if not isinstance(item, dict):
-            continue
-        output.append({
-            "id": item.get("id", ""),
-            "intent": item.get("intent", ""),
-            "subagent": item.get("subagent", ""),
-            "tool_name": item.get("tool_name", ""),
-            "operation": item.get("operation", ""),
-            "ok": item.get("ok"),
-            "action": item.get("action", ""),
-            "answer_draft": item.get("answer_draft", ""),
-            "notes": clip_text(item.get("notes", ""), 220),
-            "result": item.get("result", {}),
-            "missing_inputs": item.get("missing_inputs", []),
-        })
-    return output
-
-
-def compact_multi_knowledge(items: Any, max_items: int = 8) -> List[Dict[str, Any]]:
-    if not isinstance(items, list):
-        return []
-
-    output: List[Dict[str, Any]] = []
-    for item in items[:max_items]:
-        if not isinstance(item, dict):
-            continue
-        output.append({
-            "query": item.get("query", ""),
-            "knowledge": clip_text(item.get("knowledge", ""), 700),
-            "items_count": len(item.get("items", []) or []) if isinstance(item.get("items", []), list) else 0,
-            "error": item.get("error", ""),
-        })
-    return output
-
-
-def get_manifest_knowledge_queries(
-    manifest: Dict[str, Any],
-    message: str,
-    variables: Dict[str, Any],
-    schema: Dict[str, Any]
-) -> List[str]:
-    configured = manifest.get("knowledge_queries", [])
-    queries: List[str] = []
-
-    if isinstance(configured, list):
-        for item in configured:
-            text = str(item or "").strip()
-            if text and text not in queries:
-                queries.append(text)
-
-    if not queries:
-        base_query = " ".join([
-            message,
-            str(manifest.get("user_intent", "") or ""),
-            str(manifest.get("response_strategy", "") or ""),
-            safe_json(compact_variables(variables, schema), max_chars=1000),
-        ]).strip()
-        if base_query:
-            queries.append(base_query)
-
-    return queries[:5]
-
-
-def should_run_parallel_tool_calls(manifest: Dict[str, Any], agent_config: Dict[str, Any]) -> bool:
-    if not manifest.get("allow_parallel_tools", False):
-        return False
-
-    if manifest.get("requires_sequential_tools", False):
-        return False
-
-    calls = compact_parallel_tool_calls(manifest)
-    if len(calls) < 2:
-        return False
-
-    max_parallel = int(agent_config.get("max_parallel_tool_calls", 3) or 3)
-    return max_parallel > 1
-
-
-def build_direct_tool_result_record(
-    call_id: str,
-    intent: str,
-    tool_name: str,
-    operation: str,
-    arguments: Dict[str, Any],
-    raw_result: Dict[str, Any]
-) -> Dict[str, Any]:
-    return {
-        "id": call_id,
-        "intent": intent,
-        "tool_name": tool_name,
-        "operation": operation,
-        "arguments": arguments,
-        "ok": raw_result.get("ok") if isinstance(raw_result, dict) else False,
-        "action": raw_result.get("action", "") if isinstance(raw_result, dict) else "",
-        "answer_draft": raw_result.get("answer_draft", "") if isinstance(raw_result, dict) else "",
-        "result": raw_result if isinstance(raw_result, dict) else {"ok": False, "error": "invalid_tool_result"},
-        "notes": "direct tool call executed from manifest parallel_tool_calls",
-    }
-
-
-
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -1530,25 +1378,24 @@ def unified_manifest_node(state: AgentState):
             "system",
             "You are the Unified Manifest brain of a configurable multi-tenant agentic assistant engine. "
             "Return ONLY valid JSON. No markdown. No prose. "
-            "You decide the next move; you do not write the final user-facing reply. "
+            "You decide the next move; you never write the final user-facing reply. "
             "All domain behavior must come from the assistant manifest card, current variables, conversation summary, tool results, schema, and latest user message. "
-            "Do not use hidden business rules or hardcoded domain assumptions. "
-            "Decompose the latest user message into one or more intents. Use detected_intents for labels and intent_plan for ordered execution. "
-            "For independent intents that can safely run in parallel, populate parallel_tool_calls and set allow_parallel_tools=true. "
-            "For dependent intents, use selected_subagent_id first and chained_subagent_id second, or set requires_sequential_tools=true in intent_plan. "
-            "Example: nearest branch plus availability usually runs location first then booking because booking depends on the branch. "
-            "Example: branch list plus general policy lookup may run as independent parallel calls if both inputs are available. "
-            "Never parallelize calls when one call needs variables produced by another, when they mutate the same operational state, or when the assistant config/grounding policy makes them source-of-truth actions. "
-            "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally for only the missing information. "
-            "If a tool can be called safely with current variables/message, set needs_tool=true and provide requested_tool_name plus tool_request_payload, or parallel_tool_calls for safe independent multi-intent calls. "
-            "Use knowledge_queries when multiple knowledge searches would improve answer coverage. Keep them concise and grounded in the latest user need. "
-            "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, multi_tool_results, variables, conversation context, or retrieved knowledge. "
-            "For booking/availability/nearest-branch/branch-list actions, prefer tool/subagent execution when inputs are available. "
+            "Do not use hidden business rules or domain assumptions outside the manifest card. "
+            "Detect the user's full intent, including multiple independent or sequential intents in one message. "
+            "Use detected_intents for short intent labels, and multi_intents for structured intent objects. Each multi_intents item may include: intent_id, intent_type, user_goal, selected_subagent_id, needs_tool, requested_tool_name, tool_request_payload, needs_knowledge, knowledge_query, depends_on, priority, missing_inputs, and response_role. "
+            "For sequential dependencies, use selected_subagent_id plus chained_subagent_id. Example: nearest branch then availability should run location first and booking second when booking needs location output. "
+            "For independent direct tool actions that can safely run from current variables, use parallel_tool_requests. Each request should include: request_id, intent_id, tool_name, operation, arguments, purpose, and can_run_in_parallel=true. "
+            "Do not put deterministic subagent-owned booking/location/troubleshooting flows into parallel_tool_requests unless the manifest card says direct tool calls are safe. Prefer selected_subagent_id/chained_subagent_id for stateful workflows. "
+            "For knowledge needs, set needs_knowledge=true and provide knowledge_queries when multiple distinct retrieval questions are useful. "
+            "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally for only the missing input. "
+            "If a tool can be called safely with current variables/message, set needs_tool=true and provide requested_tool_name plus tool_request_payload or parallel_tool_requests. "
+            "Never claim tool results, availability, prices, IDs, branches, or external facts unless already present in tool_result, variables, conversation context, or retrieved knowledge. "
+            "For booking/availability/nearest-branch/branch-list actions, prefer needs_tool=true when inputs are available. "
             "For symptom/problem reports, do not force a booking immediately; response_brief should guide a diagnostic response first unless user asks to book. "
             "The manifest may extract soft user info only. Source-of-truth operational state must come from tool/subagent execution, not manifest extracted_updates. "
+            "response_synthesis should describe how the final response should combine multiple results without inventing facts. "
             "The JSON object must use exactly these top-level keys: "
-            "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, intent_plan, parallel_tool_calls, knowledge_queries, multi_intent_response_plan, allow_parallel_tools, requires_sequential_tools, "
-            "conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
+            "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, multi_intents, parallel_tool_requests, knowledge_queries, response_synthesis, multi_intent_execution_mode, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, "
             "simple_response_mode, simple_response_reason, needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, "
             "needs_subagent_reasoning, needs_quality_guard, needs_style_repair, needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, "
             "should_ask_question, question_goal, should_offer_next_action, response_brief, response_strategy, reasoning_summary. "
@@ -1561,7 +1408,8 @@ def unified_manifest_node(state: AgentState):
             "Current variables:\n{variables}\n\n"
             "Tool result if any:\n{tool_result}\n\n"
             "Latest user message:\n{message}\n\n"
-            "Return the manifest JSON. selected_subagent_id must be one configured subagent id when possible.",
+            "Return the manifest JSON. selected_subagent_id must be one configured subagent id when possible. "
+            "Use multi_intents, knowledge_queries, and parallel_tool_requests only when they add real value and are safe.",
         ),
     ])
 
@@ -1634,6 +1482,11 @@ def unified_manifest_node(state: AgentState):
             "chained_subagent_id": "",
             "chained_subagent_reason": "",
             "detected_intents": [],
+            "multi_intents": [],
+            "parallel_tool_requests": [],
+            "knowledge_queries": [],
+            "response_synthesis": {},
+            "multi_intent_execution_mode": "",
             "conversation_stage": "unknown",
             "workflow_stage": "unknown",
             "customer_emotion": "unknown",
@@ -1719,6 +1572,10 @@ def unified_manifest_node(state: AgentState):
         "planner": build_planner_compat(manifest),
         "selected_subagent": selected_subagent,
         "variables": updated_variables,
+        "multi_intents": manifest.get("multi_intents", []),
+        "parallel_tool_requests": manifest.get("parallel_tool_requests", []),
+        "knowledge_queries": manifest.get("knowledge_queries", []),
+        "response_synthesis": manifest.get("response_synthesis", {}),
     }
 
 
@@ -1794,95 +1651,172 @@ def decide_after_memory(state: AgentState) -> str:
     return "response"
 
 
+def dedupe_strings(values: List[str], limit: int = 6) -> List[str]:
+    output: List[str] = []
+    seen = set()
+
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+
+        key = re.sub(r"\s+", " ", text.lower()).strip()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        output.append(text)
+
+        if len(output) >= limit:
+            break
+
+    return output
+
+
+def build_knowledge_queries(
+    message: str,
+    manifest: Dict[str, Any],
+    variables: Dict[str, Any],
+    schema: Dict[str, Any],
+    agent_config: Dict[str, Any]
+) -> List[str]:
+    retrieval_config = agent_config.get("knowledge_retrieval", {})
+    if not isinstance(retrieval_config, dict):
+        retrieval_config = {}
+
+    max_queries = int(retrieval_config.get("max_queries", 4) or 4)
+    queries: List[str] = []
+
+    if isinstance(manifest.get("knowledge_queries"), list):
+        queries.extend([str(item) for item in manifest.get("knowledge_queries", [])])
+
+    for intent in manifest.get("multi_intents", []) or []:
+        if not isinstance(intent, dict):
+            continue
+
+        for key in ["knowledge_query", "query", "user_goal", "intent_type"]:
+            value = str(intent.get(key) or "").strip()
+            if value:
+                queries.append(value)
+                break
+
+    default_query = " ".join([
+        message,
+        manifest.get("user_intent", ""),
+        manifest.get("response_strategy", ""),
+        safe_json(compact_variables(variables, schema), max_chars=1000),
+    ]).strip()
+
+    if default_query:
+        queries.append(default_query)
+
+    return dedupe_strings(queries, limit=max_queries)
+
+
+def knowledge_items_key(item: Dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+
+    return "|".join([
+        str(item.get("title") or "").strip().lower(),
+        str(item.get("text") or "").strip().lower()[:240],
+    ])
+
+
 def retrieve_knowledge_node(state: AgentState):
     message = last_user_message(state)
     manifest = state.get("manifest", {}) or {}
     variables = state.get("variables", {}) or {}
     schema = state.get("schema", {}) or {}
+    agent_config = state.get("agent_config", {}) or {}
 
-    queries = get_manifest_knowledge_queries(
-        manifest=manifest,
+    queries = build_knowledge_queries(
         message=message,
+        manifest=manifest,
         variables=variables,
         schema=schema,
+        agent_config=agent_config,
     )
 
+    if not queries:
+        return {
+            "knowledge": "NO_CONFIDENT_KNOWLEDGE_FOUND",
+            "knowledge_items": [],
+            "knowledge_queries": [],
+            "multi_knowledge": [],
+        }
+
+    retrieval_config = agent_config.get("knowledge_retrieval", {})
+    if not isinstance(retrieval_config, dict):
+        retrieval_config = {}
+
+    per_query_limit = int(retrieval_config.get("per_query_top_k", KNOWLEDGE_TOP_K) or KNOWLEDGE_TOP_K)
+    max_total_items = int(retrieval_config.get("max_total_items", max(KNOWLEDGE_TOP_K, len(queries) * 2)) or KNOWLEDGE_TOP_K)
+
     multi_knowledge: List[Dict[str, Any]] = []
-    all_compressed: List[Dict[str, Any]] = []
-    seen_keys = set()
+    combined_items: List[Dict[str, Any]] = []
+    seen = set()
+    errors: List[str] = []
 
     for query in queries:
         try:
-            raw = search_knowledge(state["assistant_id"], query, limit=KNOWLEDGE_TOP_K)
+            raw = search_knowledge(state["assistant_id"], query, limit=per_query_limit)
             compressed = compress_knowledge(raw, query)
         except Exception as exc:
-            multi_knowledge.append({
-                "query": query,
-                "knowledge": "",
-                "items": [],
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            continue
+            errors.append(f"{query}: {type(exc).__name__}: {exc}")
+            compressed = []
 
         if not compressed:
             multi_knowledge.append({
                 "query": query,
                 "knowledge": "NO_CONFIDENT_KNOWLEDGE_FOUND",
                 "items": [],
-                "error": "",
             })
             continue
 
-        lines = []
+        query_lines = []
         for item in compressed:
+            if not isinstance(item, dict):
+                continue
+
+            key = knowledge_items_key(item)
+            if key and key not in seen:
+                seen.add(key)
+                combined_items.append(item)
+
             title = item.get("title", "Untitled")
             score = float(item.get("score", 0.0) or 0.0)
             item_text = item.get("text", "")
-            lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
-
-            dedupe_key = (
-                str(title),
-                str(item_text)[:220],
-            )
-            if dedupe_key not in seen_keys:
-                seen_keys.add(dedupe_key)
-                item_copy = dict(item)
-                item_copy["query"] = query
-                all_compressed.append(item_copy)
+            query_lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
 
         multi_knowledge.append({
             "query": query,
-            "knowledge": "\n".join(lines),
+            "knowledge": "\n".join(query_lines),
             "items": compressed,
-            "error": "",
         })
 
-    if not all_compressed:
-        errors = [item.get("error", "") for item in multi_knowledge if item.get("error")]
-        suffix = f". Retrieval errors: {'; '.join(errors[:2])}" if errors else ""
+    combined_items = combined_items[:max_total_items]
+
+    if not combined_items:
+        error_text = f" Retrieval errors: {'; '.join(errors)}" if errors else ""
         return {
-            "knowledge": f"NO_CONFIDENT_KNOWLEDGE_FOUND{suffix}",
+            "knowledge": f"NO_CONFIDENT_KNOWLEDGE_FOUND.{error_text}".strip(),
             "knowledge_items": [],
+            "knowledge_queries": queries,
             "multi_knowledge": multi_knowledge,
         }
 
-    all_compressed = sorted(
-        all_compressed,
-        key=lambda item: float(item.get("score", 0.0) or 0.0),
-        reverse=True,
-    )[:KNOWLEDGE_TOP_K * max(1, min(len(queries), 3))]
-
     lines = []
-    for item in all_compressed:
+    for item in combined_items:
         title = item.get("title", "Untitled")
         score = float(item.get("score", 0.0) or 0.0)
         item_text = item.get("text", "")
-        query = item.get("query", "")
-        lines.append(f"- Query: {query}\n  Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
+        lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
 
     return {
         "knowledge": "\n".join(lines),
-        "knowledge_items": all_compressed,
+        "knowledge_items": combined_items,
+        "knowledge_queries": queries,
         "multi_knowledge": multi_knowledge,
     }
 
@@ -2220,6 +2154,199 @@ def subagent_observations_are_ok(observations: List[Dict[str, Any]]) -> bool:
     return True
 
 
+
+def normalize_parallel_tool_requests(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_requests = manifest.get("parallel_tool_requests", [])
+
+    if not isinstance(raw_requests, list):
+        raw_requests = []
+
+    output: List[Dict[str, Any]] = []
+
+    for index, item in enumerate(raw_requests):
+        if not isinstance(item, dict):
+            continue
+
+        tool_name = str(item.get("tool_name") or item.get("requested_tool_name") or "").strip()
+        payload = normalize_tool_payload(
+            item.get("tool_request_payload")
+            or item.get("payload")
+            or {
+                "operation": item.get("operation", ""),
+                "arguments": item.get("arguments", item.get("args", {})),
+            }
+        )
+
+        operation = str(payload.get("operation") or item.get("operation") or "").strip()
+        arguments = payload.get("arguments", {}) or {}
+
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        if not tool_name or not operation:
+            continue
+
+        output.append({
+            "request_id": str(item.get("request_id") or item.get("intent_id") or f"request_{index + 1}"),
+            "intent_id": str(item.get("intent_id") or ""),
+            "tool_name": tool_name,
+            "operation": operation,
+            "arguments": arguments,
+            "purpose": str(item.get("purpose") or ""),
+            "can_run_in_parallel": item.get("can_run_in_parallel", True),
+        })
+
+    return output
+
+
+def should_execute_parallel_tool_requests(
+    manifest: Dict[str, Any],
+    selected_id: str,
+    agent_config: Dict[str, Any],
+) -> bool:
+    requests = normalize_parallel_tool_requests(manifest)
+    if not requests:
+        return False
+
+    mode = str(manifest.get("multi_intent_execution_mode") or "").strip().lower()
+    if mode in {"parallel_tools", "parallel", "independent_tools"}:
+        return True
+
+    config = agent_config.get("multi_intent_execution", {})
+    if not isinstance(config, dict):
+        config = {}
+
+    if config.get("execute_parallel_tool_requests_with_subagents") is True:
+        return True
+
+    return not bool(selected_id)
+
+
+def aggregate_multi_tool_action(results: List[Dict[str, Any]]) -> str:
+    actions = {
+        str(item.get("action") or "").strip()
+        for item in results
+        if isinstance(item, dict) and str(item.get("action") or "").strip()
+    }
+
+    if "ask_user" in actions:
+        return "ask_user"
+    if "handoff" in actions:
+        return "handoff"
+    return "reply"
+
+
+def run_parallel_direct_tool_requests(
+    requests: List[Dict[str, Any]],
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    tool_runner: ToolRunner,
+) -> Dict[str, Any]:
+    updated_variables = dict(variables or {})
+    results: List[Dict[str, Any]] = []
+    observations: List[Dict[str, Any]] = []
+
+    for request in requests:
+        tool_name = request.get("tool_name", "")
+        operation = request.get("operation", "")
+        arguments = request.get("arguments", {}) or {}
+
+        validation = validate_direct_tool_request(
+            tool_name=tool_name,
+            operation=operation,
+            arguments=arguments,
+            variables=updated_variables,
+            agent_config=agent_config,
+        )
+
+        normalized_arguments = validation.get("arguments", arguments)
+
+        if not validation.get("ok", False):
+            variable_updates = validation.get("variable_updates", {}) or {}
+            if variable_updates:
+                updated_variables = apply_subagent_variable_patch(
+                    updated_variables,
+                    variable_updates,
+                    [],
+                    assistant_config=agent_config,
+                )
+
+            result = validation.get("tool_result", {}) or {}
+            result.update({
+                "request_id": request.get("request_id", ""),
+                "intent_id": request.get("intent_id", ""),
+                "tool_name": tool_name,
+                "operation": operation,
+                "arguments": normalized_arguments,
+            })
+            results.append(result)
+            observations.append({
+                "request_id": request.get("request_id", ""),
+                "intent_id": request.get("intent_id", ""),
+                "tool_name": tool_name,
+                "operation": operation,
+                "arguments": normalized_arguments,
+                "result": result,
+            })
+            continue
+
+        try:
+            raw_result = tool_runner.call(
+                tool_name=tool_name,
+                operation=operation,
+                arguments=normalized_arguments,
+            )
+        except Exception as exc:
+            raw_result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        updated_variables = apply_tool_update_rules(
+            assistant_config=agent_config,
+            variables=updated_variables,
+            operation=operation,
+            arguments=normalized_arguments,
+            result=raw_result,
+        )
+
+        result = {
+            **(raw_result if isinstance(raw_result, dict) else {"result": raw_result}),
+            "request_id": request.get("request_id", ""),
+            "intent_id": request.get("intent_id", ""),
+            "tool_name": tool_name,
+            "operation": operation,
+            "arguments": normalized_arguments,
+        }
+        results.append(result)
+        observations.append({
+            "request_id": request.get("request_id", ""),
+            "intent_id": request.get("intent_id", ""),
+            "tool_name": tool_name,
+            "operation": operation,
+            "arguments": normalized_arguments,
+            "result": raw_result,
+        })
+
+    ok = all(not (isinstance(item, dict) and item.get("ok") is False) for item in results)
+
+    return {
+        "variables": updated_variables,
+        "multi_tool_results": results,
+        "tool_result": {
+            "ok": ok,
+            "multi_tool_results": results,
+            "parallel_tool_requests": requests,
+            "observations": observations,
+            "action": aggregate_multi_tool_action(results),
+            "answer_draft": "MULTI_TOOL_RESULTS",
+            "notes": "Executed multiple direct tool requests for independent intents.",
+            "tool_calls_used": len(results),
+        },
+    }
+
+
+
 def tool_execution_node(state: AgentState):
     manifest = state.get("manifest", {}) or {}
     agent_config = state.get("agent_config", {}) or {}
@@ -2232,6 +2359,19 @@ def tool_execution_node(state: AgentState):
 
     tool_runner = ToolRunner(agent_config)
     all_observations: List[Dict[str, Any]] = []
+    parallel_requests = normalize_parallel_tool_requests(manifest)
+
+    if should_execute_parallel_tool_requests(
+        manifest=manifest,
+        selected_id=selected_id,
+        agent_config=agent_config,
+    ):
+        return run_parallel_direct_tool_requests(
+            requests=parallel_requests,
+            variables=variables,
+            agent_config=agent_config,
+            tool_runner=tool_runner,
+        )
 
     def run_executor(exec_id: str, vars_in: Dict[str, Any]):
         exec_id = unify_subagent_id(exec_id)
@@ -2277,122 +2417,6 @@ def tool_execution_node(state: AgentState):
 
         return result, updated_variables, result.observations or []
 
-    def run_direct_tool_call(call: Dict[str, Any], vars_in: Dict[str, Any]):
-        call_id = str(call.get("id") or "").strip() or "parallel_call"
-        intent = str(call.get("intent") or "").strip()
-        tool_name = str(call.get("tool_name") or manifest.get("requested_tool_name") or "").strip()
-        operation = str(call.get("operation") or "").strip()
-        arguments = call.get("arguments", {}) or {}
-
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        if not tool_name or not operation:
-            return {
-                "id": call_id,
-                "intent": intent,
-                "ok": False,
-                "error": "missing tool_name or operation",
-                "tool_name": tool_name,
-                "operation": operation,
-                "arguments": arguments,
-            }, vars_in
-
-        validation = validate_direct_tool_request(
-            tool_name=tool_name,
-            operation=operation,
-            arguments=arguments,
-            variables=vars_in,
-            agent_config=agent_config,
-        )
-
-        normalized_arguments = validation.get("arguments", arguments)
-
-        if not validation.get("ok", False):
-            updated = apply_subagent_variable_patch(
-                vars_in,
-                validation.get("variable_updates", {}) or {},
-                [],
-                assistant_config=agent_config,
-            )
-            blocked = validation.get("tool_result", {}) or {}
-            return {
-                **blocked,
-                "id": call_id,
-                "intent": intent,
-                "tool_name": tool_name,
-                "operation": operation,
-                "arguments": normalized_arguments,
-                "ok": blocked.get("ok", False),
-                "result": blocked,
-            }, updated
-
-        try:
-            raw_result = tool_runner.call(
-                tool_name=tool_name,
-                operation=operation,
-                arguments=normalized_arguments,
-            )
-        except Exception as exc:
-            raw_result = {
-                "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-
-        updated = apply_tool_update_rules(
-            assistant_config=agent_config,
-            variables=vars_in,
-            operation=operation,
-            arguments=normalized_arguments,
-            result=raw_result,
-        )
-
-        return build_direct_tool_result_record(
-            call_id=call_id,
-            intent=intent,
-            tool_name=tool_name,
-            operation=operation,
-            arguments=normalized_arguments,
-            raw_result=raw_result,
-        ), updated
-
-    if should_run_parallel_tool_calls(manifest, agent_config):
-        max_parallel = int(agent_config.get("max_parallel_tool_calls", 3) or 3)
-        calls = compact_parallel_tool_calls(manifest, max_items=max_parallel)
-
-        multi_results: List[Dict[str, Any]] = []
-        current_variables = variables
-
-        # Execute independently declared calls in a deterministic order.
-        # We intentionally merge after each result so source-of-truth update
-        # rules remain centralized and config-driven.
-        for call in calls:
-            if call.get("depends_on"):
-                continue
-            result_record, current_variables = run_direct_tool_call(call, current_variables)
-            multi_results.append(result_record)
-
-        if multi_results:
-            ok = all(item.get("ok") is not False for item in multi_results)
-            primary = multi_results[0]
-            return {
-                "variables": current_variables,
-                "multi_tool_results": multi_results,
-                "parallel_tool_results": multi_results,
-                "completed_intents": [item for item in multi_results if item.get("ok") is not False],
-                "failed_intents": [item for item in multi_results if item.get("ok") is False],
-                "tool_result": {
-                    "ok": ok,
-                    "multi_intent": True,
-                    "parallel": True,
-                    "action": primary.get("action") or "reply",
-                    "answer_draft": primary.get("answer_draft") or "MULTI_TOOL_RESULTS",
-                    "notes": "Executed safe independent parallel tool calls from manifest.",
-                    "results": multi_results,
-                    "tool_calls_used": len(multi_results),
-                },
-            }
-
     primary_result = None
 
     if selected_id:
@@ -2422,6 +2446,17 @@ def tool_execution_node(state: AgentState):
                         "observations": all_observations,
                         "tool_calls_used": (primary_result.tool_calls_used or 0) + (chained_result.tool_calls_used or 0),
                     },
+                    "multi_tool_results": [{
+                        "subagent": selected_id,
+                        "answer_draft": primary_result.answer,
+                        "action": primary_result.action,
+                        "notes": primary_result.notes,
+                    }, {
+                        "subagent": chained_id,
+                        "answer_draft": chained_result.answer,
+                        "action": chained_result.action,
+                        "notes": chained_result.notes,
+                    }],
                 }
 
         return {
@@ -2435,6 +2470,12 @@ def tool_execution_node(state: AgentState):
                 "observations": all_observations,
                 "tool_calls_used": primary_result.tool_calls_used,
             },
+            "multi_tool_results": [{
+                "subagent": selected_id,
+                "answer_draft": primary_result.answer,
+                "action": primary_result.action,
+                "notes": primary_result.notes,
+            }],
         }
 
     if selected_id and all_observations:
@@ -2469,7 +2510,6 @@ def tool_execution_node(state: AgentState):
                 variables,
                 validation.get("variable_updates", {}) or {},
                 [],
-                assistant_config=agent_config,
             )
 
             return {
@@ -2497,14 +2537,17 @@ def tool_execution_node(state: AgentState):
             result=raw_result,
         )
 
+        enriched_result = {
+            **raw_result,
+            "tool_name": tool_name,
+            "operation": operation,
+            "arguments": arguments,
+        }
+
         return {
             "variables": updated_variables,
-            "tool_result": {
-                **raw_result,
-                "tool_name": tool_name,
-                "operation": operation,
-                "arguments": arguments,
-            }
+            "tool_result": enriched_result,
+            "multi_tool_results": [enriched_result],
         }
 
     return {
@@ -2828,10 +2871,11 @@ def simple_response_node(state: AgentState):
     simple_context = {
         "assistant_context": compact_agent_context(agent_config, subagent),
         "manifest": compact_manifest(manifest),
+        "multi_intents": state.get("multi_intents", []) or manifest.get("multi_intents", []),
+        "response_synthesis": state.get("response_synthesis", {}) or manifest.get("response_synthesis", {}),
         "response_brief": manifest.get("response_brief", {}),
         "proactive_guidance": build_proactive_guidance(agent_config, manifest, {}),
         "tone_guidance": get_response_energy_instruction(agent_config, manifest),
-        "intent_plan": compact_intent_plan(manifest),
         "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=18),
         "answer_safety": agent_config.get("answer_safety", {}) or {},
     }
@@ -2915,11 +2959,15 @@ def response_node(state: AgentState):
         "variables": compact_variables(variables, schema),
         "memory": compact_memories_for_final(memories),
         "knowledge": compact_knowledge_for_final(knowledge),
-        "multi_knowledge": compact_multi_knowledge(state.get("multi_knowledge", [])),
+        "multi_knowledge": state.get("multi_knowledge", []) or [],
+        "knowledge_queries": state.get("knowledge_queries", []) or [],
         "tool_result": tool_result,
-        "multi_tool_results": compact_multi_tool_results(state.get("multi_tool_results", []) or tool_result.get("results", []) if isinstance(tool_result, dict) else []),
-        "completed_intents": compact_multi_tool_results(state.get("completed_intents", [])),
-        "failed_intents": compact_multi_tool_results(state.get("failed_intents", [])),
+        "multi_tool_results": (
+            state.get("multi_tool_results", [])
+            or (tool_result.get("multi_tool_results", []) if isinstance(tool_result, dict) else [])
+        ),
+        "response_synthesis": state.get("response_synthesis", {}) or manifest.get("response_synthesis", {}),
+        "multi_intents": state.get("multi_intents", []) or manifest.get("multi_intents", []),
         "answer_safety": agent_config.get("answer_safety", {}) or {},
         "template_response_policy": compact_template_response_policy(agent_config, tool_result),
         "proactive_guidance": build_proactive_guidance(agent_config, manifest, tool_result),
@@ -2933,12 +2981,7 @@ def response_node(state: AgentState):
 
 You are the voice of this assistant. You are generating the exact reply the user will read.
 
-If multi_tool_results or multi_knowledge are present, synthesize them into one coherent answer:
-- answer each completed intent briefly and clearly
-- ask only for missing inputs needed by failed or blocked intents
-- never invent a result for an intent that failed or was not executed
-- preserve source-of-truth operational facts exactly
-- do not expose internal intent IDs, tool names, variables, JSON, or routing
+If the context contains multi_intents, multi_tool_results, or multi_knowledge, synthesize them into one coherent answer. Keep each intent/result grounded. Do not merge facts from different tool results unless the context explicitly supports it. If one intent is completed and another is missing input, state the completed result briefly and ask only for the missing input.
 
 Context you have available:
 {safe_json(response_context, max_chars=9200)}
@@ -3455,6 +3498,9 @@ def quality_guard_node(state: AgentState):
                     agent_config,
                     state.get("tool_result", {}) or {},
                 ),
+                "multi_tool_results": state.get("multi_tool_results", []) or [],
+                "multi_knowledge": state.get("multi_knowledge", []) or [],
+                "response_synthesis": state.get("response_synthesis", {}) or {},
                 "proactive_guidance": build_proactive_guidance(
                     agent_config,
                     manifest,
