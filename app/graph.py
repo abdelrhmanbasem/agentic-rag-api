@@ -1387,6 +1387,431 @@ def active_deterministic_flow_subagent_id_from_state(state: AgentState) -> str:
 
 
 
+
+def collect_subagent_configured_phrases(
+    agent_config: Dict[str, Any],
+    subagent_id: str,
+    paths: List[str],
+) -> List[str]:
+    """
+    Collect phrase lists from a configured subagent.
+
+    This is intentionally config-driven: the caller supplies config paths and the
+    phrase values live in domain_bundle.json, not in graph.py.
+    """
+    subagent_id = unify_subagent_id(str(subagent_id or "").strip())
+    config = get_subagent_config(agent_config, subagent_id)
+    phrases: List[str] = []
+
+    for path in paths or []:
+        value = get_config_path_value(config, str(path or "").strip(), [])
+
+        if isinstance(value, list):
+            phrases.extend([
+                str(item)
+                for item in value
+                if str(item or "").strip()
+            ])
+        elif isinstance(value, str) and value.strip():
+            phrases.append(value)
+
+    return phrases
+
+
+def message_matches_phrase_source(
+    message: str,
+    agent_config: Dict[str, Any],
+    source: Dict[str, Any],
+) -> bool:
+    """
+    Match latest user message against a configured phrase source.
+
+    Supported source shapes:
+    - {"subagent_id": "booking", "paths": ["availability_request_terms"]}
+    - {"paths": ["assistant_level.path"]}
+    - {"phrases": ["..."]}
+
+    No user-facing or domain phrases are embedded here.
+    """
+    if not isinstance(source, dict):
+        return False
+
+    normalization = agent_config.get("normalization", {}) or {}
+    phrases: List[str] = []
+
+    direct_phrases = source.get("phrases", [])
+    if isinstance(direct_phrases, list):
+        phrases.extend([
+            str(item)
+            for item in direct_phrases
+            if str(item or "").strip()
+        ])
+
+    paths = source.get("paths", [])
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, list):
+        paths = []
+
+    subagent_id = str(source.get("subagent_id") or source.get("subagent") or "").strip()
+
+    if subagent_id:
+        phrases.extend(
+            collect_subagent_configured_phrases(
+                agent_config=agent_config,
+                subagent_id=subagent_id,
+                paths=[str(path) for path in paths],
+            )
+        )
+    else:
+        phrases.extend(collect_configured_phrases(agent_config, [str(path) for path in paths]))
+
+    if not phrases:
+        return False
+
+    return matches_any(message, phrases, normalization)
+
+
+def manifest_intent_texts(manifest: Dict[str, Any]) -> List[str]:
+    texts: List[str] = []
+
+    for key in [
+        "user_intent",
+        "conversation_stage",
+        "workflow_stage",
+        "response_strategy",
+        "chained_subagent_reason",
+    ]:
+        value = str((manifest or {}).get(key) or "").strip()
+        if value:
+            texts.append(value)
+
+    for item in (manifest or {}).get("detected_intents", []) or []:
+        text = str(item or "").strip()
+        if text:
+            texts.append(text)
+
+    for item in (manifest or {}).get("multi_intents", []) or []:
+        if not isinstance(item, dict):
+            continue
+
+        for key in [
+            "intent_id",
+            "intent_type",
+            "user_goal",
+            "response_role",
+            "selected_subagent_id",
+            "requested_tool_name",
+        ]:
+            value = str(item.get(key) or "").strip()
+            if value:
+                texts.append(value)
+
+    return texts
+
+
+def manifest_matches_any_intent_label(
+    manifest: Dict[str, Any],
+    labels: List[str],
+    normalization: Dict[str, Any],
+) -> bool:
+    if not isinstance(labels, list) or not labels:
+        return True
+
+    normalized_labels = [
+        normalize_label
+        for normalize_label in [
+            re.sub(r"\s+", " ", str(label or "").strip().lower())
+            for label in labels
+        ]
+        if normalize_label
+    ]
+
+    if not normalized_labels:
+        return True
+
+    for text in manifest_intent_texts(manifest):
+        normalized_text = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not normalized_text:
+            continue
+
+        for label in normalized_labels:
+            if label == normalized_text or label in normalized_text or normalized_text in label:
+                return True
+
+    return False
+
+
+def message_has_date_for_subagent(
+    message: str,
+    agent_config: Dict[str, Any],
+    subagent_id: str,
+) -> bool:
+    """
+    Ask the configured subagent date extractor whether this message contains a
+    date expression. This avoids graph.py carrying domain/date phrase lists.
+    """
+    subagent_id = unify_subagent_id(str(subagent_id or "").strip())
+    executor = SUBAGENT_EXECUTORS.get(subagent_id)
+    config = get_subagent_config(agent_config, subagent_id)
+    normalization = agent_config.get("normalization", {}) or {}
+
+    if executor and hasattr(executor, "extract_date_text"):
+        try:
+            date_text = executor.extract_date_text(message, config, normalization)
+            return bool(str(date_text or "").strip())
+        except Exception:
+            pass
+
+    date_sources = agent_config.get("date_detection_phrase_sources", [])
+    if isinstance(date_sources, list):
+        for source in date_sources:
+            if isinstance(source, dict) and message_matches_phrase_source(message, agent_config, source):
+                return True
+
+    return False
+
+
+def get_dependent_intent_chain_rules(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return configured dependent-intent chain rules.
+
+    Preferred config keys:
+    - dependent_intent_chains
+    - sequential_intent_chains
+
+    If the bundle has not yet been updated, derive one safe rule from configured
+    booking/location subagent phrase lists. The derived rule contains no branch,
+    slot, date, or user phrase values; it only says:
+    selected location flow + booking availability phrase + booking date extractor
+    should run booking after location in the same graph turn.
+    """
+    raw = agent_config.get("dependent_intent_chains")
+    if not isinstance(raw, list):
+        raw = agent_config.get("sequential_intent_chains")
+
+    rules = [item for item in (raw or []) if isinstance(item, dict)] if isinstance(raw, list) else []
+
+    if rules:
+        return rules
+
+    derived_enabled = get_config_bool(
+        agent_config,
+        "routing_guardrails.derive_dependent_chains_from_subagent_config",
+        True,
+    )
+
+    if not derived_enabled:
+        return []
+
+    location_config = get_subagent_config(agent_config, "location")
+    booking_config = get_subagent_config(agent_config, "booking")
+
+    if not location_config or not booking_config:
+        return []
+
+    return [{
+        "id": "derived_location_then_booking_availability",
+        "enabled": True,
+        "primary_subagent_id": "location",
+        "chained_subagent_id": "booking",
+        "only_when_selected_subagent_is_primary": True,
+        "requires_empty_chained_subagent": True,
+        "requires_date_from_subagent": "booking",
+        "requires_any_message_phrase_sources": [
+            {
+                "subagent_id": "booking",
+                "paths": [
+                    "availability_request_terms",
+                    "trigger_phrases",
+                ],
+            }
+        ],
+        "set_needs_tool": True,
+        "set_quality_guard": True,
+        "set_style_repair": True,
+        "response_strategy_append": (
+            "The latest user turn combines a configured location lookup with a configured "
+            "availability request. Run the primary subagent first, then run the chained "
+            "subagent in the same turn using the updated variables. Do not answer with a "
+            "waiting/acknowledgement message before the chained result is available."
+        ),
+        "response_brief": {
+            "next_move": "Run the dependent chained flow in the same turn.",
+            "must_do": [
+                "execute the configured chained subagent after the primary subagent",
+                "use the primary subagent result as input to the chained subagent",
+                "answer only after the chained result is available",
+            ],
+            "must_not_do": [
+                "do not send a waiting message when the chained tool can run now",
+                "do not ask the user to repeat information already present in the same message",
+            ],
+        },
+    }]
+
+
+def dependent_chain_rule_matches(
+    rule: Dict[str, Any],
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+) -> bool:
+    if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+        return False
+
+    primary_id = unify_subagent_id(str(rule.get("primary_subagent_id") or "").strip())
+    chained_id = unify_subagent_id(str(rule.get("chained_subagent_id") or "").strip())
+
+    if not primary_id or not chained_id:
+        return False
+
+    selected_id = unify_subagent_id(str((manifest or {}).get("selected_subagent_id") or "").strip())
+    existing_chain = unify_subagent_id(str((manifest or {}).get("chained_subagent_id") or "").strip())
+
+    if rule.get("requires_empty_chained_subagent", True) and existing_chain:
+        return False
+
+    if rule.get("only_when_selected_subagent_is_primary", True) and selected_id != primary_id:
+        return False
+
+    blocked_stages = rule.get("blocked_stage_values", [])
+    stage_paths = rule.get("stage_paths", [])
+    if isinstance(blocked_stages, list) and isinstance(stage_paths, list):
+        blocked_stage_set = {str(item or "").strip() for item in blocked_stages if str(item or "").strip()}
+        for path in stage_paths:
+            value = str(deep_get(variables, str(path or "").strip(), "") or "").strip()
+            if value and value in blocked_stage_set:
+                return False
+
+    normalization = agent_config.get("normalization", {}) or {}
+
+    intent_labels = rule.get("requires_any_intent_labels", [])
+    if isinstance(intent_labels, list) and intent_labels:
+        if not manifest_matches_any_intent_label(manifest, intent_labels, normalization):
+            return False
+
+    all_sources = rule.get("requires_all_message_phrase_sources", [])
+    if isinstance(all_sources, list):
+        for source in all_sources:
+            if not isinstance(source, dict):
+                continue
+            if not message_matches_phrase_source(message, agent_config, source):
+                return False
+
+    any_sources = rule.get("requires_any_message_phrase_sources", [])
+    if isinstance(any_sources, list) and any_sources:
+        if not any(
+            isinstance(source, dict) and message_matches_phrase_source(message, agent_config, source)
+            for source in any_sources
+        ):
+            return False
+
+    date_subagent = str(rule.get("requires_date_from_subagent") or "").strip()
+    if date_subagent and not message_has_date_for_subagent(message, agent_config, date_subagent):
+        return False
+
+    return True
+
+
+def apply_dependent_intent_chain_guardrails(
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Config-driven deterministic repair for sequential multi-intent turns.
+
+    Example class of turn:
+      "Find the nearest branch and show available appointments tomorrow."
+
+    If the LLM planner misses the dependency unless the user adds a connector
+    word like "there", this guard repairs the manifest so the graph runs:
+      primary_subagent -> chained_subagent
+    in the same turn.
+
+    Domain phrases remain in config/subagent configs; this function only uses
+    configured phrase sources and configured subagent date extraction.
+    """
+    patched = dict(manifest or {})
+
+    for rule in get_dependent_intent_chain_rules(agent_config):
+        if not dependent_chain_rule_matches(
+            rule=rule,
+            manifest=patched,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        ):
+            continue
+
+        primary_id = unify_subagent_id(str(rule.get("primary_subagent_id") or "").strip())
+        chained_id = unify_subagent_id(str(rule.get("chained_subagent_id") or "").strip())
+
+        patched["selected_subagent_id"] = primary_id
+        patched["chained_subagent_id"] = chained_id
+        patched["chained_subagent_reason"] = str(
+            rule.get("reason")
+            or "Configured dependent intent chain matched."
+        )
+
+        if rule.get("set_needs_tool", True):
+            patched["needs_tool"] = True
+
+        patched["simple_response_mode"] = False
+        patched["needs_subagent_reasoning"] = bool(rule.get("set_subagent_reasoning", False))
+        patched["needs_quality_guard"] = bool(rule.get("set_quality_guard", True))
+        patched["needs_style_repair"] = bool(rule.get("set_style_repair", True))
+
+        strategy_append = str(rule.get("response_strategy_append") or "").strip()
+        if strategy_append:
+            previous_strategy = str(patched.get("response_strategy") or "").strip()
+            patched["response_strategy"] = (
+                f"{previous_strategy}\n{strategy_append}".strip()
+                if previous_strategy
+                else strategy_append
+            )
+
+        rule_brief = rule.get("response_brief", {})
+        if isinstance(rule_brief, dict):
+            brief = patched.get("response_brief")
+            if not isinstance(brief, dict):
+                brief = {}
+
+            for key in ["tone", "language", "reply_length", "next_move"]:
+                value = str(rule_brief.get(key) or "").strip()
+                if value:
+                    brief[key] = value
+
+            brief["must_do"] = append_unique(
+                brief.get("must_do", []),
+                [str(item) for item in rule_brief.get("must_do", []) or []],
+            )
+            brief["must_not_do"] = append_unique(
+                brief.get("must_not_do", []),
+                [str(item) for item in rule_brief.get("must_not_do", []) or []],
+            )
+            patched["response_brief"] = brief
+
+        synthesis = patched.get("response_synthesis")
+        if not isinstance(synthesis, dict):
+            synthesis = {}
+
+        synthesis["dependent_chain_applied"] = {
+            "rule_id": str(rule.get("id") or ""),
+            "primary_subagent_id": primary_id,
+            "chained_subagent_id": chained_id,
+        }
+        patched["response_synthesis"] = synthesis
+
+        return patched
+
+    return patched
+
+
+
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -1465,7 +1890,16 @@ def unified_manifest_node(state: AgentState):
             agent_config=agent_config,
             variables=variables,
         )
+        parsed = apply_dependent_intent_chain_guardrails(
+            manifest=parsed,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
         parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
+        parsed["chained_subagent_id"] = unify_subagent_id(parsed.get("chained_subagent_id", ""))
+        if parsed.get("chained_subagent_id") == parsed.get("selected_subagent_id"):
+            parsed["chained_subagent_id"] = ""
         parsed["manifest_profile_used"] = profile
         return parsed
 
@@ -1570,9 +2004,20 @@ def unified_manifest_node(state: AgentState):
             agent_config=agent_config,
             variables=variables,
         )
+        manifest = apply_dependent_intent_chain_guardrails(
+            manifest=manifest,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
         manifest["selected_subagent_id"] = unify_subagent_id(
             manifest.get("selected_subagent_id", "")
         )
+        manifest["chained_subagent_id"] = unify_subagent_id(
+            manifest.get("chained_subagent_id", "")
+        )
+        if manifest.get("chained_subagent_id") == manifest.get("selected_subagent_id"):
+            manifest["chained_subagent_id"] = ""
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
