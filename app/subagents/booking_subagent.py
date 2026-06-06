@@ -859,7 +859,7 @@ class BookingSubagent:
             config=config
         )
 
-        # If the last customer detail arrived after an earlier confirmation,
+        # If the last configured customer detail arrived after an earlier confirmation,
         # create the booking immediately instead of asking for the same detail
         # or confirmation again.
         if missing and not non_confirmation_missing and self.confirmation_already_received(variables, config):
@@ -873,7 +873,7 @@ class BookingSubagent:
 
         # If all operational/customer details are present but explicit
         # confirmation is still missing, move to confirmation and ask only for
-        # confirmation. Do not ask for plate/name/phone again.
+        # confirmation. Do not ask for already-captured details again.
         if missing and not non_confirmation_missing:
             stage_path = config.get("stage_path", "booking.stage")
             awaiting_confirmation_stage = config.get("stages", {}).get(
@@ -1531,30 +1531,12 @@ class BookingSubagent:
         if branch:
             arguments["branch"] = branch
 
-        if not arguments.get("phone"):
-            existing_phone = self.get_existing_phone(
-                variables,
-                config,
-                context.assistant_config.get("normalization", {})
-            )
-            if existing_phone:
-                arguments["phone"] = existing_phone
-
-        if not arguments.get("full_name") and not arguments.get("name"):
-            full_name_value = (
-                deep_get(variables, "customer_profile.full_name")
-                or deep_get(variables, "booking.customer_profile.full_name")
-            )
-            if full_name_value:
-                arguments["full_name"] = full_name_value
-
-        if not arguments.get("plate_number") and not arguments.get("vehicle_number"):
-            plate_value = (
-                deep_get(variables, "customer_profile.plate_number")
-                or deep_get(variables, "booking.customer_profile.plate_number")
-            )
-            if plate_value:
-                arguments["plate_number"] = plate_value
+        arguments = self.augment_create_booking_arguments_from_configured_details(
+            arguments=arguments,
+            variables=variables,
+            config=config,
+            normalization=context.assistant_config.get("normalization", {})
+        )
 
         arguments["conversation_id"] = deep_get(variables, "conversation_id", "")
         arguments["user_id"] = deep_get(variables, "user_id", "")
@@ -4184,7 +4166,7 @@ class BookingSubagent:
         Preserve prior customer confirmation across detail-collection turns.
 
         This prevents the flow:
-        confirm slot -> provide name -> provide plate
+        confirm slot -> provide configured customer details
         from asking for confirmation/details again when the final detail arrives.
         """
         paths = self.get_confirmation_state_paths(config)
@@ -4402,9 +4384,22 @@ class BookingSubagent:
         variables: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """
+        Extract configured customer details without domain-specific field logic.
+
+        The subagent does not know what details a booking domain requires.
+        It reads the detail definitions from config and writes values only to
+        each field's configured target_path. Existing legacy phone/name helpers
+        remain as generic convenience fallbacks, but every additional domain
+        field is discovered from required_before_create,
+        customer_profile_persistence.fields, customer_detail_fields, or
+        required_customer_details.
+        """
         output: Dict[str, Any] = {}
         text = str(message or "").strip()
 
+        # Generic phone reuse/extraction remains because "phone" is a common
+        # contact field, not an assistant-specific booking object.
         phone_config = config.get("phone_extraction", {})
         phone_regex = phone_config.get("regex", r"(01\d{9}|\+?20\d{10,11})")
 
@@ -4425,6 +4420,8 @@ class BookingSubagent:
             if phone_match:
                 output["customer_profile.phone"] = phone_match.group(1).strip()
 
+        # Generic person-name extraction remains because it is a common customer
+        # identity field. It is still gated by configured name markers/patterns.
         if (
             not deep_get(variables, "customer_profile.full_name")
             and self.message_has_name_signal(text, config, normalization)
@@ -4438,14 +4435,510 @@ class BookingSubagent:
             if name and self.looks_like_person_name(name, config, normalization):
                 output["customer_profile.full_name"] = name
 
-        if not deep_get(variables, "customer_profile.plate_number"):
-            plate = self.extract_plate_fallback(text, config, normalization)
+        # Domain-specific customer details are config-driven.
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = str(field_config.get("target_path") or "").strip()
 
-            if plate:
-                output["customer_profile.plate_number"] = plate
+            if not target_path:
+                continue
+
+            if target_path in output:
+                continue
+
+            if deep_get(variables, target_path) not in [None, "", [], {}]:
+                continue
+
+            value = self.extract_configured_customer_detail_field(
+                message=text,
+                field_config=field_config,
+                config=config,
+                normalization=normalization
+            )
+
+            if value not in [None, "", [], {}]:
+                output[target_path] = value
 
         return output
 
+
+    def get_customer_detail_marker_values(self, config: Dict[str, Any]) -> List[str]:
+        markers_config = config.get("customer_detail_markers", {})
+        if not isinstance(markers_config, dict):
+            markers_config = {}
+
+        markers: List[str] = []
+
+        for value in markers_config.values():
+            if isinstance(value, list):
+                markers.extend([str(item or "") for item in value if str(item or "").strip()])
+
+        for field_config in self.get_customer_detail_field_configs(config):
+            field_markers = field_config.get("markers", [])
+            if isinstance(field_markers, list):
+                markers.extend([str(item or "") for item in field_markers if str(item or "").strip()])
+
+        output: List[str] = []
+        seen = set()
+        for marker in markers:
+            text = str(marker or "").strip()
+            if text and text not in seen:
+                output.append(text)
+                seen.add(text)
+
+        return output
+
+    def get_customer_detail_field_configs(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Return the customer-detail fields this assistant requires/collects.
+
+        Supported config sources, in priority/merge order:
+        - customer_detail_fields: list/dict
+        - required_customer_details: list/dict
+        - customer_details.fields: list/dict
+        - customer_profile_persistence.fields: dict
+        - required_before_create paths under variables.customer_profile.*
+
+        Domain fields are therefore owned by the bundle, not by this class.
+        """
+        collected: Dict[str, Dict[str, Any]] = {}
+
+        def add_field(raw: Any, fallback_name: str = "") -> None:
+            if isinstance(raw, str):
+                item: Dict[str, Any] = {"field": raw}
+            elif isinstance(raw, dict):
+                item = dict(raw)
+            else:
+                return
+
+            field_name = str(
+                item.get("field")
+                or item.get("name")
+                or fallback_name
+                or self.derive_field_name_from_path(
+                    str(item.get("target_path") or item.get("path") or "")
+                )
+            ).strip()
+
+            target_path = str(
+                item.get("target_path")
+                or item.get("path")
+                or (f"customer_profile.{field_name}" if field_name else "")
+            ).strip()
+
+            if not field_name and target_path:
+                field_name = self.derive_field_name_from_path(target_path)
+
+            if not field_name or not target_path:
+                return
+
+            normalized = self.normalize_customer_detail_field_config(
+                field_name=field_name,
+                target_path=target_path,
+                raw=item,
+                config=config
+            )
+
+            existing = collected.get(field_name, {})
+            merged = dict(existing)
+            merged.update({k: v for k, v in normalized.items() if v not in [None, "", [], {}]})
+            collected[field_name] = merged
+
+        for key in ["customer_detail_fields", "required_customer_details"]:
+            value = config.get(key, [])
+            if isinstance(value, list):
+                for item in value:
+                    add_field(item)
+            elif isinstance(value, dict):
+                for field_name, item in value.items():
+                    if isinstance(item, dict):
+                        add_field(item, fallback_name=str(field_name))
+                    else:
+                        add_field({"field": str(field_name), "target_path": str(item)})
+
+        customer_details = config.get("customer_details", {})
+        if isinstance(customer_details, dict):
+            fields = customer_details.get("fields", [])
+            if isinstance(fields, list):
+                for item in fields:
+                    add_field(item)
+            elif isinstance(fields, dict):
+                for field_name, item in fields.items():
+                    add_field(item if isinstance(item, dict) else {"target_path": str(item)}, str(field_name))
+
+        persistence = config.get("customer_profile_persistence", {})
+        if isinstance(persistence, dict):
+            fields = persistence.get("fields", {})
+            if isinstance(fields, dict):
+                for field_name, item in fields.items():
+                    add_field(item if isinstance(item, dict) else {}, str(field_name))
+
+        required = config.get("required_before_create", [])
+        if isinstance(required, list):
+            for path in required:
+                clean = self.strip_variables_prefix(str(path or "").strip())
+                if not clean.startswith("customer_profile."):
+                    continue
+
+                field_name = self.derive_field_name_from_path(clean)
+                add_field({
+                    "field": field_name,
+                    "target_path": clean
+                })
+
+        # Common fallback contact fields only apply if the bundle has not
+        # provided a field list. They keep older assistants working, while
+        # assistant-specific fields still come from config/required paths.
+        if not collected:
+            for item in [
+                {
+                    "field": "full_name",
+                    "target_path": "customer_profile.full_name",
+                    "validator": "full_name"
+                },
+                {
+                    "field": "phone",
+                    "target_path": "customer_profile.phone",
+                    "validator": "phone"
+                }
+            ]:
+                add_field(item)
+
+        return list(collected.values())
+
+    def normalize_customer_detail_field_config(
+        self,
+        field_name: str,
+        target_path: str,
+        raw: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        field = str(field_name or "").strip()
+        short_field = field.split("_", 1)[0] if field else ""
+
+        extraction_config = {}
+        for candidate_key in [
+            f"{field}_extraction",
+            f"{short_field}_extraction",
+        ]:
+            candidate = config.get(candidate_key, {})
+            if isinstance(candidate, dict) and candidate:
+                extraction_config.update(candidate)
+
+        inline_extraction = raw.get("extraction", {})
+        if isinstance(inline_extraction, dict):
+            extraction_config.update(inline_extraction)
+
+        source_paths = raw.get("source_paths", [])
+        if not isinstance(source_paths, list) or not source_paths:
+            source_paths = [
+                target_path,
+                f"booking.customer_profile.{field}",
+                f"booking.pending.customer_profile.{field}",
+                f"booking.confirmed.{field}",
+                field
+            ]
+
+        backup_paths = raw.get("backup_paths", [])
+        if not isinstance(backup_paths, list):
+            backup_paths = []
+
+        markers = raw.get("markers", [])
+        if not isinstance(markers, list):
+            markers = []
+
+        markers_config = config.get("customer_detail_markers", {})
+        if isinstance(markers_config, dict):
+            for marker_key in [
+                f"{field}_markers",
+                f"{short_field}_markers",
+            ]:
+                values = markers_config.get(marker_key, [])
+                if isinstance(values, list):
+                    markers.extend(values)
+
+        argument_names = raw.get("argument_names", [])
+        if not isinstance(argument_names, list):
+            argument_names = []
+
+        argument_name = str(raw.get("argument_name") or "").strip()
+        if argument_name:
+            argument_names.insert(0, argument_name)
+
+        if not argument_names:
+            argument_names = [field]
+
+        validator = str(
+            raw.get("validator")
+            or extraction_config.get("validator")
+            or raw.get("type")
+            or extraction_config.get("type")
+            or ""
+        ).strip()
+
+        # If the field has an extraction config but no semantic validator,
+        # use the field name as a generic lookup key into configured validators.
+        if not validator and extraction_config:
+            validator = field
+
+        return {
+            "field": field,
+            "target_path": target_path,
+            "source_paths": [str(path) for path in source_paths if str(path or "").strip()],
+            "backup_paths": [str(path) for path in backup_paths if str(path or "").strip()],
+            "validator": validator,
+            "markers": [str(item) for item in markers if str(item or "").strip()],
+            "argument_names": [str(item) for item in argument_names if str(item or "").strip()],
+            "extraction": extraction_config
+        }
+
+    @staticmethod
+    def derive_field_name_from_path(path: str) -> str:
+        clean = str(path or "").strip()
+        if not clean:
+            return ""
+
+        if clean.startswith("variables."):
+            clean = clean[len("variables."):]
+
+        return clean.split(".")[-1].strip()
+
+    def extract_configured_customer_detail_field(
+        self,
+        message: str,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        patterns = []
+        for key in ["fallback_patterns", "capture_patterns", "patterns"]:
+            values = extraction_config.get(key, [])
+            if isinstance(values, list):
+                patterns.extend(values)
+
+        normalized_digits = normalize_digits(str(message or ""), normalization.get("digit_map", {}))
+
+        for item in patterns:
+            if isinstance(item, dict):
+                pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
+                try:
+                    group_index = int(item.get("group", 1))
+                except Exception:
+                    group_index = 1
+            else:
+                pattern_text = str(item or "").strip()
+                group_index = 1
+
+            if not pattern_text:
+                continue
+
+            try:
+                match = re.search(pattern_text, normalized_digits, flags=re.IGNORECASE)
+            except re.error:
+                continue
+
+            if not match:
+                continue
+
+            try:
+                candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
+            except Exception:
+                candidate = match.group(0).strip()
+
+            normalized_value = self.normalize_customer_profile_value(
+                value=candidate,
+                validator=str(field_config.get("validator") or ""),
+                config=config,
+                normalization=normalization,
+                field_config=field_config
+            )
+
+            if normalized_value:
+                return normalized_value
+
+        return ""
+
+    def normalize_configured_customer_detail_value(
+        self,
+        value: Any,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        text = normalize_digits(str(value or "").strip(), normalization.get("digit_map", {}))
+
+        if not text:
+            return ""
+
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        cleanup_patterns = extraction_config.get("cleanup_patterns", [])
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    text = re.sub(pattern_text, " ", text).strip()
+                except re.error:
+                    continue
+
+        replacements = extraction_config.get("replacements", {})
+        if isinstance(replacements, dict):
+            for src, dst in replacements.items():
+                text = text.replace(str(src), str(dst))
+
+        separator_pattern = str(extraction_config.get("separator_pattern", r"[،,.!?؟:;]+") or "")
+        if separator_pattern:
+            try:
+                text = re.sub(separator_pattern, " ", text)
+            except re.error:
+                pass
+
+        text = re.sub(r"\s+", " ", text).strip()
+
+        if not self.configured_customer_detail_value_is_valid(
+            value=text,
+            field_config=field_config,
+            normalization=normalization
+        ):
+            return ""
+
+        return text
+
+    def configured_customer_detail_value_is_valid(
+        self,
+        value: str,
+        field_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        text = str(value or "").strip()
+
+        if not text:
+            return False
+
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        validation_regex = str(
+            extraction_config.get("validation_regex")
+            or extraction_config.get("regex_validation")
+            or ""
+        ).strip()
+
+        if validation_regex:
+            try:
+                if not re.search(validation_regex, text):
+                    return False
+            except re.error:
+                return False
+
+        require_digit = extraction_config.get("require_digit", None)
+        if require_digit is True and not re.search(r"\d", text):
+            return False
+
+        require_letter = extraction_config.get("require_letter", None)
+        if require_letter is True and not re.search(r"[A-Za-z\u0600-\u06FF]", text):
+            return False
+
+        require_letter_or_digit = extraction_config.get("require_letter_or_digit", None)
+        if require_letter_or_digit is True and not re.search(r"[A-Za-z0-9\u0600-\u06FF]", text):
+            return False
+
+        try:
+            min_length = int(extraction_config.get("min_length", 1) or 1)
+        except Exception:
+            min_length = 1
+
+        try:
+            max_length = int(extraction_config.get("max_length", 500) or 500)
+        except Exception:
+            max_length = 500
+
+        if len(text) < min_length or len(text) > max_length:
+            return False
+
+        normalized = normalize_text(text, normalization)
+        blocklist = extraction_config.get("blocklist", [])
+        if isinstance(blocklist, list):
+            for blocked in blocklist:
+                normalized_blocked = normalize_text(str(blocked or ""), normalization)
+                if normalized_blocked and normalized_blocked in normalized:
+                    return False
+
+        return True
+
+    def get_configured_detail_value_from_variables(
+        self,
+        variables: Dict[str, Any],
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        source_paths = field_config.get("source_paths", [])
+        if not isinstance(source_paths, list) or not source_paths:
+            source_paths = [str(field_config.get("target_path") or "")]
+
+        return self.first_valid_customer_profile_value(
+            variables=variables,
+            source_paths=source_paths,
+            validator=str(field_config.get("validator") or ""),
+            config=config,
+            normalization=normalization,
+            field_config=field_config
+        )
+
+    def augment_create_booking_arguments_from_configured_details(
+        self,
+        arguments: Dict[str, Any],
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Fill create_booking arguments from configured customer-detail fields.
+
+        The argument names come from each field's config. If omitted, the field
+        name itself is used. This avoids embedding assistant-specific detail
+        names in the generic booking subagent.
+        """
+        output = dict(arguments or {})
+
+        for field_config in self.get_customer_detail_field_configs(config):
+            argument_names = field_config.get("argument_names", [])
+            if not isinstance(argument_names, list) or not argument_names:
+                continue
+
+            if any(output.get(str(name or "").strip()) not in [None, "", [], {}] for name in argument_names):
+                continue
+
+            value = self.get_configured_detail_value_from_variables(
+                variables=variables,
+                field_config=field_config,
+                config=config,
+                normalization=normalization
+            )
+
+            if value in [None, "", [], {}]:
+                continue
+
+            primary_argument = str(argument_names[0] or "").strip()
+            if primary_argument:
+                output[primary_argument] = value
+
+        # Preserve older phone reuse behavior through the configured phone field.
+        if not output.get("phone"):
+            existing_phone = self.get_existing_phone(variables, config, normalization)
+            if existing_phone:
+                output["phone"] = existing_phone
+
+        return output
 
     def ensure_customer_profile_aliases(
         self,
@@ -4538,23 +5031,20 @@ class BookingSubagent:
         message: str = ""
     ) -> Dict[str, Any]:
         """
-        Preserve and merge customer_profile fields across booking turns.
+        Preserve and merge configured customer detail fields across booking turns.
 
-        This is intentionally generic and config-driven:
-        - field names are read from customer_profile_persistence.fields
-        - source/backup paths are read from customer_profile_persistence.source_paths
-        - backup targets are read from customer_profile_persistence.backup_paths
+        This method is intentionally domain-neutral:
+        - customer fields are read from config
+        - source/backup paths are read from config
+        - validation/normalization rules are read from config
+        - fallback target paths are derived from configured field names
 
-        It prevents a later partial extraction, such as only plate_number,
-        from causing a previously captured full_name or phone to disappear.
+        Each assistant may configure its own required identifiers/details
+        without changing this Python file.
         """
         persistence_config = config.get("customer_profile_persistence", {})
         if not isinstance(persistence_config, dict):
             persistence_config = {}
-
-        fields_config = persistence_config.get("fields", {})
-        if not isinstance(fields_config, dict):
-            fields_config = {}
 
         variables = self.ensure_customer_profile_aliases(
             variables=variables,
@@ -4563,91 +5053,31 @@ class BookingSubagent:
             normalization=normalization
         )
 
-        default_fields = {
-            "full_name": {
-                "target_path": "customer_profile.full_name",
-                "source_paths": [
-                    "customer_profile.full_name",
-                    "customer_profile.name",
-                    "booking.customer_profile.full_name",
-                    "booking.customer_profile.name",
-                    "booking.pending.customer_profile.full_name",
-                    "booking.pending.customer_profile.name",
-                    "booking.confirmed.full_name",
-                    "booking.confirmed.name"
-                ],
-                "backup_paths": [
-                    "booking.customer_profile.full_name"
-                ],
-                "validator": "full_name"
-            },
-            "phone": {
-                "target_path": "customer_profile.phone",
-                "source_paths": [
-                    "customer_profile.phone",
-                    "booking.customer_profile.phone",
-                    "booking.pending.customer_profile.phone",
-                    "booking.confirmed.phone",
-                    "phone",
-                    "customer_phone",
-                    "user_id"
-                ],
-                "backup_paths": [
-                    "booking.customer_profile.phone"
-                ],
-                "validator": "phone"
-            },
-            "plate_number": {
-                "target_path": "customer_profile.plate_number",
-                "source_paths": [
-                    "customer_profile.plate_number",
-                    "booking.customer_profile.plate_number",
-                    "booking.pending.customer_profile.plate_number",
-                    "booking.confirmed.plate_number"
-                ],
-                "backup_paths": [
-                    "booking.customer_profile.plate_number"
-                ],
-                "validator": "plate_number"
-            }
-        }
-
         updates: Dict[str, Any] = {}
 
-        for field_name, default_field_config in default_fields.items():
-            field_config = fields_config.get(field_name, {})
-            if not isinstance(field_config, dict):
-                field_config = {}
-
-            target_path = str(
-                field_config.get("target_path")
-                or default_field_config.get("target_path")
-                or ""
-            ).strip()
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = str(field_config.get("target_path") or "").strip()
 
             if not target_path:
                 continue
 
-            source_paths = field_config.get("source_paths")
+            source_paths = field_config.get("source_paths", [])
             if not isinstance(source_paths, list) or not source_paths:
-                source_paths = default_field_config.get("source_paths", [])
+                source_paths = [target_path]
 
-            backup_paths = field_config.get("backup_paths")
+            backup_paths = field_config.get("backup_paths", [])
             if not isinstance(backup_paths, list):
-                backup_paths = default_field_config.get("backup_paths", [])
+                backup_paths = []
 
-            validator = str(
-                field_config.get("validator")
-                or default_field_config.get("validator")
-                or ""
-            ).strip()
+            validator = str(field_config.get("validator") or "").strip()
 
             value = self.first_valid_customer_profile_value(
                 variables=variables,
                 source_paths=source_paths,
                 validator=validator,
                 config=config,
-                normalization=normalization
+                normalization=normalization,
+                field_config=field_config
             )
 
             if value in [None, ""]:
@@ -4662,7 +5092,8 @@ class BookingSubagent:
                     current_value,
                     validator,
                     config,
-                    normalization
+                    normalization,
+                    field_config=field_config
                 )
 
                 if normalized_current and normalized_current != current_value:
@@ -4688,7 +5119,8 @@ class BookingSubagent:
         source_paths: List[str],
         validator: str,
         config: Dict[str, Any],
-        normalization: Dict[str, Any]
+        normalization: Dict[str, Any],
+        field_config: Optional[Dict[str, Any]] = None
     ) -> str:
         for source_path in source_paths:
             path_text = str(source_path or "").strip()
@@ -4700,7 +5132,8 @@ class BookingSubagent:
                 deep_get(variables, path_text),
                 validator,
                 config,
-                normalization
+                normalization,
+                field_config=field_config
             )
 
             if value:
@@ -4713,29 +5146,31 @@ class BookingSubagent:
         value: Any,
         validator: str,
         config: Dict[str, Any],
-        normalization: Dict[str, Any]
+        normalization: Dict[str, Any],
+        field_config: Optional[Dict[str, Any]] = None
     ) -> str:
         text = str(value or "").strip()
 
         if not text:
             return ""
 
-        if validator == "phone":
+        validator_text = str(validator or "").strip().lower()
+
+        if validator_text == "phone":
             return self.normalize_phone_value(text, config, normalization)
 
-        if validator == "full_name":
+        if validator_text in {"full_name", "person_name", "name"}:
             cleaned = self.clean_name(text, config)
             if self.looks_like_person_name(cleaned, config, normalization):
                 return cleaned
             return ""
 
-        if validator == "plate_number":
-            plate = self.normalize_plate_number(text, normalization)
-            if self.looks_like_plate_number(plate, config, normalization):
-                return plate
-            return ""
-
-        return text
+        return self.normalize_configured_customer_detail_value(
+            value=text,
+            field_config=field_config or {},
+            config=config,
+            normalization=normalization
+        )
 
     def ensure_phone_context(
         self,
@@ -4984,17 +5419,8 @@ class BookingSubagent:
         text = str(message or "").strip()
         normalized = normalize_text(text, normalization)
 
-        markers_config = config.get("customer_detail_markers", {})
-        if not isinstance(markers_config, dict):
-            markers_config = {}
-
-        all_markers: List[str] = []
-        for key in ["name_markers", "phone_markers", "same_phone_markers", "plate_markers", "general_markers"]:
-            values = markers_config.get(key, [])
-            if isinstance(values, list):
-                all_markers.extend([str(item or "") for item in values])
-
-        for marker in all_markers:
+        markers = self.get_customer_detail_marker_values(config)
+        for marker in markers:
             normalized_marker = normalize_text(marker, normalization)
             if normalized_marker and normalized_marker in normalized:
                 return True
@@ -5008,11 +5434,16 @@ class BookingSubagent:
         except re.error:
             pass
 
-        if self.extract_plate_fallback(text, config, normalization):
-            return True
+        for field_config in self.get_customer_detail_field_configs(config):
+            if self.extract_configured_customer_detail_field(
+                message=text,
+                field_config=field_config,
+                config=config,
+                normalization=normalization
+            ):
+                return True
 
         return False
-
 
     def message_has_name_signal(
         self,
@@ -5056,7 +5487,6 @@ class BookingSubagent:
 
         fake_phrases = guard_config.get("fake_name_phrases", [])
         control_terms = guard_config.get("control_only_terms", [])
-        detail_markers = config.get("customer_detail_markers", {})
 
         if not isinstance(fake_phrases, list):
             fake_phrases = []
@@ -5064,14 +5494,7 @@ class BookingSubagent:
         if not isinstance(control_terms, list):
             control_terms = []
 
-        if not isinstance(detail_markers, dict):
-            detail_markers = {}
-
-        configured_markers: List[str] = []
-        for key in ["name_markers", "phone_markers", "same_phone_markers", "plate_markers", "general_markers"]:
-            values = detail_markers.get(key, [])
-            if isinstance(values, list):
-                configured_markers.extend([str(item or "") for item in values])
+        configured_markers = self.get_customer_detail_marker_values(config)
 
         for phrase in fake_phrases:
             normalized_phrase = normalize_text(str(phrase or ""), normalization)
@@ -5109,8 +5532,6 @@ class BookingSubagent:
                 return True
 
         return False
-
-
 
     def extract_name_from_configured_patterns(
         self,
@@ -5234,91 +5655,6 @@ class BookingSubagent:
 
         return all(len(part) >= min_part_length for part in parts)
 
-
-    def extract_plate_fallback(
-        self,
-        text: str,
-        config: Dict[str, Any],
-        normalization: Dict[str, Any]
-    ) -> str:
-        digit_map = normalization.get("digit_map", {})
-        normalized_digits = normalize_digits(str(text or ""), digit_map)
-
-        plate_config = config.get("plate_extraction", {})
-        if not isinstance(plate_config, dict):
-            plate_config = {}
-
-        patterns = plate_config.get("fallback_patterns", [])
-
-        if isinstance(patterns, list):
-            for pattern in patterns:
-                pattern_text = str(pattern or "").strip()
-                if not pattern_text:
-                    continue
-
-                try:
-                    match = re.search(pattern_text, normalized_digits, flags=re.IGNORECASE)
-                except re.error:
-                    continue
-
-                if not match:
-                    continue
-
-                group_index = 1
-                candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
-                candidate = self.normalize_plate_number(candidate, normalization)
-
-                if self.looks_like_plate_number(candidate, config, normalization):
-                    return candidate
-
-        return ""
-
-
-    def looks_like_plate_number(
-        self,
-        value: str,
-        config: Dict[str, Any],
-        normalization: Dict[str, Any]
-    ) -> bool:
-        text = str(value or "").strip()
-
-        if not text:
-            return False
-
-        plate_config = config.get("plate_extraction", {})
-        if not isinstance(plate_config, dict):
-            plate_config = {}
-
-        has_digit = bool(re.search(r"\d", text))
-        has_letter = bool(re.search(r"[A-Za-z\u0600-\u06FF]", text))
-
-        require_digit = bool(plate_config.get("require_digit", True))
-        require_letter_or_digit = bool(plate_config.get("require_letter_or_digit", True))
-
-        if require_digit and not has_digit:
-            return False
-
-        if require_letter_or_digit and not (has_digit or has_letter):
-            return False
-
-        min_length = int(plate_config.get("min_length", 2) or 2)
-        max_length = int(plate_config.get("max_length", 30) or 30)
-
-        if len(text) < min_length or len(text) > max_length:
-            return False
-
-        normalized = normalize_text(text, normalization)
-        blocklist = plate_config.get("blocklist", [])
-
-        if not isinstance(blocklist, list):
-            blocklist = []
-
-        for blocked in blocklist:
-            normalized_blocked = normalize_text(str(blocked or ""), normalization)
-            if normalized_blocked and normalized_blocked in normalized:
-                return False
-
-        return True
 
     def build_pending_summary(self, pending: Dict[str, Any]) -> str:
         if not isinstance(pending, dict):
@@ -5600,19 +5936,6 @@ class BookingSubagent:
     ) -> Dict[str, Any]:
         output = dict(extracted)
 
-        plate = output.get("customer_profile.plate_number")
-
-        if plate:
-            plate_text = self.normalize_plate_number(
-                str(plate),
-                normalization
-            )
-
-            if self.looks_like_plate_number(plate_text, config, normalization):
-                output["customer_profile.plate_number"] = plate_text
-            else:
-                output.pop("customer_profile.plate_number", None)
-
         if (
             output.get("customer_profile.full_name") in [None, "", [], {}]
             and output.get("customer_profile.name") not in [None, "", [], {}]
@@ -5641,21 +5964,31 @@ class BookingSubagent:
                 normalization.get("digit_map", {})
             )
 
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = str(field_config.get("target_path") or "").strip()
+
+            if not target_path or target_path not in output:
+                continue
+
+            # Common contact fields above have dedicated validators.
+            if target_path in {"customer_profile.full_name", "customer_profile.phone"}:
+                continue
+
+            value = self.normalize_customer_profile_value(
+                output.get(target_path),
+                str(field_config.get("validator") or ""),
+                config,
+                normalization,
+                field_config=field_config
+            )
+
+            if value:
+                output[target_path] = value
+            else:
+                output.pop(target_path, None)
+
         return output
 
     @staticmethod
     def norm_section(value: str) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip().lower())
-
-    @staticmethod
-    def normalize_plate_number(value: str, normalization: Dict[str, Any]) -> str:
-        digit_map = normalization.get("digit_map", {})
-        text = str(value or "")
-
-        for src, dst in digit_map.items():
-            text = text.replace(src, dst)
-
-        text = re.sub(r"[،,.!?؟:;]+", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-
-        return text
