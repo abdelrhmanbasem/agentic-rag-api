@@ -22,7 +22,7 @@ from app.subagents.base import (
 )
 
 
-# Architecture batch: 6.22-normalized-marker-capture-no-hardcoding
+# Architecture batch: 6.23-explicit-marker-persistence-no-hardcoding
 
 class BookingSubagent:
     """
@@ -4735,6 +4735,14 @@ class BookingSubagent:
                 )
 
             if not value:
+                value = self.extract_configured_detail_by_explicit_marker_loose(
+                    message=text,
+                    field_config=field_config,
+                    config=config,
+                    normalization=normalization
+                )
+
+            if not value:
                 continue
 
             updates[clean_target_path] = value
@@ -4902,6 +4910,205 @@ class BookingSubagent:
                 })
 
         return output
+
+
+    def extract_configured_detail_by_explicit_marker_loose(
+        self,
+        message: str,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        """
+        Final generic fallback for explicit customer-detail markers.
+
+        If a field is configured with markers and the current message contains
+        one of those markers, capture the remainder after the marker and persist
+        it when it satisfies generic configured safety rules. This deliberately
+        does not know field names such as plate_number or any domain phrase.
+        """
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        markers = field_config.get("markers", [])
+        if not isinstance(markers, list) or not markers:
+            return ""
+
+        digit_map = normalization.get("digit_map", {})
+        raw_message = normalize_digits(str(message or ""), digit_map)
+        normalized_message = normalize_text(raw_message, normalization)
+
+        if not normalized_message:
+            return ""
+
+        try:
+            max_chars = int(
+                extraction_config.get(
+                    "marker_capture_max_chars",
+                    extraction_config.get("max_length", 80)
+                ) or 80
+            )
+        except Exception:
+            max_chars = 80
+
+        max_chars = max(10, min(max_chars, 300))
+
+        stop_pattern = str(
+            extraction_config.get("marker_capture_stop_pattern")
+            or r"[\n،,.!?؟]+"
+        )
+
+        candidates: List[str] = []
+
+        for marker in markers:
+            marker_text = normalize_digits(str(marker or "").strip(), digit_map)
+            normalized_marker = normalize_text(marker_text, normalization)
+
+            if not normalized_marker:
+                continue
+
+            marker_index = normalized_message.find(normalized_marker)
+
+            if marker_index < 0:
+                continue
+
+            remainder = normalized_message[marker_index + len(normalized_marker):]
+            remainder = re.sub(r"^\s*[:：\-–—ـ]*\s*", "", remainder).strip()
+
+            if not remainder:
+                continue
+
+            try:
+                stop_match = re.search(stop_pattern, remainder)
+            except re.error:
+                stop_match = None
+
+            if stop_match:
+                remainder = remainder[:stop_match.start()].strip()
+
+            if len(remainder) > max_chars:
+                remainder = remainder[:max_chars].strip()
+
+            cleaned = self.clean_configured_marker_remainder_value(
+                value=remainder,
+                field_config=field_config,
+                normalization=normalization
+            )
+
+            if self.configured_explicit_marker_value_is_safe(
+                value=cleaned,
+                field_config=field_config
+            ):
+                candidates.append(cleaned)
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda value: self.score_configured_customer_detail_candidate(
+                value=value,
+                raw=value,
+                source="explicit_marker_loose",
+                field_config=field_config,
+                normalization=normalization
+            ),
+            reverse=True
+        )
+
+        return candidates[0]
+
+
+    def clean_configured_marker_remainder_value(
+        self,
+        value: Any,
+        field_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        text = normalize_digits(str(value or "").strip(), normalization.get("digit_map", {}))
+
+        cleanup_patterns = extraction_config.get("cleanup_patterns", [])
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    text = re.sub(pattern_text, " ", text).strip()
+                except re.error:
+                    continue
+
+        replacements = extraction_config.get("replacements", {})
+        if isinstance(replacements, dict):
+            for src_text, dst_text in replacements.items():
+                text = text.replace(str(src_text), str(dst_text))
+
+        separator_pattern = str(extraction_config.get("separator_pattern", r"[،,.!?؟:;]+") or "")
+        if separator_pattern:
+            try:
+                text = re.sub(separator_pattern, " ", text)
+            except re.error:
+                pass
+
+        return re.sub(r"\s+", " ", text).strip()
+
+
+    def configured_explicit_marker_value_is_safe(
+        self,
+        value: str,
+        field_config: Dict[str, Any]
+    ) -> bool:
+        text = str(value or "").strip()
+
+        if not text:
+            return False
+
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        blocklist = extraction_config.get("blocklist", [])
+        if isinstance(blocklist, list):
+            normalized_text = text.strip().lower()
+            for blocked in blocklist:
+                blocked_text = str(blocked or "").strip().lower()
+                if blocked_text and normalized_text == blocked_text:
+                    return False
+
+        try:
+            min_length = int(extraction_config.get("min_length", 1) or 1)
+        except Exception:
+            min_length = 1
+
+        try:
+            max_length = int(extraction_config.get("max_length", 300) or 300)
+        except Exception:
+            max_length = 300
+
+        if len(text) < min_length:
+            return False
+
+        if len(text) > max_length:
+            return False
+
+        if extraction_config.get("require_digit") is True and not re.search(r"\d", text):
+            return False
+
+        if extraction_config.get("require_letter") is True and not re.search(r"[A-Za-z\u0600-\u06FF]", text):
+            return False
+
+        if extraction_config.get("require_letter_or_digit") is True and not re.search(r"[A-Za-z0-9\u0600-\u06FF]", text):
+            return False
+
+        # Regex validation is still honored by the normal extraction path. This
+        # loose fallback is only used after an explicit configured marker, so it
+        # uses the generic min/max/required-character rules instead of letting an
+        # overly strict regex drop the field and cause repeated questions.
+        return True
 
 
     def get_customer_detail_marker_values(self, config: Dict[str, Any]) -> List[str]:
