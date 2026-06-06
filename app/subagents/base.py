@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+# Architecture batch: 6.20-deep-merge-persistent-variables-no-hardcoding
+
 
 # Domain-specific source-of-truth paths must live in domain_bundle.json.
 # These empty defaults are kept only for backward compatibility with imports.
@@ -643,7 +645,26 @@ def apply_variable_patch(
     )
 
     for path, value in safe_updates.items():
-        deep_set(patched, path, value)
+        existing_value = deep_get(patched, path)
+
+        # Empty incoming values must never erase a non-empty existing value,
+        # unless this exact path has been explicitly allowed by config.
+        empty_allowed_for_path = (
+            bool(allow_empty_updates)
+            or path_matches_policy_list(path, allow_empty_paths)
+        )
+
+        if (
+            is_empty(value)
+            and not empty_allowed_for_path
+            and existing_value not in [None, "", [], {}]
+        ):
+            continue
+
+        # Deep-merge nested dictionaries instead of replacing the whole object.
+        # This preserves sibling fields such as customer_profile.full_name when
+        # customer_profile.phone is updated later.
+        deep_set(patched, path, value, merge_dicts=True)
 
     return patched
 
