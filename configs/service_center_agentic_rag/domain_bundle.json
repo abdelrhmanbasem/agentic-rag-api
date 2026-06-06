@@ -293,7 +293,11 @@
           "subagents.booking.customer_detail_markers.phone_markers",
           "subagents.booking.customer_detail_markers.same_phone_markers",
           "subagents.booking.customer_detail_markers.plate_markers",
-          "subagents.booking.customer_detail_markers.general_markers"
+          "subagents.booking.customer_detail_markers.general_markers",
+          "subagents.booking.customer_detail_fields",
+          "subagents.booking.required_customer_details",
+          "subagents.booking.customer_details.fields",
+          "subagents.booking.customer_profile_persistence.fields"
         ],
         "target_subagent_id": "booking",
         "must_not_select_subagents": [
@@ -2603,7 +2607,75 @@
               "backup_paths": [
                 "booking.customer_profile.full_name"
               ],
-              "validator": "full_name"
+              "validator": "full_name",
+              "argument_names": [
+                "full_name",
+                "name",
+                "customer_name"
+              ],
+              "markers": [
+                "اسمي",
+                "اسمى",
+                "انا اسمي",
+                "انا اسمى",
+                "أنا اسمي",
+                "أنا اسمى",
+                "الاسم",
+                "الإسم",
+                "اسمي هو",
+                "اسمى هو",
+                "اسمي:",
+                "اسمى:",
+                "name is",
+                "my name is"
+              ],
+              "extraction": {
+                "capture_patterns": [
+                  {
+                    "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
+                    "group": 1
+                  }
+                ],
+                "cleanup_patterns": [],
+                "blocklist": [
+                  "العربية",
+                  "العربيه",
+                  "اللوحة",
+                  "اللوحه",
+                  "رقم",
+                  "موبايل",
+                  "تليفون",
+                  "تلفون",
+                  "فرع",
+                  "ميعاد",
+                  "معاد",
+                  "موعد",
+                  "الحجز",
+                  "تمام",
+                  "اكد",
+                  "أكد",
+                  "اكده",
+                  "أكده",
+                  "اكدها",
+                  "أكدها",
+                  "ايوه",
+                  "أيوه",
+                  "اه",
+                  "أه",
+                  "اوكي",
+                  "أوكي",
+                  "confirm",
+                  "confirmed",
+                  "yes",
+                  "ok",
+                  "okay"
+                ],
+                "min_parts": 2,
+                "max_parts": 6,
+                "min_part_length": 2
+              },
+              "required": true,
+              "label": "full name"
             },
             "phone": {
               "target_path": "customer_profile.phone",
@@ -2620,7 +2692,70 @@
               "backup_paths": [
                 "booking.customer_profile.phone"
               ],
-              "validator": "phone"
+              "validator": "phone",
+              "argument_names": [
+                "phone",
+                "customer_phone"
+              ],
+              "markers": [
+                "تليفون",
+                "تلفون",
+                "موبايل",
+                "رقم تليفوني",
+                "رقم تلفوني",
+                "رقمي",
+                "رقم الموبايل",
+                "phone",
+                "mobile",
+                "نفس الرقم",
+                "نفس رقم الواتساب",
+                "رقم الواتساب",
+                "الرقم ده",
+                "الرقم دا",
+                "الرقم اللي بكلمك منه",
+                "الرقم اللي بكلم منه",
+                "الرقم اللي بتكلم منه",
+                "الرقم اللي بكلمك عليه",
+                "الرقم اللي بتكلمك منه",
+                "الرقم اللي بتواصل منه",
+                "استخدم نفس الرقم",
+                "خليه نفس الرقم",
+                "على نفس الرقم",
+                "من نفس الرقم",
+                "الرقم الموجود",
+                "الرقم المتسجل",
+                "ده رقمي",
+                "دا رقمي",
+                "this number",
+                "same number",
+                "use this number",
+                "whatsapp number",
+                "same whatsapp number"
+              ],
+              "extraction": {
+                "patterns": [
+                  {
+                    "regex": "(01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})",
+                    "group": 1
+                  }
+                ],
+                "source_paths": [
+                  "customer_profile.phone",
+                  "phone",
+                  "customer_phone",
+                  "user_id",
+                  "conversation_id"
+                ],
+                "strip_suffixes": [
+                  "@s.whatsapp.net",
+                  "@c.us",
+                  "@g.us"
+                ],
+                "min_digits": 10,
+                "max_digits": 15
+              },
+              "required": true,
+              "label": "phone"
             },
             "plate_number": {
               "target_path": "customer_profile.plate_number",
@@ -2633,7 +2768,116 @@
               "backup_paths": [
                 "booking.customer_profile.plate_number"
               ],
-              "validator": "plate_number"
+              "validator": "plate_number",
+              "argument_names": [
+                "plate_number",
+                "vehicle_number",
+                "car_plate"
+              ],
+              "markers": [
+                "رقم العربية",
+                "نمر العربية",
+                "نمرة العربية",
+                "رقم اللوحه",
+                "رقم اللوحة",
+                "اللوحه",
+                "اللوحة",
+                "لوحتي",
+                "لوحتى",
+                "plate"
+              ],
+              "extraction": {
+                "fallback_patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "capture_patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "blocklist": [
+                  "اسمي",
+                  "اسمى",
+                  "الاسم",
+                  "الإسم",
+                  "موبايل",
+                  "تليفون",
+                  "تلفون",
+                  "موعد",
+                  "ميعاد",
+                  "معاد",
+                  "فرع"
+                ],
+                "require_digit": true,
+                "require_letter_or_digit": true,
+                "min_length": 2,
+                "max_length": 30,
+                "separator_pattern": "[،,.!?؟:;]+",
+                "cleanup_patterns": [
+                  "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
+                ],
+                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+              },
+              "required": true,
+              "label": "plate number"
             }
           },
           "aliases": [
@@ -2655,7 +2899,8 @@
             }
           ],
           "preserve_existing_fields": true,
-          "mirror_to_booking_profile": true
+          "mirror_to_booking_profile": true,
+          "generic_customer_detail_fields_enabled": true
         },
         "date_question": {
           "enabled": true,
@@ -2788,7 +3033,1046 @@
           "date",
           "time",
           "section"
-        ]
+        ],
+        "customer_detail_fields": [
+          {
+            "field": "full_name",
+            "label": "full name",
+            "target_path": "customer_profile.full_name",
+            "source_paths": [
+              "customer_profile.full_name",
+              "customer_profile.name",
+              "booking.customer_profile.full_name",
+              "booking.customer_profile.name",
+              "booking.pending.customer_profile.full_name",
+              "booking.pending.customer_profile.name",
+              "booking.confirmed.full_name",
+              "booking.confirmed.name"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.full_name"
+            ],
+            "argument_names": [
+              "full_name",
+              "name",
+              "customer_name"
+            ],
+            "validator": "full_name",
+            "markers": [
+              "اسمي",
+              "اسمى",
+              "انا اسمي",
+              "انا اسمى",
+              "أنا اسمي",
+              "أنا اسمى",
+              "الاسم",
+              "الإسم",
+              "اسمي هو",
+              "اسمى هو",
+              "اسمي:",
+              "اسمى:",
+              "name is",
+              "my name is"
+            ],
+            "extraction": {
+              "capture_patterns": [
+                {
+                  "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
+                  "group": 1
+                }
+              ],
+              "cleanup_patterns": [],
+              "blocklist": [
+                "العربية",
+                "العربيه",
+                "اللوحة",
+                "اللوحه",
+                "رقم",
+                "موبايل",
+                "تليفون",
+                "تلفون",
+                "فرع",
+                "ميعاد",
+                "معاد",
+                "موعد",
+                "الحجز",
+                "تمام",
+                "اكد",
+                "أكد",
+                "اكده",
+                "أكده",
+                "اكدها",
+                "أكدها",
+                "ايوه",
+                "أيوه",
+                "اه",
+                "أه",
+                "اوكي",
+                "أوكي",
+                "confirm",
+                "confirmed",
+                "yes",
+                "ok",
+                "okay"
+              ],
+              "min_parts": 2,
+              "max_parts": 6,
+              "min_part_length": 2
+            },
+            "required": true
+          },
+          {
+            "field": "phone",
+            "label": "phone",
+            "target_path": "customer_profile.phone",
+            "source_paths": [
+              "customer_profile.phone",
+              "phone",
+              "customer_phone",
+              "user_id",
+              "conversation_id"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.phone"
+            ],
+            "argument_names": [
+              "phone",
+              "customer_phone"
+            ],
+            "validator": "phone",
+            "markers": [
+              "تليفون",
+              "تلفون",
+              "موبايل",
+              "رقم تليفوني",
+              "رقم تلفوني",
+              "رقمي",
+              "رقم الموبايل",
+              "phone",
+              "mobile",
+              "نفس الرقم",
+              "نفس رقم الواتساب",
+              "رقم الواتساب",
+              "الرقم ده",
+              "الرقم دا",
+              "الرقم اللي بكلمك منه",
+              "الرقم اللي بكلم منه",
+              "الرقم اللي بتكلم منه",
+              "الرقم اللي بكلمك عليه",
+              "الرقم اللي بتكلمك منه",
+              "الرقم اللي بتواصل منه",
+              "استخدم نفس الرقم",
+              "خليه نفس الرقم",
+              "على نفس الرقم",
+              "من نفس الرقم",
+              "الرقم الموجود",
+              "الرقم المتسجل",
+              "ده رقمي",
+              "دا رقمي",
+              "this number",
+              "same number",
+              "use this number",
+              "whatsapp number",
+              "same whatsapp number"
+            ],
+            "extraction": {
+              "patterns": [
+                {
+                  "regex": "(01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})",
+                  "group": 1
+                }
+              ],
+              "source_paths": [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "strip_suffixes": [
+                "@s.whatsapp.net",
+                "@c.us",
+                "@g.us"
+              ],
+              "min_digits": 10,
+              "max_digits": 15
+            },
+            "reuse": {
+              "enabled": true,
+              "source_paths": [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "confirmed_path": "customer_profile.phone_confirmed_from_context",
+              "normalize_from_whatsapp_jid": true,
+              "strip_suffixes": [
+                "@s.whatsapp.net",
+                "@c.us",
+                "@g.us"
+              ],
+              "min_digits": 10,
+              "max_digits": 15,
+              "reuse_only_when_marker_present": true,
+              "do_not_ask_phone_if_any_source_path_has_phone": true
+            },
+            "required": true
+          },
+          {
+            "field": "plate_number",
+            "label": "plate number",
+            "target_path": "customer_profile.plate_number",
+            "source_paths": [
+              "customer_profile.plate_number",
+              "booking.customer_profile.plate_number",
+              "booking.pending.customer_profile.plate_number",
+              "booking.confirmed.plate_number",
+              "plate_number",
+              "vehicle_number",
+              "car_plate"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.plate_number"
+            ],
+            "argument_names": [
+              "plate_number",
+              "vehicle_number",
+              "car_plate"
+            ],
+            "validator": "plate_number",
+            "markers": [
+              "رقم العربية",
+              "نمر العربية",
+              "نمرة العربية",
+              "رقم اللوحه",
+              "رقم اللوحة",
+              "اللوحه",
+              "اللوحة",
+              "لوحتي",
+              "لوحتى",
+              "plate"
+            ],
+            "extraction": {
+              "fallback_patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "capture_patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "blocklist": [
+                "اسمي",
+                "اسمى",
+                "الاسم",
+                "الإسم",
+                "موبايل",
+                "تليفون",
+                "تلفون",
+                "موعد",
+                "ميعاد",
+                "معاد",
+                "فرع"
+              ],
+              "require_digit": true,
+              "require_letter_or_digit": true,
+              "min_length": 2,
+              "max_length": 30,
+              "separator_pattern": "[،,.!?؟:;]+",
+              "cleanup_patterns": [
+                "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
+              ],
+              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+            },
+            "required": true
+          }
+        ],
+        "required_customer_details": [
+          {
+            "field": "full_name",
+            "label": "full name",
+            "target_path": "customer_profile.full_name",
+            "source_paths": [
+              "customer_profile.full_name",
+              "customer_profile.name",
+              "booking.customer_profile.full_name",
+              "booking.customer_profile.name",
+              "booking.pending.customer_profile.full_name",
+              "booking.pending.customer_profile.name",
+              "booking.confirmed.full_name",
+              "booking.confirmed.name"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.full_name"
+            ],
+            "argument_names": [
+              "full_name",
+              "name",
+              "customer_name"
+            ],
+            "validator": "full_name",
+            "markers": [
+              "اسمي",
+              "اسمى",
+              "انا اسمي",
+              "انا اسمى",
+              "أنا اسمي",
+              "أنا اسمى",
+              "الاسم",
+              "الإسم",
+              "اسمي هو",
+              "اسمى هو",
+              "اسمي:",
+              "اسمى:",
+              "name is",
+              "my name is"
+            ],
+            "extraction": {
+              "capture_patterns": [
+                {
+                  "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
+                  "group": 1
+                }
+              ],
+              "cleanup_patterns": [],
+              "blocklist": [
+                "العربية",
+                "العربيه",
+                "اللوحة",
+                "اللوحه",
+                "رقم",
+                "موبايل",
+                "تليفون",
+                "تلفون",
+                "فرع",
+                "ميعاد",
+                "معاد",
+                "موعد",
+                "الحجز",
+                "تمام",
+                "اكد",
+                "أكد",
+                "اكده",
+                "أكده",
+                "اكدها",
+                "أكدها",
+                "ايوه",
+                "أيوه",
+                "اه",
+                "أه",
+                "اوكي",
+                "أوكي",
+                "confirm",
+                "confirmed",
+                "yes",
+                "ok",
+                "okay"
+              ],
+              "min_parts": 2,
+              "max_parts": 6,
+              "min_part_length": 2
+            },
+            "required": true
+          },
+          {
+            "field": "phone",
+            "label": "phone",
+            "target_path": "customer_profile.phone",
+            "source_paths": [
+              "customer_profile.phone",
+              "phone",
+              "customer_phone",
+              "user_id",
+              "conversation_id"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.phone"
+            ],
+            "argument_names": [
+              "phone",
+              "customer_phone"
+            ],
+            "validator": "phone",
+            "markers": [
+              "تليفون",
+              "تلفون",
+              "موبايل",
+              "رقم تليفوني",
+              "رقم تلفوني",
+              "رقمي",
+              "رقم الموبايل",
+              "phone",
+              "mobile",
+              "نفس الرقم",
+              "نفس رقم الواتساب",
+              "رقم الواتساب",
+              "الرقم ده",
+              "الرقم دا",
+              "الرقم اللي بكلمك منه",
+              "الرقم اللي بكلم منه",
+              "الرقم اللي بتكلم منه",
+              "الرقم اللي بكلمك عليه",
+              "الرقم اللي بتكلمك منه",
+              "الرقم اللي بتواصل منه",
+              "استخدم نفس الرقم",
+              "خليه نفس الرقم",
+              "على نفس الرقم",
+              "من نفس الرقم",
+              "الرقم الموجود",
+              "الرقم المتسجل",
+              "ده رقمي",
+              "دا رقمي",
+              "this number",
+              "same number",
+              "use this number",
+              "whatsapp number",
+              "same whatsapp number"
+            ],
+            "extraction": {
+              "patterns": [
+                {
+                  "regex": "(01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})",
+                  "group": 1
+                }
+              ],
+              "source_paths": [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "strip_suffixes": [
+                "@s.whatsapp.net",
+                "@c.us",
+                "@g.us"
+              ],
+              "min_digits": 10,
+              "max_digits": 15
+            },
+            "reuse": {
+              "enabled": true,
+              "source_paths": [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "confirmed_path": "customer_profile.phone_confirmed_from_context",
+              "normalize_from_whatsapp_jid": true,
+              "strip_suffixes": [
+                "@s.whatsapp.net",
+                "@c.us",
+                "@g.us"
+              ],
+              "min_digits": 10,
+              "max_digits": 15,
+              "reuse_only_when_marker_present": true,
+              "do_not_ask_phone_if_any_source_path_has_phone": true
+            },
+            "required": true
+          },
+          {
+            "field": "plate_number",
+            "label": "plate number",
+            "target_path": "customer_profile.plate_number",
+            "source_paths": [
+              "customer_profile.plate_number",
+              "booking.customer_profile.plate_number",
+              "booking.pending.customer_profile.plate_number",
+              "booking.confirmed.plate_number",
+              "plate_number",
+              "vehicle_number",
+              "car_plate"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.plate_number"
+            ],
+            "argument_names": [
+              "plate_number",
+              "vehicle_number",
+              "car_plate"
+            ],
+            "validator": "plate_number",
+            "markers": [
+              "رقم العربية",
+              "نمر العربية",
+              "نمرة العربية",
+              "رقم اللوحه",
+              "رقم اللوحة",
+              "اللوحه",
+              "اللوحة",
+              "لوحتي",
+              "لوحتى",
+              "plate"
+            ],
+            "extraction": {
+              "fallback_patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "capture_patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "patterns": [
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                  "group": 1
+                },
+                {
+                  "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                  "group": 1
+                },
+                {
+                  "regex": "^\\s*(\\d{2,8})\\s*$",
+                  "group": 1
+                }
+              ],
+              "blocklist": [
+                "اسمي",
+                "اسمى",
+                "الاسم",
+                "الإسم",
+                "موبايل",
+                "تليفون",
+                "تلفون",
+                "موعد",
+                "ميعاد",
+                "معاد",
+                "فرع"
+              ],
+              "require_digit": true,
+              "require_letter_or_digit": true,
+              "min_length": 2,
+              "max_length": 30,
+              "separator_pattern": "[،,.!?؟:;]+",
+              "cleanup_patterns": [
+                "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
+              ],
+              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+            },
+            "required": true
+          }
+        ],
+        "customer_details": {
+          "enabled": true,
+          "description": "Generic customer-detail contract used by booking_subagent.py. Domain-specific fields are configured here, not in Python.",
+          "fields": [
+            {
+              "field": "full_name",
+              "label": "full name",
+              "target_path": "customer_profile.full_name",
+              "source_paths": [
+                "customer_profile.full_name",
+                "customer_profile.name",
+                "booking.customer_profile.full_name",
+                "booking.customer_profile.name",
+                "booking.pending.customer_profile.full_name",
+                "booking.pending.customer_profile.name",
+                "booking.confirmed.full_name",
+                "booking.confirmed.name"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.full_name"
+              ],
+              "argument_names": [
+                "full_name",
+                "name",
+                "customer_name"
+              ],
+              "validator": "full_name",
+              "markers": [
+                "اسمي",
+                "اسمى",
+                "انا اسمي",
+                "انا اسمى",
+                "أنا اسمي",
+                "أنا اسمى",
+                "الاسم",
+                "الإسم",
+                "اسمي هو",
+                "اسمى هو",
+                "اسمي:",
+                "اسمى:",
+                "name is",
+                "my name is"
+              ],
+              "extraction": {
+                "capture_patterns": [
+                  {
+                    "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
+                    "group": 1
+                  }
+                ],
+                "cleanup_patterns": [],
+                "blocklist": [
+                  "العربية",
+                  "العربيه",
+                  "اللوحة",
+                  "اللوحه",
+                  "رقم",
+                  "موبايل",
+                  "تليفون",
+                  "تلفون",
+                  "فرع",
+                  "ميعاد",
+                  "معاد",
+                  "موعد",
+                  "الحجز",
+                  "تمام",
+                  "اكد",
+                  "أكد",
+                  "اكده",
+                  "أكده",
+                  "اكدها",
+                  "أكدها",
+                  "ايوه",
+                  "أيوه",
+                  "اه",
+                  "أه",
+                  "اوكي",
+                  "أوكي",
+                  "confirm",
+                  "confirmed",
+                  "yes",
+                  "ok",
+                  "okay"
+                ],
+                "min_parts": 2,
+                "max_parts": 6,
+                "min_part_length": 2
+              },
+              "required": true
+            },
+            {
+              "field": "phone",
+              "label": "phone",
+              "target_path": "customer_profile.phone",
+              "source_paths": [
+                "customer_profile.phone",
+                "phone",
+                "customer_phone",
+                "user_id",
+                "conversation_id"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.phone"
+              ],
+              "argument_names": [
+                "phone",
+                "customer_phone"
+              ],
+              "validator": "phone",
+              "markers": [
+                "تليفون",
+                "تلفون",
+                "موبايل",
+                "رقم تليفوني",
+                "رقم تلفوني",
+                "رقمي",
+                "رقم الموبايل",
+                "phone",
+                "mobile",
+                "نفس الرقم",
+                "نفس رقم الواتساب",
+                "رقم الواتساب",
+                "الرقم ده",
+                "الرقم دا",
+                "الرقم اللي بكلمك منه",
+                "الرقم اللي بكلم منه",
+                "الرقم اللي بتكلم منه",
+                "الرقم اللي بكلمك عليه",
+                "الرقم اللي بتكلمك منه",
+                "الرقم اللي بتواصل منه",
+                "استخدم نفس الرقم",
+                "خليه نفس الرقم",
+                "على نفس الرقم",
+                "من نفس الرقم",
+                "الرقم الموجود",
+                "الرقم المتسجل",
+                "ده رقمي",
+                "دا رقمي",
+                "this number",
+                "same number",
+                "use this number",
+                "whatsapp number",
+                "same whatsapp number"
+              ],
+              "extraction": {
+                "patterns": [
+                  {
+                    "regex": "(01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})",
+                    "group": 1
+                  }
+                ],
+                "source_paths": [
+                  "customer_profile.phone",
+                  "phone",
+                  "customer_phone",
+                  "user_id",
+                  "conversation_id"
+                ],
+                "strip_suffixes": [
+                  "@s.whatsapp.net",
+                  "@c.us",
+                  "@g.us"
+                ],
+                "min_digits": 10,
+                "max_digits": 15
+              },
+              "reuse": {
+                "enabled": true,
+                "source_paths": [
+                  "customer_profile.phone",
+                  "phone",
+                  "customer_phone",
+                  "user_id",
+                  "conversation_id"
+                ],
+                "confirmed_path": "customer_profile.phone_confirmed_from_context",
+                "normalize_from_whatsapp_jid": true,
+                "strip_suffixes": [
+                  "@s.whatsapp.net",
+                  "@c.us",
+                  "@g.us"
+                ],
+                "min_digits": 10,
+                "max_digits": 15,
+                "reuse_only_when_marker_present": true,
+                "do_not_ask_phone_if_any_source_path_has_phone": true
+              },
+              "required": true
+            },
+            {
+              "field": "plate_number",
+              "label": "plate number",
+              "target_path": "customer_profile.plate_number",
+              "source_paths": [
+                "customer_profile.plate_number",
+                "booking.customer_profile.plate_number",
+                "booking.pending.customer_profile.plate_number",
+                "booking.confirmed.plate_number",
+                "plate_number",
+                "vehicle_number",
+                "car_plate"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.plate_number"
+              ],
+              "argument_names": [
+                "plate_number",
+                "vehicle_number",
+                "car_plate"
+              ],
+              "validator": "plate_number",
+              "markers": [
+                "رقم العربية",
+                "نمر العربية",
+                "نمرة العربية",
+                "رقم اللوحه",
+                "رقم اللوحة",
+                "اللوحه",
+                "اللوحة",
+                "لوحتي",
+                "لوحتى",
+                "plate"
+              ],
+              "extraction": {
+                "fallback_patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "capture_patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "patterns": [
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+                    "group": 1
+                  },
+                  {
+                    "regex": "^\\s*(\\d{2,8})\\s*$",
+                    "group": 1
+                  }
+                ],
+                "blocklist": [
+                  "اسمي",
+                  "اسمى",
+                  "الاسم",
+                  "الإسم",
+                  "موبايل",
+                  "تليفون",
+                  "تلفون",
+                  "موعد",
+                  "ميعاد",
+                  "معاد",
+                  "فرع"
+                ],
+                "require_digit": true,
+                "require_letter_or_digit": true,
+                "min_length": 2,
+                "max_length": 30,
+                "separator_pattern": "[،,.!?؟:;]+",
+                "cleanup_patterns": [
+                  "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
+                ],
+                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+              },
+              "required": true
+            }
+          ],
+          "preserve_existing_fields": true,
+          "mirror_to_booking_profile": true,
+          "ask_only_missing_fields": true,
+          "create_booking_argument_strategy": "argument_names_from_field_config"
+        },
+        "plate_number_extraction": {
+          "fallback_patterns": [
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*(\\d{2,8})\\s*$",
+              "group": 1
+            }
+          ],
+          "blocklist": [
+            "اسمي",
+            "اسمى",
+            "الاسم",
+            "الإسم",
+            "موبايل",
+            "تليفون",
+            "تلفون",
+            "موعد",
+            "ميعاد",
+            "معاد",
+            "فرع"
+          ],
+          "require_digit": true,
+          "require_letter_or_digit": true,
+          "min_length": 2,
+          "max_length": 30,
+          "capture_patterns": [
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*(\\d{2,8})\\s*$",
+              "group": 1
+            }
+          ],
+          "patterns": [
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([^\\n،,.!?؟]{2,30})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})",
+              "group": 1
+            },
+            {
+              "regex": "(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\D*([\\u0600-\\u06FFa-zA-Z\\s]{0,16}[\\d٠-٩۰-۹][\\d\\s٠-٩۰-۹]{0,10})",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,4}\\s*[\\d٠-٩۰-۹]{1,8})\\s*$",
+              "group": 1
+            },
+            {
+              "regex": "^\\s*(\\d{2,8})\\s*$",
+              "group": 1
+            }
+          ],
+          "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,30}$"
+        },
+        "customer_detail_argument_policy": {
+          "enabled": true,
+          "source": "customer_detail_fields.argument_names",
+          "fallback_create_booking_arguments": "create_booking_arguments",
+          "do_not_hardcode_domain_fields_in_python": true
+        }
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -4924,7 +6208,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.12-code-expert-final-fixes-no-hardcoding",
+    "architecture_version": "6.17-generic-customer-details-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -5324,7 +6608,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.12-code-expert-final-fixes-no-hardcoding",
+    "version": "6.17-generic-customer-details-config-no-hardcoding",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -5422,7 +6706,10 @@
       "6.12 makes direct tool argument injection config-driven through tool_argument_injection_rules.",
       "6.12 makes missing-input state updates config-driven through missing_input_variable_updates.",
       "6.12 enables RAG cache settings for retrieve_knowledge_node.",
-      "6.12 enables bounded parallel direct tool execution with max_parallel_tool_workers."
+      "6.12 enables bounded parallel direct tool execution with max_parallel_tool_workers.",
+      "Version 6.17 makes customer-detail collection generic: booking_subagent.py reads customer_detail_fields / customer_details.fields / customer_profile_persistence.fields instead of embedding domain-specific fields in Python.",
+      "Service-center-specific details such as plate_number live only in this domain_bundle.json and are mapped to create_booking arguments through field config.",
+      "Generic booking detail extraction must write each extracted value to the configured target_path, preserve configured backup_paths, and ask only for missing paths from required_before_create."
     ]
   }
 }
