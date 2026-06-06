@@ -82,6 +82,10 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_booking_confirmation_context(
+            variables=variables,
+            config=config
+        )
         observations: List[Dict[str, Any]] = []
         tool_calls_used = 0
 
@@ -319,6 +323,10 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_booking_confirmation_context(
+            variables=variables,
+            config=config
+        )
 
         stage = deep_get(variables, stage_path, stage)
 
@@ -509,6 +517,10 @@ class BookingSubagent:
             message=context.user_message,
             normalization=normalization
         )
+        variables = self.ensure_booking_confirmation_context(
+            variables=variables,
+            config=config
+        )
 
         if self.is_booking_completed(variables, config):
             answer = render_template(
@@ -607,6 +619,10 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.ensure_booking_confirmation_context(
+            variables=variables,
+            config=config
+        )
 
         variables = self.ensure_pending_booking_context(
             variables=variables,
@@ -617,14 +633,31 @@ class BookingSubagent:
         )
 
         if not matches_any(context.user_message, confirmation_phrases, normalization):
+            missing_now = self.get_missing_required_create_fields(config, variables)
+            non_confirmation_missing = self.without_confirmation_missing_paths(
+                missing=missing_now,
+                config=config
+            )
+
+            # If the user supplied the last customer detail while we were waiting
+            # for confirmation, do not ask for that detail again. Preserve it and
+            # ask only for final confirmation. If confirmation had already been
+            # recorded by an earlier turn, create immediately.
+            if missing_now and not non_confirmation_missing and self.confirmation_already_received(variables, config):
+                return self.call_create_booking(
+                    context=context,
+                    config=config,
+                    variables=variables,
+                    observations=observations,
+                    tool_calls_used=tool_calls_used
+                )
+
             answer = render_template(
-                config.get("templates", {}).get(
-                    "repeat_confirmation",
-                    ""
-                ),
+                self.get_confirmation_prompt_template(config),
                 {
                     "variables": variables,
-                    "message": context.user_message
+                    "message": context.user_message,
+                    "missing_paths": missing_now
                 }
             )
 
@@ -636,7 +669,7 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes="awaiting explicit confirmation"
+                notes="awaiting explicit confirmation after preserving current details"
             )
 
         variables = apply_variable_patch(
@@ -656,6 +689,10 @@ class BookingSubagent:
             config=config,
             normalization=normalization,
             message=context.user_message
+        )
+        variables = self.ensure_booking_confirmation_context(
+            variables=variables,
+            config=config
         )
 
         variables = self.ensure_pending_booking_context(
@@ -679,9 +716,22 @@ class BookingSubagent:
         )
 
         missing = self.get_missing_required_create_fields(config, variables)
+        non_confirmation_missing = self.without_confirmation_missing_paths(
+            missing=missing,
+            config=config
+        )
 
-        if missing:
-            answer = self.render_missing_question(config, variables, missing, context.user_message)
+        if missing and not non_confirmation_missing and self.confirmation_already_received(variables, config):
+            return self.call_create_booking(
+                context=context,
+                config=config,
+                variables=variables,
+                observations=observations,
+                tool_calls_used=tool_calls_used
+            )
+
+        if non_confirmation_missing:
+            answer = self.render_missing_question(config, variables, non_confirmation_missing, context.user_message)
 
             variables = apply_variable_patch(
                 variables,
@@ -696,6 +746,10 @@ class BookingSubagent:
                 message=context.user_message,
                 normalization=normalization
             )
+            variables = self.ensure_booking_confirmation_context(
+                variables=variables,
+                config=config
+            )
 
             return SubagentResult(
                 handled=True,
@@ -705,7 +759,7 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes=f"confirmed slot but missing customer details: {missing}"
+                notes=f"confirmed slot but missing customer details: {non_confirmation_missing}"
             )
 
         return self.call_create_booking(
@@ -800,9 +854,46 @@ class BookingSubagent:
         )
 
         missing = self.get_missing_required_create_fields(config, variables)
+        non_confirmation_missing = self.without_confirmation_missing_paths(
+            missing=missing,
+            config=config
+        )
 
-        if missing:
-            answer = self.render_missing_question(config, variables, missing, context.user_message)
+        # If the last customer detail arrived after an earlier confirmation,
+        # create the booking immediately instead of asking for the same detail
+        # or confirmation again.
+        if missing and not non_confirmation_missing and self.confirmation_already_received(variables, config):
+            return self.call_create_booking(
+                context=context,
+                config=config,
+                variables=variables,
+                observations=observations,
+                tool_calls_used=tool_calls_used
+            )
+
+        # If all operational/customer details are present but explicit
+        # confirmation is still missing, move to confirmation and ask only for
+        # confirmation. Do not ask for plate/name/phone again.
+        if missing and not non_confirmation_missing:
+            stage_path = config.get("stage_path", "booking.stage")
+            awaiting_confirmation_stage = config.get("stages", {}).get(
+                "awaiting_confirmation",
+                "awaiting_confirmation"
+            )
+            updates = {}
+            if stage_path:
+                updates[stage_path] = awaiting_confirmation_stage
+
+            variables = apply_variable_patch(variables, updates, []) if updates else variables
+
+            answer = render_template(
+                self.get_confirmation_prompt_template(config),
+                {
+                    "variables": variables,
+                    "message": context.user_message,
+                    "missing_paths": missing
+                }
+            )
 
             return SubagentResult(
                 handled=True,
@@ -812,7 +903,21 @@ class BookingSubagent:
                 selected_subagent=self.name,
                 observations=observations,
                 tool_calls_used=tool_calls_used,
-                notes=f"still missing customer details after extraction: {missing}"
+                notes="all details present; awaiting final confirmation only"
+            )
+
+        if non_confirmation_missing:
+            answer = self.render_missing_question(config, variables, non_confirmation_missing, context.user_message)
+
+            return SubagentResult(
+                handled=True,
+                action="ask_user",
+                answer=answer,
+                variable_updates=variables,
+                selected_subagent=self.name,
+                observations=observations,
+                tool_calls_used=tool_calls_used,
+                notes=f"still missing customer details after extraction: {non_confirmation_missing}"
             )
 
         return self.call_create_booking(
@@ -3958,6 +4063,164 @@ class BookingSubagent:
         )
 
         return bool(branch and (appointment_date or date_text))
+
+
+    def get_confirmation_state_paths(self, config: Dict[str, Any]) -> List[str]:
+        """
+        Return configured paths that mean the customer has already confirmed.
+
+        No domain-specific phrase or stage is embedded here. Paths are read from:
+        - confirmation_state_paths
+        - boolean True entries in on_confirm_updates / on_missing_details_updates
+        - required_before_create paths that correspond to those update keys
+        """
+        configured = config.get("confirmation_state_paths", [])
+        paths: List[str] = []
+
+        if isinstance(configured, list):
+            paths.extend([str(item or "").strip() for item in configured if str(item or "").strip()])
+
+        for update_key in ["on_confirm_updates", "on_missing_details_updates"]:
+            updates = config.get(update_key, {})
+            if not isinstance(updates, dict):
+                continue
+
+            for key, value in updates.items():
+                key_text = str(key or "").strip()
+                if key_text and value is True:
+                    paths.append(key_text)
+
+        required = config.get("required_before_create", [])
+        if isinstance(required, list):
+            required_paths = [str(item or "").strip() for item in required if str(item or "").strip()]
+            for path in required_paths:
+                clean = self.strip_variables_prefix(path)
+                if clean and clean in paths:
+                    paths.append(clean)
+
+        output: List[str] = []
+        for path in paths:
+            clean = self.strip_variables_prefix(path)
+            if clean and clean not in output:
+                output.append(clean)
+
+        return output
+
+    def get_confirmation_required_paths(self, config: Dict[str, Any]) -> List[str]:
+        configured = config.get("confirmation_required_paths", [])
+        output: List[str] = []
+
+        if isinstance(configured, list):
+            output.extend([str(item or "").strip() for item in configured if str(item or "").strip()])
+
+        state_paths = self.get_confirmation_state_paths(config)
+        required = config.get("required_before_create", [])
+        if isinstance(required, list):
+            for path in required:
+                path_text = str(path or "").strip()
+                clean = self.strip_variables_prefix(path_text)
+                if clean and clean in state_paths:
+                    output.append(path_text)
+
+        normalized: List[str] = []
+        for path in output:
+            path_text = str(path or "").strip()
+            if path_text and path_text not in normalized:
+                normalized.append(path_text)
+
+        return normalized
+
+    @staticmethod
+    def strip_variables_prefix(path: str) -> str:
+        text = str(path or "").strip()
+        if text.startswith("variables."):
+            return text[len("variables."):]
+        return text
+
+    def is_confirmation_missing_path(self, path: str, config: Dict[str, Any]) -> bool:
+        path_text = str(path or "").strip()
+        clean = self.strip_variables_prefix(path_text)
+
+        required_paths = self.get_confirmation_required_paths(config)
+        if path_text in required_paths or clean in [self.strip_variables_prefix(p) for p in required_paths]:
+            return True
+
+        return clean in self.get_confirmation_state_paths(config)
+
+    def without_confirmation_missing_paths(
+        self,
+        missing: List[str],
+        config: Dict[str, Any]
+    ) -> List[str]:
+        if not isinstance(missing, list):
+            return []
+
+        return [
+            str(path or "").strip()
+            for path in missing
+            if str(path or "").strip()
+            and not self.is_confirmation_missing_path(str(path or "").strip(), config)
+        ]
+
+    def confirmation_already_received(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> bool:
+        for path in self.get_confirmation_state_paths(config):
+            value = deep_get(variables, path)
+            if value is True:
+                return True
+            if str(value).strip().lower() in {"true", "1", "yes", "y"}:
+                return True
+        return False
+
+    def ensure_booking_confirmation_context(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Preserve prior customer confirmation across detail-collection turns.
+
+        This prevents the flow:
+        confirm slot -> provide name -> provide plate
+        from asking for confirmation/details again when the final detail arrives.
+        """
+        paths = self.get_confirmation_state_paths(config)
+        if not paths:
+            return variables
+
+        if not self.confirmation_already_received(variables, config):
+            return variables
+
+        updates: Dict[str, Any] = {}
+        for path in paths:
+            if deep_get(variables, path) is not True:
+                updates[path] = True
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+    def get_confirmation_prompt_template(self, config: Dict[str, Any]) -> str:
+        templates = config.get("templates", {})
+        if not isinstance(templates, dict):
+            templates = {}
+
+        for key in [
+            "final_confirmation",
+            "repeat_confirmation",
+            "confirm_slot",
+            "missing_confirmation",
+            "missing_fields"
+        ]:
+            template = str(templates.get(key) or "").strip()
+            if template:
+                return template
+
+        return ""
 
     def get_missing_required_create_fields(
         self,
