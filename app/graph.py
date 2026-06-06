@@ -1,4 +1,5 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
 import re
@@ -18,9 +19,11 @@ from app.config import (
     MODEL_QUALITY,
     OPENAI_API_KEY,
     MAX_OUTPUT_TOKENS,
+    MAX_QUALITY_TOKENS,
     QUALITY_GUARD_ENABLED,
 )
 from app.rag import search_knowledge, compress_knowledge, search_memories
+from app.db import get_rag_cache, save_rag_cache
 from app.tool_runner import ToolRunner
 from app.subagents.base import (
     SubagentContext,
@@ -107,12 +110,13 @@ class QualityDecision(BaseModel):
     energy_issue: str = ""
 
 
-manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=900).bind(
+manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=1600).bind(
     response_format={"type": "json_object"}
 )
 subagent_llm = llm(MODEL_SUBAGENT, temperature=0.15).with_structured_output(SubagentAnalysis)
+subagent_llm_raw = llm(MODEL_SUBAGENT, temperature=0.15, max_tokens=700)
 response_llm = llm(MODEL_RESPONSE, temperature=0.45, max_tokens=MAX_OUTPUT_TOKENS)
-quality_llm = llm(MODEL_QUALITY, temperature=0).with_structured_output(QualityDecision)
+quality_llm = llm(MODEL_QUALITY, temperature=0, max_tokens=MAX_QUALITY_TOKENS).with_structured_output(QualityDecision)
 
 
 SUBAGENT_EXECUTORS = {
@@ -1479,6 +1483,13 @@ def unified_manifest_node(state: AgentState):
         selected_missing = bool(known_subagent_ids) and selected_id and selected_id not in known_subagent_ids
         chained_missing = bool(known_subagent_ids) and chained_id and chained_id not in known_subagent_ids
 
+        _raw_parallel = manifest.get("parallel_tool_requests", [])
+        _parallel_declared_but_broken = (
+            isinstance(_raw_parallel, list)
+            and len(_raw_parallel) > 0
+            and not normalize_parallel_tool_requests(manifest)
+        )
+
         should_retry_full = (
             bool(manifest.get("needs_full_manifest"))
             or manifest_confidence(manifest) < 0.65
@@ -1486,6 +1497,8 @@ def unified_manifest_node(state: AgentState):
             or chained_missing
             or (manifest.get("needs_tool") and not manifest.get("requested_tool_name") and not manifest.get("selected_subagent_id"))
             or (manifest.get("chained_subagent_id") and not manifest.get("selected_subagent_id"))
+            or _parallel_declared_but_broken
+            or (manifest_has_multi_intents(manifest) and not manifest.get("selected_subagent_id") and not _raw_parallel)
         )
 
         if should_retry_full:
@@ -1751,6 +1764,9 @@ def retrieve_knowledge_node(state: AgentState):
     variables = state.get("variables", {}) or {}
     schema = state.get("schema", {}) or {}
     agent_config = state.get("agent_config", {}) or {}
+    assistant_id = state.get("assistant_id", "")
+    conversation_id = state.get("conversation_id", "")
+    user_id = state.get("user_id", "")
 
     queries = build_knowledge_queries(
         message=message,
@@ -1772,6 +1788,44 @@ def retrieve_knowledge_node(state: AgentState):
     if not isinstance(retrieval_config, dict):
         retrieval_config = {}
 
+    cache_enabled = bool(retrieval_config.get("cache_enabled", True))
+    try:
+        cache_max_age = int(retrieval_config.get("cache_max_age_minutes", 20) or 20)
+    except Exception:
+        cache_max_age = 20
+
+    if cache_enabled and conversation_id:
+        try:
+            cached = get_rag_cache(
+                conversation_id=conversation_id,
+                max_age_minutes=cache_max_age,
+                assistant_id=assistant_id,
+            )
+            if cached and isinstance(cached.get("compressed_payload"), list) and cached["compressed_payload"]:
+                compressed_items = cached["compressed_payload"]
+                lines = []
+                for item in compressed_items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = item.get("title", "Untitled")
+                    score = float(item.get("score", 0.0) or 0.0)
+                    item_text = item.get("text", "")
+                    lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
+
+                return {
+                    "knowledge": "\n".join(lines) if lines else "NO_CONFIDENT_KNOWLEDGE_FOUND",
+                    "knowledge_items": compressed_items,
+                    "knowledge_queries": queries,
+                    "multi_knowledge": [{
+                        "query": cached.get("query", queries[0]),
+                        "knowledge": "\n".join(lines),
+                        "items": compressed_items,
+                        "cache_hit": True,
+                    }],
+                }
+        except Exception:
+            pass
+
     per_query_limit = int(retrieval_config.get("per_query_top_k", KNOWLEDGE_TOP_K) or KNOWLEDGE_TOP_K)
     max_total_items = int(retrieval_config.get("max_total_items", max(KNOWLEDGE_TOP_K, len(queries) * 2)) or KNOWLEDGE_TOP_K)
 
@@ -1782,7 +1836,7 @@ def retrieve_knowledge_node(state: AgentState):
 
     for query in queries:
         try:
-            raw = search_knowledge(state["assistant_id"], query, limit=per_query_limit)
+            raw = search_knowledge(assistant_id, query, limit=per_query_limit)
             compressed = compress_knowledge(raw, query)
         except Exception as exc:
             errors.append(f"{query}: {type(exc).__name__}: {exc}")
@@ -1834,6 +1888,19 @@ def retrieve_knowledge_node(state: AgentState):
         score = float(item.get("score", 0.0) or 0.0)
         item_text = item.get("text", "")
         lines.append(f"- Source: {title} | Score: {score:.3f}\n  Content: {item_text}")
+
+    if cache_enabled and conversation_id and combined_items:
+        try:
+            save_rag_cache(
+                conversation_id=conversation_id,
+                assistant_id=assistant_id,
+                user_id=user_id,
+                query=queries[0],
+                knowledge_payload=[item.get("text", "") for item in combined_items if isinstance(item, dict)],
+                compressed_payload=combined_items,
+            )
+        except Exception:
+            pass
 
     return {
         "knowledge": "\n".join(lines),
@@ -1911,10 +1978,108 @@ def get_known_branch_from_variables(variables: Dict[str, Any]) -> str:
 def normalize_direct_tool_arguments(
     operation: str,
     arguments: Dict[str, Any],
-    variables: Dict[str, Any]
+    variables: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """
+    Auto-inject variable values into direct tool arguments.
+
+    Primary path is config-driven:
+    - assistant.tool_argument_injection_rules
+    - assistant.tool_pending_object_rules
+
+    The fallback branch preserves old behavior only when no injection rules are configured.
+    """
+    agent_config = agent_config or {}
     op = str(operation or "").strip()
     args = dict(arguments or {})
+
+    injection_rules = agent_config.get("tool_argument_injection_rules", [])
+    applied_config_rule = False
+
+    if isinstance(injection_rules, list) and injection_rules:
+        for rule in injection_rules:
+            if not isinstance(rule, dict):
+                continue
+
+            rule_operations = rule.get("operations", [])
+            if rule_operations == "*" or rule_operations == ["*"]:
+                operation_matches = True
+            elif isinstance(rule_operations, list):
+                operation_matches = op in [str(item) for item in rule_operations]
+            else:
+                operation_matches = False
+
+            if not operation_matches:
+                continue
+
+            applied_config_rule = True
+
+            for injection in rule.get("inject", []):
+                if not isinstance(injection, dict):
+                    continue
+
+                arg_name = str(injection.get("arg") or "").strip()
+                if not arg_name:
+                    continue
+
+                if is_present(args.get(arg_name)):
+                    continue
+
+                if "literal" in injection:
+                    value = injection.get("literal")
+                    if is_present(value) or value is False:
+                        args[arg_name] = value
+                    continue
+
+                paths = injection.get("from_paths", [])
+                if not isinstance(paths, list):
+                    paths = []
+
+                value = first_present(*[
+                    deep_get(variables, str(path or "").strip(), "")
+                    for path in paths
+                    if str(path or "").strip()
+                ])
+
+                if is_present(value):
+                    args[arg_name] = value
+
+    pending_rules = agent_config.get("tool_pending_object_rules", [])
+    if isinstance(pending_rules, list) and pending_rules:
+        for rule in pending_rules:
+            if not isinstance(rule, dict):
+                continue
+
+            rule_operations = rule.get("operations", [])
+            if rule_operations == "*" or rule_operations == ["*"]:
+                operation_matches = True
+            elif isinstance(rule_operations, list):
+                operation_matches = op in [str(item) for item in rule_operations]
+            else:
+                operation_matches = False
+
+            if not operation_matches:
+                continue
+
+            applied_config_rule = True
+
+            pending_path = str(rule.get("pending_path") or "").strip()
+            fields = rule.get("fields", [])
+            if not pending_path or not isinstance(fields, list):
+                continue
+
+            pending = deep_get(variables, pending_path, {})
+            if not isinstance(pending, dict):
+                continue
+
+            for field in fields:
+                field_str = str(field or "").strip()
+                if field_str and not is_present(args.get(field_str)) and is_present(pending.get(field_str)):
+                    args[field_str] = pending.get(field_str)
+
+    if applied_config_rule:
+        return args
 
     if op in {"list_available_slots", "check_availability", "create_booking"}:
         branch = first_present(
@@ -2116,6 +2281,7 @@ def validate_direct_tool_request(
         operation=operation,
         arguments=arguments,
         variables=variables,
+        agent_config=agent_config,
     )
 
     required_fields = get_tool_operation_required_fields(
@@ -2141,8 +2307,27 @@ def validate_direct_tool_request(
 
     variable_updates: Dict[str, Any] = {}
 
-    if operation == "list_available_slots" and "date" in missing_inputs:
-        variable_updates["booking.stage"] = "awaiting_date"
+    missing_input_updates = agent_config.get("missing_input_variable_updates", {})
+    if isinstance(missing_input_updates, dict):
+        op_updates = missing_input_updates.get(operation, {})
+        wildcard_updates = missing_input_updates.get("*", {})
+
+        for update_map in [wildcard_updates, op_updates]:
+            if not isinstance(update_map, dict):
+                continue
+
+            for missing_field in missing_inputs:
+                field_updates = update_map.get(str(missing_field), {})
+                if isinstance(field_updates, dict):
+                    variable_updates.update(field_updates)
+
+    if not variable_updates and operation == "list_available_slots" and "date" in missing_inputs:
+        booking_config = get_subagent_config(agent_config, "booking")
+        stage_path = str(booking_config.get("stage_path") or "booking.stage")
+        awaiting_date_value = str(
+            (booking_config.get("stages") or {}).get("awaiting_date") or "awaiting_date"
+        )
+        variable_updates[stage_path] = awaiting_date_value
 
     return {
         "ok": False,
@@ -2179,11 +2364,11 @@ def subagent_observations_are_ok(observations: List[Dict[str, Any]]) -> bool:
 
 def normalize_parallel_tool_requests(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw_requests = manifest.get("parallel_tool_requests", [])
-
     if not isinstance(raw_requests, list):
-        raw_requests = []
+        return []
 
     output: List[Dict[str, Any]] = []
+    seen_call_keys: set = set()
 
     for index, item in enumerate(raw_requests):
         if not isinstance(item, dict):
@@ -2207,6 +2392,16 @@ def normalize_parallel_tool_requests(manifest: Dict[str, Any]) -> List[Dict[str,
 
         if not tool_name or not operation:
             continue
+
+        try:
+            args_key = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            args_key = str(sorted(arguments.items()))
+
+        call_key = f"{tool_name}::{operation}::{args_key}"
+        if call_key in seen_call_keys:
+            continue
+        seen_call_keys.add(call_key)
 
         output.append({
             "request_id": str(item.get("request_id") or item.get("intent_id") or f"request_{index + 1}"),
@@ -2264,11 +2459,28 @@ def run_parallel_direct_tool_requests(
     agent_config: Dict[str, Any],
     tool_runner: ToolRunner,
 ) -> Dict[str, Any]:
-    updated_variables = dict(variables or {})
+    """
+    Execute independent direct tool requests.
+
+    Requests marked can_run_in_parallel=True run through ThreadPoolExecutor.
+    Requests marked false are executed sequentially after the parallel batch.
+    State updates from parallel calls are merged after completion.
+    """
+    parallel_reqs = [r for r in requests if r.get("can_run_in_parallel", True)]
+    sequential_reqs = [r for r in requests if not r.get("can_run_in_parallel", True)]
+
     results: List[Dict[str, Any]] = []
     observations: List[Dict[str, Any]] = []
+    updated_variables = dict(variables or {})
 
-    for request in requests:
+    try:
+        max_workers = int(agent_config.get("max_parallel_tool_workers", 4) or 4)
+    except Exception:
+        max_workers = 4
+
+    max_workers = max(1, min(len(parallel_reqs) or 1, max_workers))
+
+    def execute_one(request: Dict[str, Any], vars_snapshot: Dict[str, Any]):
         tool_name = request.get("tool_name", "")
         operation = request.get("operation", "")
         arguments = request.get("arguments", {}) or {}
@@ -2277,22 +2489,12 @@ def run_parallel_direct_tool_requests(
             tool_name=tool_name,
             operation=operation,
             arguments=arguments,
-            variables=updated_variables,
+            variables=vars_snapshot,
             agent_config=agent_config,
         )
-
         normalized_arguments = validation.get("arguments", arguments)
 
         if not validation.get("ok", False):
-            variable_updates = validation.get("variable_updates", {}) or {}
-            if variable_updates:
-                updated_variables = apply_subagent_variable_patch(
-                    updated_variables,
-                    variable_updates,
-                    [],
-                    assistant_config=agent_config,
-                )
-
             result = validation.get("tool_result", {}) or {}
             result.update({
                 "request_id": request.get("request_id", ""),
@@ -2300,17 +2502,17 @@ def run_parallel_direct_tool_requests(
                 "tool_name": tool_name,
                 "operation": operation,
                 "arguments": normalized_arguments,
+                "purpose": request.get("purpose", ""),
             })
-            results.append(result)
-            observations.append({
+            obs = {
                 "request_id": request.get("request_id", ""),
                 "intent_id": request.get("intent_id", ""),
                 "tool_name": tool_name,
                 "operation": operation,
                 "arguments": normalized_arguments,
                 "result": result,
-            })
-            continue
+            }
+            return result, obs, validation.get("variable_updates", {}) or {}
 
         try:
             raw_result = tool_runner.call(
@@ -2324,13 +2526,23 @@ def run_parallel_direct_tool_requests(
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-        updated_variables = apply_tool_update_rules(
-            assistant_config=agent_config,
-            variables=updated_variables,
-            operation=operation,
-            arguments=normalized_arguments,
-            result=raw_result,
-        )
+        variable_updates: Dict[str, Any] = {}
+        try:
+            new_variables = apply_tool_update_rules(
+                assistant_config=agent_config,
+                variables=vars_snapshot,
+                operation=operation,
+                arguments=normalized_arguments,
+                result=raw_result,
+            )
+            if isinstance(new_variables, dict):
+                variable_updates = {
+                    key: value
+                    for key, value in new_variables.items()
+                    if vars_snapshot.get(key) != value
+                }
+        except Exception:
+            variable_updates = {}
 
         result = {
             **(raw_result if isinstance(raw_result, dict) else {"result": raw_result}),
@@ -2339,16 +2551,69 @@ def run_parallel_direct_tool_requests(
             "tool_name": tool_name,
             "operation": operation,
             "arguments": normalized_arguments,
+            "purpose": request.get("purpose", ""),
         }
-        results.append(result)
-        observations.append({
+
+        obs = {
             "request_id": request.get("request_id", ""),
             "intent_id": request.get("intent_id", ""),
             "tool_name": tool_name,
             "operation": operation,
             "arguments": normalized_arguments,
             "result": raw_result,
-        })
+        }
+
+        return result, obs, variable_updates
+
+    if parallel_reqs and max_workers > 1:
+        vars_snapshot = dict(updated_variables)
+        futures_map = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for req in parallel_reqs:
+                future = executor.submit(execute_one, req, vars_snapshot)
+                futures_map[future] = req
+
+            for future in as_completed(futures_map):
+                req = futures_map[future]
+                try:
+                    result, obs, var_updates = future.result(timeout=35)
+                    results.append(result)
+                    observations.append(obs)
+                    if isinstance(var_updates, dict):
+                        updated_variables.update(var_updates)
+                except Exception as exc:
+                    error_result = {
+                        "ok": False,
+                        "error": f"Parallel execution error: {type(exc).__name__}: {exc}",
+                        "request_id": req.get("request_id", ""),
+                        "intent_id": req.get("intent_id", ""),
+                        "tool_name": req.get("tool_name", ""),
+                        "operation": req.get("operation", ""),
+                    }
+                    results.append(error_result)
+                    observations.append({
+                        "request_id": req.get("request_id", ""),
+                        "intent_id": req.get("intent_id", ""),
+                        "tool_name": req.get("tool_name", ""),
+                        "operation": req.get("operation", ""),
+                        "arguments": req.get("arguments", {}) or {},
+                        "result": error_result,
+                    })
+    elif parallel_reqs:
+        for req in parallel_reqs:
+            result, obs, var_updates = execute_one(req, updated_variables)
+            results.append(result)
+            observations.append(obs)
+            if isinstance(var_updates, dict):
+                updated_variables.update(var_updates)
+
+    for req in sequential_reqs:
+        result, obs, var_updates = execute_one(req, updated_variables)
+        results.append(result)
+        observations.append(obs)
+        if isinstance(var_updates, dict):
+            updated_variables.update(var_updates)
 
     ok = all(not (isinstance(item, dict) and item.get("ok") is False) for item in results)
 
@@ -2362,11 +2627,10 @@ def run_parallel_direct_tool_requests(
             "observations": observations,
             "action": aggregate_multi_tool_action(results),
             "answer_draft": "MULTI_TOOL_RESULTS",
-            "notes": "Executed multiple direct tool requests for independent intents.",
+            "notes": f"Executed {len(results)} tool request(s). Parallel: {len(parallel_reqs)}, Sequential: {len(sequential_reqs)}.",
             "tool_calls_used": len(results),
         },
     }
-
 
 
 def tool_execution_node(state: AgentState):
@@ -2439,65 +2703,109 @@ def tool_execution_node(state: AgentState):
 
         return result, updated_variables, result.observations or []
 
+    executed_results: List[Dict[str, Any]] = []
+    already_run = set()
     primary_result = None
+    chained_result = None
 
     if selected_id:
         primary_result, variables, obs1 = run_executor(selected_id, variables)
         all_observations.extend(obs1)
 
-    if primary_result and primary_result.handled:
-        if chained_id and chained_id != selected_id:
-            chained_result, variables, obs2 = run_executor(chained_id, variables)
-            all_observations.extend(obs2)
+        if primary_result and primary_result.handled:
+            already_run.add(selected_id)
+            executed_results.append({
+                "intent_id": "primary",
+                "subagent": selected_id,
+                "answer_draft": primary_result.answer,
+                "action": primary_result.action,
+                "notes": primary_result.notes,
+                "tool_calls_used": primary_result.tool_calls_used or 0,
+                "observations": obs1,
+            })
 
-            if chained_result and chained_result.handled:
-                return {
-                    "variables": variables,
-                    "tool_result": {
-                        "ok": subagent_observations_are_ok(all_observations),
-                        "subagent": f"{selected_id}+{chained_id}",
-                        "primary_subagent": selected_id,
-                        "chained_subagent": chained_id,
-                        "chained": True,
-                        "action": chained_result.action,
-                        "answer_draft": chained_result.answer,
-                        "primary_answer_draft": primary_result.answer,
-                        "notes": "Executed chained subagents sequentially.",
-                        "primary_notes": primary_result.notes,
-                        "chained_notes": chained_result.notes,
-                        "observations": all_observations,
-                        "tool_calls_used": (primary_result.tool_calls_used or 0) + (chained_result.tool_calls_used or 0),
-                    },
-                    "multi_tool_results": [{
-                        "subagent": selected_id,
-                        "answer_draft": primary_result.answer,
-                        "action": primary_result.action,
-                        "notes": primary_result.notes,
-                    }, {
+            if chained_id and chained_id != selected_id:
+                chained_result, variables, obs2 = run_executor(chained_id, variables)
+                all_observations.extend(obs2)
+
+                if chained_result and chained_result.handled:
+                    already_run.add(chained_id)
+                    executed_results.append({
+                        "intent_id": "chained",
                         "subagent": chained_id,
                         "answer_draft": chained_result.answer,
                         "action": chained_result.action,
                         "notes": chained_result.notes,
-                    }],
-                }
+                        "tool_calls_used": chained_result.tool_calls_used or 0,
+                        "observations": obs2,
+                    })
+
+    multi_intents_list = manifest.get("multi_intents", [])
+    if not isinstance(multi_intents_list, list):
+        multi_intents_list = []
+
+    for intent in multi_intents_list:
+        if not isinstance(intent, dict):
+            continue
+
+        intent_subagent_id = unify_subagent_id(
+            str(intent.get("selected_subagent_id") or "").strip()
+        )
+
+        if not intent_subagent_id:
+            continue
+        if intent_subagent_id in already_run:
+            continue
+        if intent_subagent_id not in SUBAGENT_EXECUTORS:
+            continue
+        if not intent.get("needs_tool", True):
+            continue
+
+        intent_result, variables, intent_obs = run_executor(intent_subagent_id, variables)
+        all_observations.extend(intent_obs)
+
+        if intent_result and intent_result.handled:
+            already_run.add(intent_subagent_id)
+            executed_results.append({
+                "intent_id": intent.get("intent_id", ""),
+                "subagent": intent_subagent_id,
+                "action": intent_result.action,
+                "answer_draft": intent_result.answer,
+                "notes": intent_result.notes,
+                "tool_calls_used": intent_result.tool_calls_used or 0,
+                "observations": intent_obs,
+            })
+
+    if executed_results:
+        total_calls = sum(int(r.get("tool_calls_used", 0) or 0) for r in executed_results)
+        primary_answer = executed_results[-1].get("answer_draft", "MULTI_INTENT_RESULTS")
+
+        tool_result = {
+            "ok": subagent_observations_are_ok(all_observations),
+            "subagent": "+".join(sorted(already_run)),
+            "multi_intent": len(executed_results) > 1,
+            "action": aggregate_multi_tool_action(executed_results),
+            "answer_draft": primary_answer,
+            "observations": all_observations,
+            "tool_calls_used": total_calls,
+            "notes": f"Executed {len(executed_results)} subagent intent(s).",
+        }
+
+        if primary_result and chained_result and chained_result.handled:
+            tool_result.update({
+                "primary_subagent": selected_id,
+                "chained_subagent": chained_id,
+                "chained": True,
+                "primary_answer_draft": primary_result.answer,
+                "primary_notes": primary_result.notes,
+                "chained_notes": chained_result.notes,
+                "notes": f"Executed chained subagents plus {max(len(executed_results) - 2, 0)} extra multi_intents.",
+            })
 
         return {
             "variables": variables,
-            "tool_result": {
-                "ok": subagent_observations_are_ok(all_observations),
-                "subagent": selected_id,
-                "action": primary_result.action,
-                "answer_draft": primary_result.answer,
-                "notes": primary_result.notes,
-                "observations": all_observations,
-                "tool_calls_used": primary_result.tool_calls_used,
-            },
-            "multi_tool_results": [{
-                "subagent": selected_id,
-                "answer_draft": primary_result.answer,
-                "action": primary_result.action,
-                "notes": primary_result.notes,
-            }],
+            "tool_result": tool_result,
+            "multi_tool_results": executed_results,
         }
 
     if selected_id and all_observations:
@@ -2532,6 +2840,7 @@ def tool_execution_node(state: AgentState):
                 variables,
                 validation.get("variable_updates", {}) or {},
                 [],
+                assistant_config=agent_config,
             )
 
             return {
@@ -2583,6 +2892,7 @@ def tool_execution_node(state: AgentState):
         }
     }
 
+
 def decide_after_tool(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
@@ -2602,8 +2912,11 @@ def subagent_reasoning_node(state: AgentState):
         (
             "system",
             "You are the selected subagent's private analysis brain inside a configurable multi-tenant assistant engine. "
-            "Reason privately, but return only the structured SubagentAnalysis fields. Do not expose chain-of-thought. "
+            "Deliberate internally, then end your response with one valid JSON object only. "
+            "The JSON object must contain exactly these keys: understanding, user_goal, detected_intents, facts_to_use, facts_missing, "
+            "variable_updates_to_consider, next_best_step, response_constraints, should_chain, recommended_chained_subagent_id, confidence. "
             "Do not write the final user-facing reply. "
+            "Do not expose hidden reasoning, chain-of-thought, markdown, or prose outside the JSON. "
             "Prepare concise guidance for the final response. "
             "Use the manifest response brief as the main direction. "
             "Use only provided context, variables, memory, knowledge, tool result, and subagent instructions. "
@@ -2625,7 +2938,7 @@ def subagent_reasoning_node(state: AgentState):
     ])
 
     try:
-        analysis = (prompt | subagent_llm).invoke({
+        raw_response = (prompt | subagent_llm_raw).invoke({
             "subagent": safe_json({
                 "id": subagent.get("id", ""),
                 "name": subagent.get("name", ""),
@@ -2649,7 +2962,46 @@ def subagent_reasoning_node(state: AgentState):
             "message": message,
         })
 
-        return {"subagent_analysis": analysis.model_dump()}
+        raw_text = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
+        json_match = re.search(r"\{[\s\S]*\}", raw_text)
+        data: Dict[str, Any] = {}
+
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group())
+                if isinstance(parsed, dict):
+                    data = parsed
+            except Exception:
+                data = {}
+
+        def safe_str(value: Any) -> str:
+            return str(value or "").strip()
+
+        def safe_list_of_str(value: Any) -> List[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(item) for item in value if str(item or "").strip()]
+
+        try:
+            confidence = float(data.get("confidence", 0.7) or 0.7)
+        except Exception:
+            confidence = 0.7
+
+        return {
+            "subagent_analysis": {
+                "understanding": safe_str(data.get("understanding")),
+                "user_goal": safe_str(data.get("user_goal")),
+                "detected_intents": safe_list_of_str(data.get("detected_intents", [])),
+                "facts_to_use": safe_list_of_str(data.get("facts_to_use", [])),
+                "facts_missing": safe_list_of_str(data.get("facts_missing", [])),
+                "variable_updates_to_consider": data.get("variable_updates_to_consider", {}) if isinstance(data.get("variable_updates_to_consider"), dict) else {},
+                "next_best_step": safe_str(data.get("next_best_step")),
+                "response_constraints": safe_list_of_str(data.get("response_constraints", [])),
+                "should_chain": bool(data.get("should_chain", False)),
+                "recommended_chained_subagent_id": safe_str(data.get("recommended_chained_subagent_id")),
+                "confidence": confidence,
+            }
+        }
 
     except Exception as exc:
         return {
@@ -2667,7 +3019,6 @@ def subagent_reasoning_node(state: AgentState):
                 "confidence": 0.4,
             }
         }
-
 
 
 def get_template_policy_for_answer_draft(
