@@ -276,19 +276,27 @@ class BookingSubagent:
 
         stage = deep_get(variables, stage_path, stage)
 
-        selected_slot_before_request = self.resolve_slot_selection(
-            context=context,
-            config=config,
-            variables=variables
+        awaiting_confirmation_stage = config.get("stages", {}).get(
+            "awaiting_confirmation",
+            "awaiting_confirmation"
         )
 
-        if selected_slot_before_request:
-            return self.handle_slot_selected(
+        # Do not re-resolve slot selection while waiting for confirmation.
+        # Confirmation words must be handled by handle_awaiting_confirmation.
+        if stage != awaiting_confirmation_stage:
+            selected_slot_before_request = self.resolve_slot_selection(
                 context=context,
                 config=config,
-                variables=variables,
-                selected_slot=selected_slot_before_request
+                variables=variables
             )
+
+            if selected_slot_before_request:
+                return self.handle_slot_selected(
+                    context=context,
+                    config=config,
+                    variables=variables,
+                    selected_slot=selected_slot_before_request
+                )
 
         # If the user supplied a date while we were waiting for one, do not let
         # stale awaiting_date state ask for create/customer fields. Continue to
@@ -1669,6 +1677,15 @@ class BookingSubagent:
         if message_time:
             return message_time
 
+        # Stored time paths are fallback/context only. They must not turn a
+        # confirmation-only message like "اه" into a repeated slot selection.
+        if not self.message_contains_time_intent_without_stored_context(
+            context.user_message,
+            config,
+            normalization
+        ):
+            return ""
+
         requested_time_paths = resolver.get("requested_time_paths", [])
         if not isinstance(requested_time_paths, list):
             requested_time_paths = []
@@ -1843,6 +1860,28 @@ class BookingSubagent:
             markers=marker_groups,
             normalization=normalization
         )
+
+    def message_contains_time_intent_without_stored_context(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        requested_time = self.extract_time(message, config, normalization)
+
+        if requested_time:
+            return True
+
+        time_only_config = config.get("time_only_slot_selection", {})
+        if not isinstance(time_only_config, dict):
+            time_only_config = {}
+
+        markers = time_only_config.get("time_markers", [])
+        if isinstance(markers, list) and matches_any(message, markers, normalization):
+            return True
+
+        return False
+
 
     def message_contains_time_intent(
         self,
