@@ -30,6 +30,7 @@ from app.subagents.base import (
     get_subagent_config,
     matches_any,
     deep_get,
+    render_template,
 )
 from app.subagents.booking_subagent import BookingSubagent
 from app.subagents.location_subagent import LocationSubagent
@@ -2222,6 +2223,118 @@ def subagent_reasoning_node(state: AgentState):
 
 
 
+def get_template_policy_for_answer_draft(
+    agent_config: Dict[str, Any],
+    answer_draft: str
+) -> Dict[str, Any]:
+    policies = agent_config.get("template_response_policy", {}) or {}
+
+    if not isinstance(policies, dict):
+        return {}
+
+    policy = policies.get(str(answer_draft or "").strip(), {})
+
+    return policy if isinstance(policy, dict) else {}
+
+
+def render_policy_template_answer(state: AgentState) -> str:
+    """
+    Render a deterministic configured response for high-risk operational states.
+
+    This is config-driven:
+    - template_response_policy[answer_draft].response_template
+    - template_response_policy[answer_draft].deterministic_template
+    - template_response_policy[answer_draft].safe_template
+
+    It prevents the response LLM from rewriting grounded operational facts such
+    as selected slot time, branch, date, available slots, missing fields, or IDs.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+    variables = state.get("variables", {}) or {}
+    manifest = state.get("manifest", {}) or {}
+
+    if not isinstance(tool_result, dict) or not tool_result:
+        return ""
+
+    answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    if not answer_draft:
+        return ""
+
+    policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
+
+    if not policy:
+        return ""
+
+    template = str(
+        policy.get("response_template")
+        or policy.get("deterministic_template")
+        or policy.get("safe_template")
+        or ""
+    ).strip()
+
+    if not template:
+        return ""
+
+    rendered = render_template(template, {
+        "variables": variables,
+        "tool_result": tool_result,
+        "manifest": manifest,
+        "latest_user_message": last_user_message(state),
+        "answer_draft": answer_draft,
+    }).strip()
+
+    return rendered
+
+
+def should_use_policy_template_answer(state: AgentState) -> bool:
+    """
+    Decide whether graph should bypass the response LLM and use the configured
+    deterministic template for this answer_draft.
+
+    This is intentionally generic. Domain-specific labels live in the bundle.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+
+    if not isinstance(tool_result, dict) or not tool_result:
+        return False
+
+    answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    if not answer_draft:
+        return False
+
+    policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
+
+    if not policy:
+        return False
+
+    if policy.get("force_template_answer") is True:
+        return True
+
+    if policy.get("deterministic_response") is True:
+        return True
+
+    if policy.get("must_use_grounded_template") is True:
+        return True
+
+    deterministic_labels = agent_config.get("deterministic_answer_draft_labels", [])
+    if isinstance(deterministic_labels, list) and answer_draft in deterministic_labels:
+        return True
+
+    return False
+
+
+def maybe_policy_template_answer(state: AgentState) -> str:
+    if not should_use_policy_template_answer(state):
+        return ""
+
+    return render_policy_template_answer(state)
+
+
+
 def get_response_temperature(manifest: Dict[str, Any], tool_result: Dict[str, Any]) -> float:
     """
     Dynamic response creativity/precision.
@@ -2388,6 +2501,20 @@ Tone guidance for this message:
     }
 
 def response_node(state: AgentState):
+    deterministic_answer = maybe_policy_template_answer(state)
+
+    if deterministic_answer:
+        deterministic_answer = enforce_answer_safety(deterministic_answer, state)
+        return {
+            "messages": [AIMessage(content=deterministic_answer)],
+            "final_answer": deterministic_answer,
+            "quality": {
+                "node": "response_policy_template",
+                "pre_quality_guard": True,
+                "deterministic_template_used": True,
+            },
+        }
+
     agent_config = state.get("agent_config", {}) or {}
     subagent = state.get("selected_subagent", {}) or {}
     manifest = state.get("manifest", {}) or {}
@@ -2867,6 +2994,10 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
 
         if safe_answer and answer_contains_any_configured_terms(text, blocked_terms):
             text = safe_answer
+
+    policy_answer = render_policy_template_answer(state)
+    if should_use_policy_template_answer(state) and policy_answer:
+        text = policy_answer
 
     text = re.sub(r"\s{2,}", " ", text).strip()
 
