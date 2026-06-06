@@ -780,15 +780,30 @@ def tool_result_exists(state: AgentState) -> bool:
     return isinstance(result, dict) and bool(result)
 
 
+def manifest_has_parallel_tool_requests(manifest: Dict[str, Any]) -> bool:
+    requests = manifest.get("parallel_tool_requests", [])
+    return isinstance(requests, list) and any(isinstance(item, dict) for item in requests)
+
+
+def manifest_has_knowledge_queries(manifest: Dict[str, Any]) -> bool:
+    queries = manifest.get("knowledge_queries", [])
+    return isinstance(queries, list) and any(str(item or "").strip() for item in queries)
+
+
+def manifest_has_multi_intents(manifest: Dict[str, Any]) -> bool:
+    intents = manifest.get("multi_intents", [])
+    return isinstance(intents, list) and any(isinstance(item, dict) for item in intents)
+
+
 def should_use_simple_response(state: AgentState) -> bool:
     manifest = state.get("manifest", {}) or {}
 
     if active_deterministic_flow_subagent_id_from_state(state):
         return False
 
-    if manifest.get("needs_tool"):
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return False
-    if manifest.get("needs_knowledge"):
+    if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return False
     if manifest.get("needs_memory"):
         return False
@@ -817,7 +832,9 @@ def should_run_quality_guard(state: AgentState) -> bool:
         return True
     if tool_result:
         return True
-    if manifest.get("needs_tool"):
+    if state.get("multi_tool_results") or state.get("multi_knowledge"):
+        return True
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return True
     if manifest.get("risk_level") in ["high", "medium"]:
         return True
@@ -1382,9 +1399,11 @@ def unified_manifest_node(state: AgentState):
             "All domain behavior must come from the assistant manifest card, current variables, conversation summary, tool results, schema, and latest user message. "
             "Do not use hidden business rules or domain assumptions outside the manifest card. "
             "Detect the user's full intent, including multiple independent or sequential intents in one message. "
+            "Handle hesitation and change-of-mind naturally: when the latest message corrects or replaces an earlier preference in the same turn or recent context, the latest explicit preference wins. Do not run superseded alternatives in parallel unless the user clearly asks to compare them. "
             "Use detected_intents for short intent labels, and multi_intents for structured intent objects. Each multi_intents item may include: intent_id, intent_type, user_goal, selected_subagent_id, needs_tool, requested_tool_name, tool_request_payload, needs_knowledge, knowledge_query, depends_on, priority, missing_inputs, and response_role. "
             "For sequential dependencies, use selected_subagent_id plus chained_subagent_id. Example: nearest branch then availability should run location first and booking second when booking needs location output. "
             "For independent direct tool actions that can safely run from current variables, use parallel_tool_requests. Each request should include: request_id, intent_id, tool_name, operation, arguments, purpose, and can_run_in_parallel=true. "
+            "Only use parallel_tool_requests for independent non-conflicting actions. Never parallelize two alternatives where the user corrected their mind, such as changing date, branch, slot, quantity, product, or service preference. "
             "Do not put deterministic subagent-owned booking/location/troubleshooting flows into parallel_tool_requests unless the manifest card says direct tool calls are safe. Prefer selected_subagent_id/chained_subagent_id for stateful workflows. "
             "For knowledge needs, set needs_knowledge=true and provide knowledge_queries when multiple distinct retrieval questions are useful. "
             "If a tool needs missing inputs, set needs_tool=false and list missing_tool_inputs; the final response should ask naturally for only the missing input. "
@@ -1585,16 +1604,19 @@ def decide_after_manifest(state: AgentState) -> str:
     if active_deterministic_flow_subagent_id_from_state(state):
         return "tool_execution"
 
+    if manifest_has_parallel_tool_requests(manifest):
+        return "tool_execution"
+
     if should_use_simple_response(state):
         return "simple_response"
 
     if manifest.get("needs_memory"):
         return "retrieve_memory"
 
-    if manifest.get("needs_knowledge"):
+    if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return "retrieve_knowledge"
 
-    if manifest.get("needs_tool"):
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
@@ -1639,10 +1661,10 @@ def decide_after_memory(state: AgentState) -> str:
     if active_deterministic_flow_subagent_id_from_state(state):
         return "tool_execution"
 
-    if manifest.get("needs_knowledge"):
+    if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return "retrieve_knowledge"
 
-    if manifest.get("needs_tool"):
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
@@ -1827,7 +1849,7 @@ def decide_after_knowledge(state: AgentState) -> str:
     if active_deterministic_flow_subagent_id_from_state(state):
         return "tool_execution"
 
-    if manifest.get("needs_tool"):
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
@@ -2591,6 +2613,7 @@ def subagent_reasoning_node(state: AgentState):
             "user",
             "Selected subagent:\n{subagent}\n\n"
             "Unified manifest:\n{manifest}\n\n"
+            "Multi-intent context:\n{multi_intent_context}\n\n"
             "Assistant context:\n{context}\n\n"
             "Conversation summary:\n{summary}\n\n"
             "Variables:\n{variables}\n\n"
@@ -2611,6 +2634,12 @@ def subagent_reasoning_node(state: AgentState):
                 "allowed_actions": subagent.get("allowed_actions", []),
             }),
             "manifest": safe_json(compact_manifest(manifest), max_chars=2400),
+            "multi_intent_context": safe_json({
+                "multi_intents": state.get("multi_intents", []) or manifest.get("multi_intents", []),
+                "response_synthesis": state.get("response_synthesis", {}) or manifest.get("response_synthesis", {}),
+                "parallel_tool_requests": state.get("parallel_tool_requests", []) or manifest.get("parallel_tool_requests", []),
+                "knowledge_queries": state.get("knowledge_queries", []) or manifest.get("knowledge_queries", []),
+            }, max_chars=1800),
             "context": safe_json(compact_agent_context(state.get("agent_config", {}) or {}, subagent), max_chars=2800),
             "summary": clip_text(state.get("summary", ""), 520),
             "variables": safe_json(compact_variables(state.get("variables", {}) or {}, schema), max_chars=2200),
@@ -2885,7 +2914,7 @@ def simple_response_node(state: AgentState):
     system_instruction = f"""
 {clip_text_head_tail(state.get('system_prompt', ''), 900)}
 
-You are the voice of this configurable assistant. Generate a simple low-risk user-facing reply.
+You are the voice of this configurable assistant. Generate a simple low-risk user-facing reply. If the user asks multiple low-risk questions, answer them naturally in one message. If the user corrected themselves or changed preference, follow the latest preference and do not dwell on the discarded one.
 
 Use only this compact config-driven context:
 {safe_json(simple_context, max_chars=5200)}
@@ -2981,7 +3010,7 @@ def response_node(state: AgentState):
 
 You are the voice of this assistant. You are generating the exact reply the user will read.
 
-If the context contains multi_intents, multi_tool_results, or multi_knowledge, synthesize them into one coherent answer. Keep each intent/result grounded. Do not merge facts from different tool results unless the context explicitly supports it. If one intent is completed and another is missing input, state the completed result briefly and ask only for the missing input.
+If the context contains multi_intents, multi_tool_results, or multi_knowledge, synthesize them into one coherent answer. Keep each intent/result grounded. Do not merge facts from different tool results unless the context explicitly supports it. If one intent is completed and another is missing input, state the completed result briefly and ask only for the missing input. If the user hesitated or changed their mind, reflect only the latest selected preference and do not mention discarded alternatives unless helpful for clarity.
 
 Context you have available:
 {safe_json(response_context, max_chars=9200)}
