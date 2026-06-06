@@ -323,6 +323,12 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.capture_missing_configured_details_from_current_message(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
         variables = self.ensure_booking_confirmation_context(
             variables=variables,
             config=config
@@ -1022,6 +1028,12 @@ class BookingSubagent:
             message=context.user_message
         )
         variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+        variables = self.capture_missing_configured_details_from_current_message(
             variables=variables,
             config=config,
             normalization=normalization,
@@ -4642,6 +4654,231 @@ class BookingSubagent:
                 output[target_path] = value
 
         return output
+
+
+    def capture_missing_configured_details_from_current_message(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str
+    ) -> Dict[str, Any]:
+        """
+        Last-mile generic customer-detail capture.
+
+        This runs after normal extraction and before missing-field/create checks.
+        It only looks at configured customer_detail_fields / required paths and
+        configured markers/extraction rules. It does not know any domain field
+        names, labels, or phrases.
+
+        Purpose:
+        - If the current message contains a missing configured detail, persist it
+          to its configured target_path and backup_paths immediately.
+        - Prevent the response layer from acknowledging a detail that never
+          reached state.
+        """
+        if not isinstance(variables, dict):
+            variables = {}
+
+        text = str(message or "").strip()
+        if not text:
+            return variables
+
+        updates: Dict[str, Any] = {}
+
+        missing_paths = self.get_missing_required_create_fields(config, variables)
+        missing_clean = {
+            self.strip_variables_prefix(str(path or "").strip())
+            for path in missing_paths
+            if str(path or "").strip()
+        }
+
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = str(field_config.get("target_path") or "").strip()
+
+            if not target_path:
+                continue
+
+            clean_target_path = self.strip_variables_prefix(target_path)
+            existing_value = deep_get(variables, clean_target_path)
+
+            # Only force-capture missing/empty configured details. This prevents
+            # accidental overwrite of already known customer details.
+            if existing_value not in [None, "", [], {}]:
+                continue
+
+            if missing_clean and clean_target_path not in missing_clean:
+                # If the field is not required/missing, only capture it when the
+                # field marker is explicitly present. This keeps optional details safe.
+                if not self.current_message_has_field_marker(
+                    message=text,
+                    field_config=field_config,
+                    normalization=normalization
+                ):
+                    continue
+
+            value = self.extract_configured_customer_detail_field(
+                message=text,
+                field_config=field_config,
+                config=config,
+                normalization=normalization
+            )
+
+            if not value:
+                value = self.extract_configured_detail_by_marker_remainder(
+                    message=text,
+                    field_config=field_config,
+                    config=config,
+                    normalization=normalization
+                )
+
+            if not value:
+                continue
+
+            updates[clean_target_path] = value
+
+            backup_paths = field_config.get("backup_paths", [])
+            if isinstance(backup_paths, list):
+                for backup_path in backup_paths:
+                    backup_text = self.strip_variables_prefix(str(backup_path or "").strip())
+                    if backup_text:
+                        updates[backup_text] = value
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+
+    def current_message_has_field_marker(
+        self,
+        message: str,
+        field_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        normalized_message = normalize_text(str(message or ""), normalization)
+
+        markers = field_config.get("markers", [])
+        if not isinstance(markers, list):
+            markers = []
+
+        for marker in markers:
+            marker_text = str(marker or "").strip()
+            if not marker_text:
+                continue
+
+            normalized_marker = normalize_text(marker_text, normalization)
+            if normalized_marker and normalized_marker in normalized_message:
+                return True
+
+        return False
+
+
+    def extract_configured_detail_by_marker_remainder(
+        self,
+        message: str,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        """
+        Direct configured-marker capture fallback.
+
+        It captures the remainder after the configured field marker and validates
+        it with that field's validator/extraction config. This exists as a
+        last-mile fallback when broad regexes fail or route-specific extraction
+        misses the field.
+        """
+        if not self.current_message_has_field_marker(message, field_config, normalization):
+            return ""
+
+        extraction_config = field_config.get("extraction", {})
+        if not isinstance(extraction_config, dict):
+            extraction_config = {}
+
+        markers = field_config.get("markers", [])
+        if not isinstance(markers, list):
+            markers = []
+
+        digit_map = normalization.get("digit_map", {})
+        text = normalize_digits(str(message or ""), digit_map)
+
+        try:
+            max_chars = int(
+                extraction_config.get(
+                    "marker_capture_max_chars",
+                    extraction_config.get("max_length", 80)
+                ) or 80
+            )
+        except Exception:
+            max_chars = 80
+
+        max_chars = max(10, min(max_chars, 300))
+
+        stop_pattern = str(
+            extraction_config.get("marker_capture_stop_pattern")
+            or r"[\n،,.!?؟]+"
+        )
+
+        candidates: List[str] = []
+
+        for marker in markers:
+            marker_text = normalize_digits(str(marker or "").strip(), digit_map)
+
+            if not marker_text:
+                continue
+
+            try:
+                match = re.search(re.escape(marker_text), text, flags=re.IGNORECASE)
+            except re.error:
+                match = None
+
+            if not match:
+                continue
+
+            remainder = text[match.end():]
+            remainder = re.sub(r"^\s*[:：\-–—ـ]*\s*", "", remainder).strip()
+
+            if not remainder:
+                continue
+
+            try:
+                stop_match = re.search(stop_pattern, remainder)
+            except re.error:
+                stop_match = None
+
+            if stop_match:
+                remainder = remainder[:stop_match.start()].strip()
+
+            if len(remainder) > max_chars:
+                remainder = remainder[:max_chars].strip()
+
+            normalized_value = self.normalize_customer_profile_value(
+                value=remainder,
+                validator=str(field_config.get("validator") or ""),
+                config=config,
+                normalization=normalization,
+                field_config=field_config
+            )
+
+            if normalized_value:
+                candidates.append(normalized_value)
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda value: self.score_configured_customer_detail_candidate(
+                value=value,
+                raw=value,
+                source="direct_marker_remainder",
+                field_config=field_config,
+                normalization=normalization
+            ),
+            reverse=True
+        )
+
+        return candidates[0]
 
 
     def get_customer_detail_marker_values(self, config: Dict[str, Any]) -> List[str]:
