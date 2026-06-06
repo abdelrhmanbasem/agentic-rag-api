@@ -722,11 +722,19 @@ def get_error_answer(assistant_config: Dict[str, Any], error_type: str = "graph_
     if not isinstance(fallback, dict):
         fallback = {}
 
-    return str(
+    answer = (
         fallback.get(error_type)
         or fallback.get("default_final")
-        or "محتاج تفاصيل أكتر عشان أساعدك."
     )
+
+    if answer:
+        return str(answer)
+
+    language_policy = str(assistant_config.get("language_policy") or "").lower()
+    if "arabic" in language_policy or "egyptian" in language_policy:
+        return "حصلت مشكلة، ممكن تحاول تاني؟"
+
+    return "Something went wrong. Please try again."
 
 
 @app.get("/health")
