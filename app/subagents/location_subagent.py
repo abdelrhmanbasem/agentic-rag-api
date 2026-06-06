@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.subagents.base import (
     SubagentContext,
@@ -10,6 +10,7 @@ from app.subagents.base import (
     deep_get,
     get_subagent_config,
     matches_any,
+    normalize_text,
     render_template
 )
 
@@ -20,8 +21,10 @@ class LocationSubagent:
 
     Responsibilities:
     - detect/extract user location text from configured patterns/markers
-    - use already-provided coordinates from configured variable paths
-    - ask for location only when configured nearest-branch intent is active and no location exists
+    - detect direct branch mentions from configured branch aliases
+    - detect branch/location changes and clear stale downstream state by config
+    - use already-provided coordinates from configured variable paths or message patterns
+    - ask for location only when configured nearest-branch intent is active and no usable input exists
     - call the configured nearest-location/branch operation
     - update source-of-truth location/branch variables from tool results
 
@@ -30,7 +33,7 @@ class LocationSubagent:
 
     Architecture rule:
     - No domain/customer-facing phrase hardcoding in Python.
-    - Phrases, templates, result paths, coordinate paths, and active-flow values live in domain_bundle.json.
+    - Phrases, templates, result paths, coordinate paths, aliases, and clear paths live in domain_bundle.json.
     """
 
     name = "location"
@@ -56,7 +59,16 @@ class LocationSubagent:
 
         coordinates = self.extract_coordinates(
             variables=variables,
-            config=config
+            config=config,
+            message=context.user_message,
+            normalization=normalization
+        )
+
+        direct_branch = self.resolve_branch_from_message(
+            message=context.user_message,
+            assistant_config=context.assistant_config,
+            config=config,
+            normalization=normalization
         )
 
         nearest_requested = matches_any(
@@ -65,12 +77,60 @@ class LocationSubagent:
             normalization
         )
 
+        direct_branch_mode = self.get_config_bool(
+            config,
+            "direct_branch_resolution.enabled",
+            self.get_config_bool(config, "set_selected_branch_on_direct_match", True)
+        )
+
+        if direct_branch and direct_branch_mode:
+            patched_variables = self.apply_direct_branch_match(
+                context=context,
+                config=config,
+                variables=variables,
+                branch=direct_branch,
+                location=location,
+                coordinates=coordinates
+            )
+
+            answer = render_template(
+                self.template_label(config, "branch_found"),
+                {
+                    "variables": patched_variables,
+                    "branch": direct_branch,
+                    "location": location,
+                    "coordinates": coordinates,
+                    "message": context.user_message
+                }
+            )
+
+            return SubagentResult(
+                handled=True,
+                action="reply",
+                answer=answer,
+                variable_updates=patched_variables,
+                observations=observations,
+                selected_subagent=self.name,
+                tool_calls_used=0,
+                notes="direct branch resolved from configured aliases"
+            )
+
+        variables = self.detect_and_apply_location_change(
+            context=context,
+            config=config,
+            variables=variables,
+            location=location,
+            coordinates=coordinates,
+            branch=direct_branch
+        )
+
         if not location and not coordinates:
             if nearest_requested or self.location_flow_active(variables, config):
                 patched_variables = self.apply_configured_updates(
                     variables=variables,
                     config=config,
-                    key="on_nearest_branch_request_updates"
+                    key="on_nearest_branch_request_updates",
+                    assistant_config=context.assistant_config
                 )
 
                 answer = render_template(
@@ -130,6 +190,7 @@ class LocationSubagent:
         except Exception as exc:
             tool_result = {
                 "ok": False,
+                "operation": operation,
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
@@ -150,16 +211,26 @@ class LocationSubagent:
 
         manual_updates = self.build_manual_updates(
             config=config,
+            assistant_config=context.assistant_config,
             variables=updated_variables,
             location=location,
             coordinates=coordinates,
             tool_result=tool_result
         )
 
+        clear_after_tool = self.build_success_clear_paths(
+            config=config,
+            variables=variables,
+            updates=manual_updates,
+            tool_result=tool_result
+        )
+
         updated_variables = apply_variable_patch(
             variables=updated_variables,
             updates=manual_updates,
-            clear=[]
+            clear=clear_after_tool,
+            assistant_config=context.assistant_config,
+            allow_empty_updates=True
         )
 
         answer = render_template(
@@ -217,6 +288,7 @@ class LocationSubagent:
     def build_manual_updates(
         self,
         config: Dict[str, Any],
+        assistant_config: Dict[str, Any],
         variables: Dict[str, Any],
         location: str,
         coordinates: Dict[str, Any],
@@ -262,34 +334,341 @@ class LocationSubagent:
                 paths=self.config_list(config, "result_branch_paths")
             )
 
+            branch = self.resolve_canonical_branch(
+                value=str(branch or ""),
+                assistant_config=assistant_config,
+                normalization=assistant_config.get("normalization", {})
+            ) or branch
+
             if branch:
-                nearest_path = str(config.get("nearest_branch_path", "nearest_branch") or "").strip()
-                location_branch_path = str(config.get("location_branch_path", "location_branch") or "").strip()
-                selected_branch_path = str(config.get("selected_branch_path", "selected_branch") or "").strip()
-
-                if nearest_path:
-                    updates[nearest_path] = branch
-
-                if location_branch_path:
-                    updates[location_branch_path] = branch
-
-                if config.get("set_selected_branch_on_match", True) and selected_branch_path:
-                    updates[selected_branch_path] = branch
+                updates.update(self.branch_update_paths(config=config, branch=branch))
 
         extra_update_mappings = config.get("manual_update_mappings", {})
         if isinstance(extra_update_mappings, dict):
-            for target_path, result_path in extra_update_mappings.items():
+            for target_path, source in extra_update_mappings.items():
                 target = str(target_path or "").strip()
-                source = str(result_path or "").strip()
 
-                if not target or not source:
+                if not target:
                     continue
 
-                value = deep_get(tool_result, source)
+                value = self.resolve_mapping_value(
+                    source=source,
+                    context={
+                        "result": tool_result,
+                        "tool_result": tool_result,
+                        "variables": variables,
+                        "location": location,
+                        "coordinates": coordinates,
+                    }
+                )
+
                 if value not in [None, "", [], {}]:
                     updates[target] = value
 
         return updates
+
+    def branch_update_paths(self, config: Dict[str, Any], branch: str) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {}
+
+        if not branch:
+            return updates
+
+        nearest_path = str(config.get("nearest_branch_path", "nearest_branch") or "").strip()
+        location_branch_path = str(config.get("location_branch_path", "location_branch") or "").strip()
+        selected_branch_path = str(config.get("selected_branch_path", "selected_branch") or "").strip()
+
+        if nearest_path:
+            updates[nearest_path] = branch
+
+        if location_branch_path:
+            updates[location_branch_path] = branch
+
+        if config.get("set_selected_branch_on_match", True) and selected_branch_path:
+            updates[selected_branch_path] = branch
+
+        extra_paths = self.config_list(config, "branch_update_paths")
+        for path in extra_paths:
+            path_text = str(path or "").strip()
+            if path_text:
+                updates[path_text] = branch
+
+        return updates
+
+    def apply_direct_branch_match(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        branch: str,
+        location: str,
+        coordinates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        updates = self.branch_update_paths(config=config, branch=branch)
+
+        if location:
+            updates[str(config.get("user_area_path", "user_area") or "user_area")] = self.cleanup_location(
+                location,
+                config
+            )
+
+        if coordinates:
+            coordinate_update_paths = config.get("coordinate_update_paths", {})
+            if not isinstance(coordinate_update_paths, dict):
+                coordinate_update_paths = {}
+
+            lat_path = str(coordinate_update_paths.get("latitude", "user_coordinates.latitude") or "").strip()
+            lng_path = str(coordinate_update_paths.get("longitude", "user_coordinates.longitude") or "").strip()
+
+            if lat_path:
+                updates[lat_path] = coordinates.get("latitude")
+
+            if lng_path:
+                updates[lng_path] = coordinates.get("longitude")
+
+        clear_paths = self.build_change_clear_paths(
+            config=config,
+            variables=variables,
+            new_branch=branch,
+            new_location=location,
+            coordinates=coordinates
+        )
+
+        direct_updates = self.get_nested_config(config, "direct_branch_resolution.set_updates", {})
+        if isinstance(direct_updates, dict):
+            updates.update(direct_updates)
+
+        return apply_variable_patch(
+            variables=variables,
+            updates=updates,
+            clear=clear_paths,
+            assistant_config=context.assistant_config,
+            allow_empty_updates=True
+        )
+
+    def detect_and_apply_location_change(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        location: str,
+        coordinates: Dict[str, Any],
+        branch: str = ""
+    ) -> Dict[str, Any]:
+        if not self.get_config_bool(config, "location_change.enabled", True):
+            return variables
+
+        if not self.location_change_relevant(variables=variables, config=config):
+            return variables
+
+        clear_paths = self.build_change_clear_paths(
+            config=config,
+            variables=variables,
+            new_branch=branch,
+            new_location=location,
+            coordinates=coordinates
+        )
+
+        if not clear_paths:
+            return variables
+
+        updates: Dict[str, Any] = {}
+
+        update_cfg = self.get_nested_config(config, "location_change.set_updates", {})
+        if isinstance(update_cfg, dict):
+            updates.update(update_cfg)
+
+        if branch:
+            branch_changed_path = str(
+                self.get_nested_config(config, "branch_change.changed_path", "location.branch_changed")
+                or "location.branch_changed"
+            ).strip()
+            if branch_changed_path:
+                updates[branch_changed_path] = True
+
+        if location:
+            location_changed_path = str(
+                self.get_nested_config(config, "location_change.changed_path", "location.changed")
+                or "location.changed"
+            ).strip()
+            if location_changed_path:
+                updates[location_changed_path] = True
+
+            previous_location_path = str(
+                self.get_nested_config(config, "location_change.previous_location_path", "location.previous_location")
+                or "location.previous_location"
+            ).strip()
+
+            previous_location = self.first_present_from_variables(
+                variables,
+                self.config_list(config, "known_location_paths") or [
+                    config.get("user_area_path", "user_area")
+                ]
+            )
+
+            if previous_location_path and previous_location:
+                updates[previous_location_path] = previous_location
+
+        if coordinates:
+            coordinates_changed_path = str(
+                self.get_nested_config(config, "location_change.coordinates_changed_path", "location.coordinates_changed")
+                or "location.coordinates_changed"
+            ).strip()
+            if coordinates_changed_path:
+                updates[coordinates_changed_path] = True
+
+        return apply_variable_patch(
+            variables=variables,
+            updates=updates,
+            clear=clear_paths,
+            assistant_config=context.assistant_config,
+            allow_empty_updates=True
+        )
+
+    def location_change_relevant(self, variables: Dict[str, Any], config: Dict[str, Any]) -> bool:
+        active_paths = self.config_list(config, "location_change.active_when_any_path")
+        if not active_paths:
+            active_paths = self.config_list(config, "branch_change.active_when_any_path")
+
+        if not active_paths:
+            active_paths = [
+                config.get("available_slots_path", "available_slots"),
+                config.get("pending_booking_path", "booking.pending"),
+                config.get("selected_branch_path", "selected_branch"),
+                config.get("location_branch_path", "location_branch"),
+                config.get("nearest_branch_path", "nearest_branch"),
+            ]
+
+        for path in active_paths:
+            value = deep_get(variables, str(path or "").strip())
+            if value not in [None, "", [], {}]:
+                return True
+
+        return self.location_flow_active(variables, config)
+
+    def build_success_clear_paths(
+        self,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        updates: Dict[str, Any],
+        tool_result: Dict[str, Any]
+    ) -> List[str]:
+        if not self.branch_found(config=config, tool_result=tool_result):
+            return []
+
+        new_branch = self.first_present_from_result(
+            tool_result=tool_result,
+            paths=self.config_list(config, "result_branch_paths")
+        )
+
+        return self.build_change_clear_paths(
+            config=config,
+            variables=variables,
+            new_branch=str(new_branch or ""),
+            new_location=str(updates.get(str(config.get("user_area_path", "user_area") or "user_area"), "") or ""),
+            coordinates={}
+        )
+
+    def build_change_clear_paths(
+        self,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        new_branch: str = "",
+        new_location: str = "",
+        coordinates: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        coordinates = coordinates or {}
+
+        branch_changed = self.branch_changed(config=config, variables=variables, new_branch=new_branch)
+        location_changed = self.location_changed(config=config, variables=variables, new_location=new_location)
+        coordinates_changed = self.coordinates_changed(config=config, variables=variables, coordinates=coordinates)
+
+        if not (branch_changed or location_changed or coordinates_changed):
+            return []
+
+        clear_paths: List[str] = []
+
+        if branch_changed:
+            clear_paths.extend(self.config_list(config, "branch_change.clear_paths"))
+            clear_paths.extend(self.config_list(config, "on_branch_change_clear"))
+
+        if location_changed or coordinates_changed:
+            clear_paths.extend(self.config_list(config, "location_change.clear_paths"))
+            clear_paths.extend(self.config_list(config, "on_location_change_clear"))
+
+        clear_paths.extend(self.config_list(config, "stale_state_clear_paths"))
+
+        return self.unique_strings(clear_paths)
+
+    def branch_changed(self, config: Dict[str, Any], variables: Dict[str, Any], new_branch: str) -> bool:
+        if not new_branch:
+            return False
+
+        existing = self.first_present_from_variables(
+            variables,
+            self.config_list(config, "known_branch_paths") or [
+                config.get("selected_branch_path", "selected_branch"),
+                config.get("location_branch_path", "location_branch"),
+                config.get("nearest_branch_path", "nearest_branch"),
+            ]
+        )
+
+        if existing in [None, "", [], {}]:
+            return False
+
+        return self.normalized_compare(existing, new_branch, config) != 0
+
+    def location_changed(self, config: Dict[str, Any], variables: Dict[str, Any], new_location: str) -> bool:
+        if not new_location:
+            return False
+
+        existing = self.first_present_from_variables(
+            variables,
+            self.config_list(config, "known_location_paths") or [
+                config.get("user_area_path", "user_area")
+            ]
+        )
+
+        if existing in [None, "", [], {}]:
+            return False
+
+        return self.normalized_compare(existing, new_location, config) != 0
+
+    def coordinates_changed(
+        self,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        coordinates: Dict[str, Any]
+    ) -> bool:
+        if not coordinates:
+            return False
+
+        existing = self.extract_coordinates(variables=variables, config=config)
+
+        if not existing:
+            return False
+
+        tolerance = self.safe_float(
+            self.get_nested_config(config, "location_change.coordinate_tolerance", 0.00001),
+            0.00001
+        )
+
+        try:
+            return (
+                abs(float(existing.get("latitude")) - float(coordinates.get("latitude"))) > tolerance
+                or abs(float(existing.get("longitude")) - float(coordinates.get("longitude"))) > tolerance
+            )
+        except Exception:
+            return False
+
+    def normalized_compare(self, a: Any, b: Any, config: Dict[str, Any]) -> int:
+        normalization = config.get("normalization", {})
+        if not isinstance(normalization, dict):
+            normalization = {}
+
+        a_text = normalize_text(str(a or ""), normalization)
+        b_text = normalize_text(str(b or ""), normalization)
+
+        return 0 if a_text == b_text else 1
 
     def result_label(self, config: Dict[str, Any], tool_result: Dict[str, Any]) -> str:
         if not isinstance(tool_result, dict):
@@ -363,11 +742,11 @@ class LocationSubagent:
                 continue
 
             try:
-                match = re.search(regex, raw_message, flags=re.IGNORECASE)
+                matches = list(re.finditer(regex, raw_message, flags=re.IGNORECASE))
             except re.error:
                 continue
 
-            if match:
+            for match in matches:
                 try:
                     value = match.group(group).strip()
                 except Exception:
@@ -404,9 +783,21 @@ class LocationSubagent:
     def extract_coordinates(
         self,
         variables: Dict[str, Any],
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        message: str = "",
+        normalization: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         config = config or {}
+        normalization = normalization or {}
+
+        message_coordinates = self.extract_coordinates_from_message(
+            message=message,
+            config=config,
+            normalization=normalization
+        )
+
+        if message_coordinates:
+            return message_coordinates
 
         coordinate_paths = config.get("coordinate_paths", {})
         if not isinstance(coordinate_paths, dict):
@@ -437,6 +828,53 @@ class LocationSubagent:
         raw_lat = self.first_present_from_variables(variables, latitude_paths)
         raw_lng = self.first_present_from_variables(variables, longitude_paths)
 
+        return self.validate_coordinates(config=config, raw_lat=raw_lat, raw_lng=raw_lng)
+
+    def extract_coordinates_from_message(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        raw_message = str(message or "").strip()
+
+        if not raw_message:
+            return {}
+
+        patterns = self.config_list(config, "coordinate_patterns")
+
+        for item in patterns:
+            if not isinstance(item, dict):
+                continue
+
+            regex = str(item.get("regex", "") or "")
+            lat_group = self.safe_int(item.get("latitude_group", item.get("lat_group", 1)), 1)
+            lng_group = self.safe_int(item.get("longitude_group", item.get("lng_group", 2)), 2)
+
+            if not regex:
+                continue
+
+            try:
+                match = re.search(regex, raw_message, flags=re.IGNORECASE)
+            except re.error:
+                continue
+
+            if not match:
+                continue
+
+            try:
+                raw_lat = match.group(lat_group)
+                raw_lng = match.group(lng_group)
+            except Exception:
+                continue
+
+            coords = self.validate_coordinates(config=config, raw_lat=raw_lat, raw_lng=raw_lng)
+            if coords:
+                return coords
+
+        return {}
+
+    def validate_coordinates(self, config: Dict[str, Any], raw_lat: Any, raw_lng: Any) -> Dict[str, Any]:
         if raw_lat in [None, ""] or raw_lng in [None, ""]:
             return {}
 
@@ -450,10 +888,10 @@ class LocationSubagent:
         if not isinstance(bounds, dict):
             bounds = {}
 
-        min_lat = float(bounds.get("min_latitude", -90))
-        max_lat = float(bounds.get("max_latitude", 90))
-        min_lng = float(bounds.get("min_longitude", -180))
-        max_lng = float(bounds.get("max_longitude", 180))
+        min_lat = self.safe_float(bounds.get("min_latitude", bounds.get("latitude_min", -90)), -90)
+        max_lat = self.safe_float(bounds.get("max_latitude", bounds.get("latitude_max", 90)), 90)
+        min_lng = self.safe_float(bounds.get("min_longitude", bounds.get("longitude_min", -180)), -180)
+        max_lng = self.safe_float(bounds.get("max_longitude", bounds.get("longitude_max", 180)), 180)
 
         if lat < min_lat or lat > max_lat or lng < min_lng or lng > max_lng:
             return {}
@@ -481,6 +919,83 @@ class LocationSubagent:
         active_values = [str(item or "").strip() for item in active_values if str(item or "").strip()]
 
         return bool(active_values and intent in active_values)
+
+    def resolve_branch_from_message(
+        self,
+        message: str,
+        assistant_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        alias_sources = [
+            config.get("branch_aliases"),
+            assistant_config.get("branch_aliases"),
+            self.get_nested_config(assistant_config, "location.branch_aliases", {}),
+        ]
+
+        normalized_message = normalize_text(message, normalization)
+
+        if not normalized_message:
+            return ""
+
+        for aliases_config in alias_sources:
+            if not isinstance(aliases_config, dict):
+                continue
+
+            # Prefer longest aliases first to avoid partial short-alias matches.
+            candidates: List[Tuple[int, str, str]] = []
+
+            for canonical, aliases in aliases_config.items():
+                canonical_text = str(canonical or "").strip()
+                if not canonical_text:
+                    continue
+
+                values = [canonical_text] + [str(item) for item in self.as_list(aliases)]
+                for alias in values:
+                    alias_text = str(alias or "").strip()
+                    if not alias_text:
+                        continue
+
+                    normalized_alias = normalize_text(alias_text, normalization)
+                    if not normalized_alias:
+                        continue
+
+                    candidates.append((len(normalized_alias), normalized_alias, canonical_text))
+
+            candidates.sort(reverse=True)
+
+            for _length, normalized_alias, canonical_text in candidates:
+                if normalized_alias and normalized_alias in normalized_message:
+                    return canonical_text
+
+        return ""
+
+    def resolve_canonical_branch(
+        self,
+        value: str,
+        assistant_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        if not value:
+            return ""
+
+        aliases_config = assistant_config.get("branch_aliases", {})
+        if not isinstance(aliases_config, dict):
+            return value
+
+        normalized_value = normalize_text(value, normalization)
+
+        for canonical, aliases in aliases_config.items():
+            canonical_text = str(canonical or "").strip()
+            if not canonical_text:
+                continue
+
+            values = [canonical_text] + [str(item) for item in self.as_list(aliases)]
+            for alias in values:
+                if normalize_text(alias, normalization) == normalized_value:
+                    return canonical_text
+
+        return value
 
     @staticmethod
     def cleanup_location(location: str, config: Dict[str, Any]) -> str:
@@ -571,13 +1086,13 @@ class LocationSubagent:
         key_text = str(key or "").strip()
 
         if fallback_prefix and key_text:
-            return f"{fallback_prefix}{key_text}".upper()
+            return f"{fallback_prefix}_{key_text}".upper()
 
         return key_text.upper()
 
     @staticmethod
     def config_list(config: Dict[str, Any], key: str) -> List[Any]:
-        value = config.get(key, [])
+        value = deep_get(config, key)
 
         if isinstance(value, list):
             return value
@@ -619,7 +1134,8 @@ class LocationSubagent:
     def apply_configured_updates(
         variables: Dict[str, Any],
         config: Dict[str, Any],
-        key: str
+        key: str,
+        assistant_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         updates = config.get(key, {})
 
@@ -629,12 +1145,86 @@ class LocationSubagent:
         return apply_variable_patch(
             variables=variables,
             updates=updates,
-            clear=[]
+            clear=[],
+            assistant_config=assistant_config or {}
         )
+
+    def resolve_mapping_value(self, source: Any, context: Dict[str, Any]) -> Any:
+        if isinstance(source, dict):
+            if "literal" in source:
+                return source.get("literal")
+
+            if "first_present" in source:
+                for path in self.as_list(source.get("first_present")):
+                    value = deep_get(context, str(path or "").strip())
+                    if value not in [None, "", [], {}]:
+                        return value
+                return ""
+
+            if "path" in source:
+                return deep_get(context, str(source.get("path") or "").strip())
+
+            if "source" in source:
+                return deep_get(context, str(source.get("source") or "").strip())
+
+            if "template" in source:
+                return render_template(str(source.get("template") or ""), context)
+
+            return ""
+
+        return deep_get(context, str(source or "").strip())
+
+    @staticmethod
+    def get_nested_config(config: Dict[str, Any], path: str, default: Any = None) -> Any:
+        value = deep_get(config, path, default)
+        return default if value is None else value
+
+    @staticmethod
+    def get_config_bool(config: Dict[str, Any], path: str, default: bool = False) -> bool:
+        value = deep_get(config, path, default)
+
+        if isinstance(value, bool):
+            return value
+
+        if value is None:
+            return default
+
+        return str(value).strip().lower() in ["1", "true", "yes", "y", "on"]
+
+    @staticmethod
+    def as_list(value: Any) -> List[Any]:
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, tuple):
+            return list(value)
+
+        return [value]
+
+    @staticmethod
+    def unique_strings(values: List[Any]) -> List[str]:
+        output: List[str] = []
+
+        for value in values or []:
+            text = str(value or "").strip()
+            if text and text not in output:
+                output.append(text)
+
+        return output
 
     @staticmethod
     def safe_int(value: Any, default: int) -> int:
         try:
             return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def safe_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
         except Exception:
             return default
