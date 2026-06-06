@@ -22,7 +22,7 @@ from app.subagents.base import (
 )
 
 
-# Architecture batch: 6.23-explicit-marker-persistence-no-hardcoding
+# Architecture batch: 6.25-required-detail-pattern-capture-no-hardcoding
 
 class BookingSubagent:
     """
@@ -4719,12 +4719,21 @@ class BookingSubagent:
                 ):
                     continue
 
-            value = self.extract_configured_customer_detail_field(
+            value = self.extract_required_detail_from_config_patterns(
                 message=text,
+                target_path=clean_target_path,
                 field_config=field_config,
                 config=config,
                 normalization=normalization
             )
+
+            if not value:
+                value = self.extract_configured_customer_detail_field(
+                    message=text,
+                    field_config=field_config,
+                    config=config,
+                    normalization=normalization
+                )
 
             if not value:
                 value = self.extract_configured_detail_by_marker_remainder(
@@ -4910,6 +4919,136 @@ class BookingSubagent:
                 })
 
         return output
+
+
+    def extract_required_detail_from_config_patterns(
+        self,
+        message: str,
+        target_path: str,
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        """
+        Directly run configured extraction_patterns for the specific missing
+        required customer detail path.
+
+        This is a last-mile deterministic capture that does NOT know any
+        domain-specific field names. It only uses:
+        - required_before_create target_path
+        - config.extraction_patterns item.variable / item.path / item.target_path
+        - field_config validator/extraction safety rules
+
+        It fixes cases where the LLM response sees the detail but the state
+        stays empty because a generic route-specific extractor missed the field.
+        """
+        clean_target = self.strip_variables_prefix(str(target_path or "").strip())
+        if not clean_target:
+            return ""
+
+        patterns = config.get("extraction_patterns", [])
+        if not isinstance(patterns, list):
+            patterns = []
+
+        digit_map = normalization.get("digit_map", {})
+        raw_message = str(message or "")
+        digit_message = normalize_digits(raw_message, digit_map)
+        normalized_message = normalize_text(digit_message, normalization)
+
+        candidates: List[Dict[str, Any]] = []
+
+        for item in patterns:
+            if not isinstance(item, dict):
+                continue
+
+            variable = self.strip_variables_prefix(
+                str(
+                    item.get("variable")
+                    or item.get("path")
+                    or item.get("target_path")
+                    or ""
+                ).strip()
+            )
+
+            when_missing = self.strip_variables_prefix(str(item.get("when_missing") or "").strip())
+
+            if variable != clean_target and when_missing != clean_target:
+                continue
+
+            pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
+            if not pattern_text:
+                continue
+
+            try:
+                group_index = int(item.get("group", 1))
+            except Exception:
+                group_index = 1
+
+            for haystack, source in [
+                (digit_message, "configured_pattern_digits"),
+                (normalized_message, "configured_pattern_normalized"),
+            ]:
+                if not haystack:
+                    continue
+
+                try:
+                    matches = list(re.finditer(pattern_text, haystack, flags=re.IGNORECASE))
+                except re.error:
+                    continue
+
+                for match in matches:
+                    try:
+                        candidate = (
+                            match.group(group_index).strip()
+                            if match.groups()
+                            else match.group(0).strip()
+                        )
+                    except Exception:
+                        candidate = match.group(0).strip()
+
+                    value = self.normalize_customer_profile_value(
+                        value=candidate,
+                        validator=str(field_config.get("validator") or ""),
+                        config=config,
+                        normalization=normalization,
+                        field_config=field_config
+                    )
+
+                    if not value:
+                        value = self.clean_configured_marker_remainder_value(
+                            value=candidate,
+                            field_config=field_config,
+                            normalization=normalization
+                        )
+
+                        if not self.configured_explicit_marker_value_is_safe(
+                            value=value,
+                            field_config=field_config
+                        ):
+                            value = ""
+
+                    if value:
+                        candidates.append({
+                            "value": value,
+                            "raw": candidate,
+                            "source": source
+                        })
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda item: self.score_configured_customer_detail_candidate(
+                value=str(item.get("value") or ""),
+                raw=str(item.get("raw") or ""),
+                source=str(item.get("source") or ""),
+                field_config=field_config,
+                normalization=normalization
+            ),
+            reverse=True
+        )
+
+        return str(candidates[0].get("value") or "").strip()
 
 
     def extract_configured_detail_by_explicit_marker_loose(
