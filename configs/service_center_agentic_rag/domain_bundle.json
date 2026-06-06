@@ -7,7 +7,7 @@
     "assistant_goal": "Help customers with car service-center questions, understand vehicle symptoms, explain likely causes carefully, find branches, check appointment availability, and book service visits only after explicit confirmation and successful tool execution.",
     "conversation_style": "Professional, helpful, natural Egyptian Arabic for Arabic-speaking customers. Use simple Egyptian Arabic words like: تمام، ممكن، خليني، غالبًا، عشان، لو تحب، عندك، إيه، بتسمع، بيحصل. Avoid formal MSA wording like يرجى، هل، لديك، إذا كنت، من فضلك، معلومات، متاحة لدينا when replying in Arabic. Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي. Avoid robotic repeated templates.",
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
-    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection. During booking.stage awaiting_customer_details, customer detail messages such as name, phone, same-phone confirmation, or plate number must route to booking, not handoff and not simple response. During booking.stage awaiting_customer_details, if the customer provides one detail, booking must preserve previous customer_profile fields and ask only for the remaining missing detail. During booking.stage awaiting_confirmation, confirmation words must route to booking. During booking.stage slot_selection, time phrases like 3 العصر, 10 الصبح, or ordinal choices must route to booking and resolve only against current available_slots. When a selected slot exists, final wording must use booking.pending.time or appointment_time from state. Never invent or rewrite a different time. If the customer says 3 العصر, treat it as a time selection, not option number 3, unless the user explicitly says option/choice/number 3.",
+    "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection. During booking.stage awaiting_customer_details, customer detail messages such as name, phone, same-phone confirmation, or plate number must route to booking, not handoff and not simple response. During booking.stage awaiting_customer_details, if the customer provides one detail, booking must preserve previous customer_profile fields and ask only for the remaining missing detail. During booking.stage awaiting_confirmation, confirmation words must route to booking. During booking.stage slot_selection, time phrases like 3 العصر, 10 الصبح, or ordinal choices must route to booking and resolve only against current available_slots. When a selected slot exists, final wording must use booking.pending.time or appointment_time from state. Never invent or rewrite a different time. If the customer says 3 العصر, treat it as a time selection, not option number 3, unless the user explicitly says option/choice/number 3. If the customer asks a date-only question like what date a day corresponds to, answer the date only and do not list available slots. During active booking flow, date-only clarification questions must not trigger list_available_slots unless the latest message also asks for availability/appointments. If the customer selects a time and that time matches a current available slot after 12-hour normalization, select that slot and ask for confirmation instead of listing slots again. If the customer says الساعة 1 and 13:00 is the only matching 12-hour available slot, treat it as 13:00.",
     "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details. If the customer asks to use the same/current WhatsApp number and a valid phone exists in configured phone source paths, treat phone as present and ask only for remaining missing customer details.",
     "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic like: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز. Avoid formal wording like هل ترغب. لو العميل قال يستخدم نفس الرقم أو الرقم اللي بيتكلم منه وكان الرقم موجود في السياق، ما تطلبش رقم التليفون تاني؛ اسأل بس عن البيانات الناقصة.",
     "branch_aliases": {
@@ -399,7 +399,10 @@
       "If the customer confirms using the same phone while full_name and plate_number are still missing, acknowledge the phone only briefly and ask for full_name and plate_number.",
       "If plate_number is still missing, do not say there is a problem completing the booking; ask for plate_number.",
       "If full_name is captured and phone is known, missing customer-detail questions must not include name or phone again.",
-      "Phone reuse phrases and phone source paths must live in domain_bundle.json under customer_detail_markers.same_phone_markers and phone_reuse, not Python code."
+      "Phone reuse phrases and phone source paths must live in domain_bundle.json under customer_detail_markers.same_phone_markers and phone_reuse, not Python code.",
+      "If the customer asks only what date a day is, answer the date only. Do not show appointment slots unless they ask for appointments or available times.",
+      "If the customer selects الساعة 1 and 13:00 is in the returned available_slots while 01:00 is not, treat it as 13:00 and ask for confirmation.",
+      "If a requested time cannot be matched safely to available_slots, do not choose another slot; ask the customer to choose from the available slots."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -1382,8 +1385,19 @@
             "number",
             "no."
           ],
-          "time_selection_priority": "time_before_ordinal",
-          "bare_numeric_ordinal_policy": "requires_explicit_marker"
+          "time_selection_priority": "latest_message_time_then_manifest_time_then_ordinal",
+          "bare_numeric_ordinal_policy": "requires_explicit_marker",
+          "requested_time_paths": [
+            "appointment_time",
+            "booking.pending.time"
+          ],
+          "twelve_hour_policy": {
+            "enabled": true,
+            "ask_if_ambiguous": true,
+            "match_only_against_available_slots": true,
+            "do_not_use_old_appointment_time_when_message_has_time": true
+          },
+          "no_match_policy": "do_not_select_different_slot"
         },
         "slot_to_pending_booking_mapping": {
           "branch": "slot.branch",
@@ -1454,7 +1468,10 @@
           "missing_phone": "BOOKING_MISSING_PHONE",
           "missing_name_and_phone": "BOOKING_MISSING_NAME_AND_PHONE",
           "missing_phone_and_plate": "BOOKING_MISSING_PHONE_AND_PLATE",
-          "missing_name_phone_and_plate": "BOOKING_MISSING_NAME_PHONE_AND_PLATE"
+          "missing_name_phone_and_plate": "BOOKING_MISSING_NAME_PHONE_AND_PLATE",
+          "date_resolved": "BOOKING_DATE_RESOLVED",
+          "requested_time_not_available": "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
+          "requested_time_ambiguous": "BOOKING_REQUESTED_TIME_AMBIGUOUS"
         },
         "slot_context_carryover": {
           "enabled": true,
@@ -2199,6 +2216,53 @@
           ],
           "preserve_existing_fields": true,
           "mirror_to_booking_profile": true
+        },
+        "date_question": {
+          "enabled": true,
+          "template_key": "date_resolved",
+          "answer_draft": "BOOKING_DATE_RESOLVED",
+          "allow_during_active_booking": true,
+          "require_any": [
+            "موافق تاريخ",
+            "موافق كام",
+            "تاريخ كام",
+            "تاريخ ايه",
+            "تاريخ إيه",
+            "هيكون امتى",
+            "هيكون إمتى",
+            "هيوافق كام",
+            "هيوافق تاريخ",
+            "يبقى كام",
+            "يبقي كام",
+            "what date",
+            "which date"
+          ],
+          "exclude_if_any": [
+            "المواعيد",
+            "مواعيد",
+            "المواعيد المتاحة",
+            "المواعيد المتاحه",
+            "الأوقات",
+            "الاوقات",
+            "الأوقات المتاحة",
+            "اوقات",
+            "متاح",
+            "المتاح",
+            "احجز",
+            "أحجز",
+            "حجز",
+            "عايز احجز",
+            "عاوز احجز",
+            "معاد",
+            "ميعاد",
+            "موعد",
+            "slot",
+            "slots",
+            "available",
+            "availability",
+            "appointment",
+            "book"
+          ]
         }
       },
       "troubleshooting": {
@@ -2923,7 +2987,9 @@
           "if the user selected a time phrase, the selected slot must match that time from available_slots",
           "if slot selection is ambiguous, ask the customer to choose again instead of guessing",
           "use variables.booking.pending.time exactly",
-          "use variables.booking.pending.branch exactly"
+          "use variables.booking.pending.branch exactly",
+          "never use a time from the manifest if booking.pending.time differs",
+          "never fallback to old appointment_time when the latest user message selected a different matching slot"
         ],
         "safe_examples": [
           "تمام، اخترتلك معاد 11:00 الصبح في فرع مدينة نصر. تأكدلي أكمل الحجز؟",
@@ -2945,7 +3011,9 @@
           "do not change the selected slot time from booking.pending.time",
           "do not treat 3 العصر as option 3 when time period markers are present",
           "do not change the selected time",
-          "do not say a different time from booking.pending.time"
+          "do not say a different time from booking.pending.time",
+          "do not list slots again after a valid time selection",
+          "do not select a different time from the matched available slot"
         ],
         "deterministic_response": true,
         "force_template_answer": true,
@@ -3013,7 +3081,9 @@
           "do not imply a slot has been selected",
           "do not ask for branch again when known",
           "do not ask for date if slots were found",
-          "do not hide available slots from available_slots_text"
+          "do not hide available slots from available_slots_text",
+          "do not use for date-only questions",
+          "do not answer بكرة موافق تاريخ إيه by listing slots"
         ],
         "safe_examples": [
           "أقرب فرع ليك هو فرع مدينة نصر. المواعيد المتاحة يوم الأحد الجاي: 1) 10:00 صباحًا 2) 12:00 ظهرًا 3) 2:00 ظهرًا. تحب تختار أنهي معاد؟",
@@ -3343,6 +3413,53 @@
           "ask only for branch or area"
         ],
         "must_not_do": []
+      },
+      "BOOKING_DATE_RESOLVED": {
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "{{date_text}} هيكون موافق {{resolved_date}}.",
+        "must_do": [
+          "answer the date-only question only",
+          "do not list slots",
+          "do not ask the customer to choose a slot",
+          "do not call or imply availability lookup"
+        ],
+        "must_not_do": [
+          "do not show available_slots_text",
+          "do not say عندنا المواعيد المتاحة",
+          "do not move booking stage forward"
+        ]
+      },
+      "BOOKING_REQUESTED_TIME_NOT_AVAILABLE": {
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "المعاد ده مش ظاهر ضمن المواعيد المتاحة عندي. المواعيد المتاحة هي:\n{{variables.available_slots_text}}\nتحب تختار أنهي معاد؟",
+        "must_do": [
+          "do not select another slot when the requested time is not available",
+          "show current available slots exactly",
+          "ask the customer to choose again"
+        ],
+        "must_not_do": [
+          "do not fallback to an old appointment_time",
+          "do not select first slot",
+          "do not invent a matching slot"
+        ]
+      },
+      "BOOKING_REQUESTED_TIME_AMBIGUOUS": {
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "محتاج أتأكد تقصد أنهي معاد بالظبط من المواعيد دي:\n{{variables.available_slots_text}}",
+        "must_do": [
+          "ask for clarification when more than one slot could match",
+          "show available slots exactly"
+        ],
+        "must_not_do": [
+          "do not guess",
+          "do not select a slot automatically"
+        ]
       }
     },
     "slot_context_carryover_policy": {
@@ -3540,7 +3657,10 @@
       "HANDOFF_TRIGGERED",
       "BOOKING_MISSING_PHONE",
       "BOOKING_MISSING_DATE",
-      "BOOKING_MISSING_BRANCH"
+      "BOOKING_MISSING_BRANCH",
+      "BOOKING_DATE_RESOLVED",
+      "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
+      "BOOKING_REQUESTED_TIME_AMBIGUOUS"
     ],
     "template_response_policy_detection": {
       "enabled": true,
@@ -3692,7 +3812,8 @@
         "full_name": "BOOKING_MISSING_FULL_NAME",
         "phone": "BOOKING_MISSING_PHONE",
         "plate_number": "BOOKING_MISSING_PLATE_NUMBER",
-        "customer_confirmed_booking": "BOOKING_AWAITING_EXPLICIT_CONFIRMATION"
+        "customer_confirmed_booking": "BOOKING_AWAITING_EXPLICIT_CONFIRMATION",
+        "date_question": "BOOKING_DATE_RESOLVED"
       },
       "next_move_by_missing_input": {
         "date": "Ask which day/date the customer wants before checking appointments.",
@@ -3832,7 +3953,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.4-deterministic-policy-answers",
+    "architecture_version": "6.5-date-question-and-12h-slot-matching-config",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -3841,7 +3962,10 @@
       "BOOKING_MISSING_PLATE_NUMBER",
       "BOOKING_MISSING_PHONE",
       "BOOKING_MISSING_DATE",
-      "BOOKING_MISSING_BRANCH"
+      "BOOKING_MISSING_BRANCH",
+      "BOOKING_DATE_RESOLVED",
+      "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
+      "BOOKING_REQUESTED_TIME_AMBIGUOUS"
     ]
   },
   "schema": {
@@ -3989,11 +4113,15 @@
       },
       "customer_phone": {
         "type": "string"
+      },
+      "date_question": {
+        "type": "object",
+        "description": "Transient date-only question metadata. Date clarification should not imply availability lookup."
       }
     }
   },
   "domain_playbook": {
-    "version": "6.4-deterministic-policy-answers",
+    "version": "6.5-date-question-and-12h-slot-matching-config",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -4066,7 +4194,11 @@
       "6.2 strengthens response policy so the final answer must use the selected slot time from booking.pending/appointment_time/tool state and must never invent a different time.",
       "6.4 makes high-risk operational answer drafts deterministic using template_response_policy response_template.",
       "6.4 prevents the response LLM from changing selected slot time or omitting tool-returned slots.",
-      "6.4 keeps slots-found and selected-slot responses grounded in variables/tool_result only."
+      "6.4 keeps slots-found and selected-slot responses grounded in variables/tool_result only.",
+      "6.5 adds config-driven date-only question handling so date clarification questions do not list appointment slots.",
+      "6.5 adds 12-hour slot matching policy so bare times like 1 can match 13:00 when that is the only available 12-hour equivalent.",
+      "6.5 adds deterministic BOOKING_DATE_RESOLVED response policy for factual date answers.",
+      "6.5 prevents active booking context from converting date-only follow-up questions into availability calls."
     ]
   }
 }
