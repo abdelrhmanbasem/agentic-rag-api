@@ -397,6 +397,33 @@ class BookingSubagent:
                     tool_calls_used=tool_calls_used
                 )
 
+            if self.message_contains_time_intent_without_stored_context(
+                context.user_message,
+                config,
+                normalization
+            ):
+                answer = render_template(
+                    config.get("templates", {}).get(
+                        "requested_time_not_available",
+                        config.get("templates", {}).get("choose_slot_again", "")
+                    ),
+                    {
+                        "variables": variables,
+                        "message": context.user_message
+                    }
+                )
+
+                return SubagentResult(
+                    handled=True,
+                    action="ask_user",
+                    answer=answer,
+                    variable_updates=variables,
+                    selected_subagent=self.name,
+                    observations=observations,
+                    tool_calls_used=tool_calls_used,
+                    notes="requested slot time not available in current slots"
+                )
+
             answer = render_template(
                 config.get("templates", {}).get("choose_slot_again", ""),
                 {
@@ -484,6 +511,20 @@ class BookingSubagent:
                 observations=observations,
                 tool_calls_used=tool_calls_used,
                 notes="booking already confirmed; create_booking blocked"
+            )
+
+        changed_slot = self.resolve_slot_selection(
+            context=context,
+            config=config,
+            variables=variables
+        )
+
+        if changed_slot and self.selected_slot_differs_from_pending(changed_slot, variables, config):
+            return self.handle_slot_selected(
+                context=context,
+                config=config,
+                variables=variables,
+                selected_slot=changed_slot
             )
 
         if matches_any(context.user_message, rejection_phrases, normalization):
@@ -764,6 +805,43 @@ class BookingSubagent:
             observations=observations,
             tool_calls_used=tool_calls_used
         )
+
+
+    def selected_slot_differs_from_pending(
+        self,
+        selected_slot: Dict[str, Any],
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> bool:
+        if not isinstance(selected_slot, dict):
+            return False
+
+        pending_path = config.get("pending_booking_path", "booking.pending")
+        pending = deep_get(variables, pending_path, {})
+
+        if not isinstance(pending, dict):
+            pending = {}
+
+        comparisons = config.get("slot_change_compare_fields", ["branch", "date", "time", "section"])
+
+        if not isinstance(comparisons, list) or not comparisons:
+            comparisons = ["branch", "date", "time", "section"]
+
+        for field in comparisons:
+            field_text = str(field or "").strip()
+            if not field_text:
+                continue
+
+            new_value = str(selected_slot.get(field_text) or "").strip()
+            old_value = str(pending.get(field_text) or "").strip()
+
+            if new_value and old_value and new_value != old_value:
+                return True
+
+            if new_value and not old_value:
+                return True
+
+        return False
 
 
     def handle_slot_selected(
@@ -1066,11 +1144,11 @@ class BookingSubagent:
             repair_updates[config.get("date_text_path", "date_text")] = date_text
 
         if isinstance(tool_result, dict):
-            if tool_result.get("available_slots") not in [None, "", [], {}]:
+            if "available_slots" in tool_result:
                 repair_updates["available_slots"] = tool_result.get("available_slots")
-            if tool_result.get("available_slots_text") not in [None, "", [], {}]:
+            if "available_slots_text" in tool_result:
                 repair_updates["available_slots_text"] = tool_result.get("available_slots_text")
-            if tool_result.get("slots_found") is not None:
+            if "slots_found" in tool_result:
                 repair_updates["slots_found"] = tool_result.get("slots_found")
 
         if repair_updates:
@@ -1968,55 +2046,227 @@ class BookingSubagent:
             context.assistant_config.get("normalization", {})
         )
 
-    def extract_date_text(self, message: str, config: Dict[str, Any], normalization: Dict[str, Any]) -> str:
+    def choose_date_candidate(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        existing_date: str = "",
+        prefer_different: bool = False
+    ) -> Dict[str, Any]:
+        candidates = self.resolve_date_candidates(
+            message=message,
+            config=config,
+            normalization=normalization
+        )
+
+        if not candidates:
+            return {}
+
+        existing = str(existing_date or "").strip()
+
+        if prefer_different and existing:
+            for candidate in candidates:
+                resolved = str(candidate.get("resolved_date") or "").strip()
+                if resolved and resolved != existing:
+                    return candidate
+
+        return candidates[0]
+
+    def resolve_date_candidates(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        candidates = self.extract_date_candidates(
+            message=message,
+            config=config,
+            normalization=normalization
+        )
+
+        resolved_candidates: List[Dict[str, Any]] = []
+        seen = set()
+
+        for candidate in candidates:
+            date_text = str(candidate.get("date_text") or "").strip()
+
+            if not date_text:
+                continue
+
+            resolved = self.resolve_date_text(
+                date_text=date_text,
+                message=message,
+                normalization=normalization,
+                config=config
+            )
+
+            key = (
+                normalize_text(date_text, normalization),
+                str(resolved or "")
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            resolved_candidates.append({
+                **candidate,
+                "resolved_date": resolved
+            })
+
+        return resolved_candidates
+
+    def extract_date_candidates(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         raw_message = normalize_digits(str(message or ""), normalization.get("digit_map", {})).strip()
+
+        if not raw_message:
+            return []
+
         normalized = normalize_text(raw_message, normalization)
 
-        # Do not let time-only slot selections become date_text.
-        # Example during slot_selection: a time-only reply should resolve
-        # to a slot time, not to date_text.
         if self.looks_like_time_only_slot_selection_text(
             message=raw_message,
             config=config,
             normalization=normalization
         ):
-            return ""
+            return []
 
-        direct = self.extract_direct_date_term(
-            normalized_message=normalized,
-            config=config,
-            normalization=normalization
-        )
+        candidates: List[Dict[str, Any]] = []
 
-        if direct:
-            return direct
+        def add_candidate(value: str, source: str, start: int, end: int):
+            cleaned = self.clean_date_text(str(value or "").strip(), normalization, config)
 
-        explicit = self.extract_explicit_date_phrase(raw_message, config)
+            if not cleaned:
+                return
 
-        if explicit:
-            return explicit
+            normalized_cleaned = normalize_text(cleaned, normalization)
+
+            if not normalized_cleaned:
+                return
+
+            candidates.append({
+                "date_text": cleaned,
+                "source": source,
+                "start": max(int(start or 0), 0),
+                "end": max(int(end or 0), 0),
+                "score": len(normalized_cleaned)
+            })
+
+        direct_terms = config.get("date_direct_terms", [])
+        if isinstance(direct_terms, list):
+            for term in direct_terms:
+                term_text = str(term or "").strip()
+                if not term_text:
+                    continue
+
+                normalized_term = normalize_text(term_text, normalization)
+                if not normalized_term:
+                    continue
+
+                search_from = 0
+                while True:
+                    idx = normalized.find(normalized_term, search_from)
+                    if idx < 0:
+                        break
+
+                    add_candidate(term_text, "direct_term", idx, idx + len(normalized_term))
+                    search_from = idx + max(len(normalized_term), 1)
+
+        explicit_patterns = config.get("explicit_date_patterns", [])
+        if isinstance(explicit_patterns, list):
+            for item in explicit_patterns:
+                pattern = ""
+                group = 1
+
+                if isinstance(item, dict):
+                    pattern = str(item.get("regex", "") or "")
+                    try:
+                        group = int(item.get("group", 1))
+                    except Exception:
+                        group = 1
+                else:
+                    pattern = str(item or "")
+
+                if not pattern:
+                    continue
+
+                try:
+                    matches = list(re.finditer(pattern, raw_message, flags=re.IGNORECASE))
+                except re.error:
+                    continue
+
+                for match in matches:
+                    try:
+                        value = match.group(group).strip()
+                        span = match.span(group)
+                    except Exception:
+                        value = match.group(0).strip()
+                        span = match.span(0)
+
+                    add_candidate(value, "explicit_pattern", span[0], span[1])
 
         for item in config.get("date_extraction_patterns", []):
             if not isinstance(item, dict):
                 continue
 
             regex = item.get("regex", "")
-            group = int(item.get("group", 1))
+            try:
+                group = int(item.get("group", 1))
+            except Exception:
+                group = 1
 
             if not regex:
                 continue
 
             try:
-                match = re.search(regex, raw_message, flags=re.IGNORECASE)
+                matches = list(re.finditer(regex, raw_message, flags=re.IGNORECASE))
             except re.error:
                 continue
 
-            if match:
-                value = self.clean_date_text(match.group(group).strip(), normalization, config)
-                if value:
-                    return value
+            for match in matches:
+                try:
+                    value = match.group(group).strip()
+                    span = match.span(group)
+                except Exception:
+                    value = match.group(0).strip()
+                    span = match.span(0)
 
-        return ""
+                add_candidate(value, "date_extraction_pattern", span[0], span[1])
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda item: (item.get("start", 0), -item.get("score", 0)))
+
+        output: List[Dict[str, Any]] = []
+        seen_terms = set()
+
+        for candidate in candidates:
+            key = normalize_text(str(candidate.get("date_text") or ""), normalization)
+            if key in seen_terms:
+                continue
+
+            seen_terms.add(key)
+            output.append(candidate)
+
+        return output
+
+
+    def extract_date_text(self, message: str, config: Dict[str, Any], normalization: Dict[str, Any]) -> str:
+        candidate = self.choose_date_candidate(
+            message=message,
+            config=config,
+            normalization=normalization
+        )
+
+        return str(candidate.get("date_text") or "").strip() if candidate else ""
 
 
     def looks_like_time_only_slot_selection_text(
@@ -2339,7 +2589,7 @@ class BookingSubagent:
             return iso
 
         # ── 4. Numeric date ──────────────────────────────────────────────────
-        numeric = self.parse_numeric_date(raw, today)
+        numeric = self.parse_numeric_date(raw, today, config=config)
         if numeric:
             return numeric
 
@@ -2368,110 +2618,113 @@ class BookingSubagent:
         Detect when the user is requesting availability for a DIFFERENT date than
         the one already stored, then clear stale slot state and write the new date.
 
-        Handles all natural expressions:
-          "actually try next Thursday"         → force_next_week=True
-          "what about this Friday instead?"    → force_next_week=False
-          "no, بكرة"                           → relative offset
-          "how about 20/6?"                    → numeric date
-          "يوم الأحد الجاي"                    → next Sunday
-
-        Clears: available_slots, available_slots_text, slots_found, slot_selection
-                stage, booking.pending.time, booking.pending.time_text,
-                appointment_time, appointment_time_text, and any extra paths from
-                config["date_change"]["clear_paths"].
-
-        Returns updated variables (unchanged if no date change detected).
+        This is deterministic and config-driven:
+        - date phrases come from date resolution config/patterns
+        - change markers come from date_change.change_markers
+        - extra clear paths come from date_change.clear_paths
         """
         normalization = context.assistant_config.get("normalization", {})
         date_change_cfg = config.get("date_change", {})
         if not isinstance(date_change_cfg, dict):
             date_change_cfg = {}
 
-        # Only run when we have existing slots or are in slot_selection stage
-        has_slots = bool(deep_get(variables, config.get("available_slots_path", "available_slots")))
-        in_slot_stage = (stage == "slot_selection")
-        in_awaiting_date = (stage in config.get("active_request_stages", ["awaiting_date"]))
-
-        if not (has_slots or in_slot_stage or in_awaiting_date):
-            return variables
-
-        # Detect change-of-mind signal phrases (optional guard)
-        change_markers = date_change_cfg.get("change_markers", [])
-        if isinstance(change_markers, list) and change_markers:
-            if not matches_any(context.user_message, change_markers, normalization):
-                # No explicit "actually"/"instead" signal — still allow pure date
-                # expressions to override if the resolved date differs
-                pass  # fall through to date resolution below
-
-        # Extract and resolve the new date from the current message
-        new_date_text = self.extract_date_text(
-            message=context.user_message,
-            config=config,
-            normalization=normalization,
-        )
-        if not new_date_text:
-            return variables
-
-        new_resolved = self.resolve_date_text(
-            date_text=new_date_text,
-            message=context.user_message,
-            normalization=normalization,
-            config=config,
-        )
-        if not new_resolved:
-            return variables
-
-        # Compare against existing stored date
-        existing_date = (
-            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
-            or deep_get(variables, "date")
-            or deep_get(variables, "booking.pending.date")
-        )
-
-        if not existing_date:
-            # No existing date — this is a first date, not a change
-            return variables
-
-        if str(existing_date).strip() == new_resolved:
-            # Same date — user is confirming, not changing
-            return variables
-
-        # ── It IS a date change — clear stale slot state ──────────────────
-        appointment_date_path = config.get("appointment_date_path", "appointment_date")
-        date_text_path = config.get("date_text_path", "date_text")
         stage_path = config.get("stage_path", "booking.stage")
         pending_path = config.get("pending_booking_path", "booking.pending")
 
-        # Paths that must be cleared when date changes
+        has_slots = bool(deep_get(variables, config.get("available_slots_path", "available_slots")))
+        has_pending_time = bool(deep_get(variables, f"{pending_path}.time") or deep_get(variables, "appointment_time"))
+        in_slot_stage = (stage == "slot_selection")
+        in_awaiting_confirmation = (stage == config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"))
+        in_awaiting_date = (stage in config.get("active_request_stages", ["awaiting_date"]))
+
+        if not (has_slots or has_pending_time or in_slot_stage or in_awaiting_confirmation or in_awaiting_date):
+            return variables
+
+        existing_date = (
+            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+            or deep_get(variables, f"{pending_path}.date")
+        )
+
+        if not existing_date:
+            return variables
+
+        selected_candidate = self.choose_date_candidate(
+            message=context.user_message,
+            config=config,
+            normalization=normalization,
+            existing_date=str(existing_date).strip(),
+            prefer_different=True
+        )
+
+        if not selected_candidate:
+            return variables
+
+        new_date_text = str(selected_candidate.get("date_text") or "").strip()
+        new_resolved = str(selected_candidate.get("resolved_date") or "").strip()
+
+        if not new_date_text or not new_resolved:
+            return variables
+
+        if str(existing_date).strip() == new_resolved:
+            return variables
+
+        appointment_date_path = config.get("appointment_date_path", "appointment_date")
+        date_text_path = config.get("date_text_path", "date_text")
+
         default_clear_paths = [
             config.get("available_slots_path", "available_slots"),
             "available_slots_text",
             "slots_found",
+            "selected_slot",
+            "exact_slot",
+            "nearest_slots",
+            "nearest_slots_text",
             "appointment_time",
             "appointment_time_text",
             f"{pending_path}.time",
             f"{pending_path}.time_text",
+            f"{pending_path}.section",
+            "booking.pending_summary",
+            "customer_confirmed_booking",
         ]
+
         extra_clear = date_change_cfg.get("clear_paths", [])
         if not isinstance(extra_clear, list):
             extra_clear = []
-        all_clear_paths = default_clear_paths + extra_clear
 
-        clear_updates = {path: None for path in all_clear_paths}
-        clear_updates[appointment_date_path] = new_resolved
-        clear_updates["date"] = new_resolved
-        clear_updates[date_text_path] = new_date_text
-        clear_updates[f"{pending_path}.date"] = new_resolved
-        clear_updates[f"{pending_path}.date_text"] = new_date_text
-        clear_updates[stage_path] = config.get(
-            "active_request_stages", ["awaiting_date"]
-        )[0] if config.get("active_request_stages") else "awaiting_date"
-        clear_updates["booking.date_changed"] = True
-        clear_updates["booking.previous_date"] = existing_date
+        all_clear_paths = []
+        for path in default_clear_paths + [str(item or "").strip() for item in extra_clear]:
+            if path and path not in all_clear_paths:
+                all_clear_paths.append(path)
 
-        # Remove None values — apply_variable_patch ignores them so use deletions
-        deletions = [k for k, v in clear_updates.items() if v is None]
-        updates = {k: v for k, v in clear_updates.items() if v is not None}
+        reset_stage = (
+            str(date_change_cfg.get("reset_stage") or "").strip()
+            or "awaiting_date"
+        )
+
+        updates = {
+            appointment_date_path: new_resolved,
+            "date": new_resolved,
+            date_text_path: new_date_text,
+            f"{pending_path}.date": new_resolved,
+            f"{pending_path}.date_text": new_date_text,
+            stage_path: reset_stage,
+            str(date_change_cfg.get("date_changed_path") or "booking.date_changed"): True,
+            str(date_change_cfg.get("previous_date_path") or "booking.previous_date"): existing_date,
+        }
+
+        configured_updates = date_change_cfg.get("set_updates", {})
+        if isinstance(configured_updates, dict):
+            for key, value in configured_updates.items():
+                key_text = str(key or "").strip()
+                if key_text:
+                    updates[key_text] = value
+
+        deletions = [
+            path for path in all_clear_paths
+            if path not in updates
+        ]
 
         return apply_variable_patch(variables, updates, deletions)
 
@@ -2495,19 +2748,15 @@ class BookingSubagent:
         if not isinstance(relative_terms, dict):
             relative_terms = {}
 
+        candidates: List[Dict[str, Any]] = []
+
         for key, value in relative_terms.items():
-            # Supported shapes:
-            # 1) {"1": ["tomorrow", "..."]}
-            # 2) {"tomorrow": 1, "...": 1}
             offset: Optional[int] = None
             terms: List[Any] = []
 
             try:
                 offset = int(key)
-                if isinstance(value, list):
-                    terms = value
-                else:
-                    terms = [value]
+                terms = value if isinstance(value, list) else [value]
             except Exception:
                 try:
                     offset = int(value)
@@ -2521,8 +2770,22 @@ class BookingSubagent:
 
             for term in terms:
                 normalized_term = normalize_text(str(term or ""), normalization)
-                if normalized_term and normalized_term in normalized:
-                    return offset
+
+                if not normalized_term:
+                    continue
+
+                candidates.append({
+                    "term": normalized_term,
+                    "offset": offset,
+                    "length": len(normalized_term)
+                })
+
+        candidates.sort(key=lambda item: -int(item.get("length", 0) or 0))
+
+        for candidate in candidates:
+            term = str(candidate.get("term") or "")
+            if term and term in normalized:
+                return int(candidate.get("offset", 0) or 0)
 
         return None
 
@@ -2679,7 +2942,7 @@ class BookingSubagent:
         return False
 
     def parse_iso_date(self, raw: str) -> str:
-        match = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", raw)
+        match = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", raw)
 
         if not match:
             return ""
@@ -2693,14 +2956,20 @@ class BookingSubagent:
         except ValueError:
             return ""
 
-    def parse_numeric_date(self, raw: str, today) -> str:
+    def parse_numeric_date(
+        self,
+        raw: str,
+        today,
+        config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        config = config or {}
         match = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", raw)
 
         if not match:
             return ""
 
-        day = int(match.group(1))
-        month = int(match.group(2))
+        first = int(match.group(1))
+        second = int(match.group(2))
         year_text = match.group(3)
 
         if year_text:
@@ -2710,18 +2979,43 @@ class BookingSubagent:
         else:
             year = today.year
 
-        try:
-            candidate = datetime(year, month, day).date()
-        except ValueError:
-            return ""
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
 
-        if not year_text and candidate < today:
+        configured_orders = date_resolution.get("numeric_date_orders", [])
+        if not isinstance(configured_orders, list) or not configured_orders:
+            configured_orders = [date_resolution.get("numeric_date_order", "DMY")]
+
+        orders = []
+        for order in configured_orders:
+            order_text = str(order or "").strip().upper()
+            if order_text in ["DMY", "MDY"] and order_text not in orders:
+                orders.append(order_text)
+
+        if not orders:
+            orders = ["DMY"]
+
+        for order in orders:
+            if order == "MDY":
+                day, month = second, first
+            else:
+                day, month = first, second
+
             try:
-                candidate = datetime(year + 1, month, day).date()
+                candidate = datetime(year, month, day).date()
             except ValueError:
-                return ""
+                continue
 
-        return candidate.isoformat()
+            if not year_text and candidate < today:
+                try:
+                    candidate = datetime(year + 1, month, day).date()
+                except ValueError:
+                    continue
+
+            return candidate.isoformat()
+
+        return ""
 
     def parse_named_month_date(
         self,
@@ -2747,73 +3041,110 @@ class BookingSubagent:
 
         normalized = normalize_text(raw, normalization)
 
-        pattern = str(
-            date_resolution.get("named_month_date_regex")
-            or date_resolution.get("named_month_pattern")
-            or r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b"
-        )
+        def resolve_month(month_value: Any) -> Optional[int]:
+            month_name = normalize_text(str(month_value or ""), normalization)
 
-        try:
-            match = re.search(pattern, normalized)
-        except re.error:
-            return ""
+            if not month_name:
+                return None
 
-        if not match:
-            return ""
+            for key, value in month_config.items():
+                candidate_month = None
+                terms: List[Any] = []
 
-        day = int(match.group(1))
-        month_name = normalize_text(match.group(2), normalization)
-        year_text = match.group(3)
-
-        month = None
-
-        for key, value in month_config.items():
-            # Supported shapes:
-            # 1) {"6": ["يونيو", "..."]}
-            # 2) {"يونيو": 6, "...": 6}
-            candidate_month = None
-            terms: List[Any] = []
-
-            try:
-                candidate_month = int(key)
-                terms = value if isinstance(value, list) else [value]
-            except Exception:
                 try:
-                    candidate_month = int(value)
-                    terms = [key]
+                    candidate_month = int(key)
+                    terms = value if isinstance(value, list) else [value]
                 except Exception:
-                    candidate_month = None
-                    terms = []
+                    try:
+                        candidate_month = int(value)
+                        terms = [key]
+                    except Exception:
+                        candidate_month = None
+                        terms = []
 
-            if candidate_month is None:
+                if candidate_month is None:
+                    continue
+
+                for term in terms:
+                    normalized_term = normalize_text(str(term or ""), normalization)
+                    if normalized_term and normalized_term == month_name:
+                        return candidate_month
+
+            return None
+
+        pattern_configs = date_resolution.get("named_month_patterns", [])
+
+        if not isinstance(pattern_configs, list) or not pattern_configs:
+            pattern_configs = [
+                {
+                    "regex": date_resolution.get("named_month_date_regex")
+                    or date_resolution.get("named_month_pattern")
+                    or r"\b(\d{1,2})\s+([^\s\d]+)(?:\s+(\d{4}))?\b",
+                    "day_group": 1,
+                    "month_group": 2,
+                    "year_group": 3
+                },
+                {
+                    "regex": date_resolution.get("month_named_date_regex")
+                    or r"\b([^\s\d]+)\s+(\d{1,2})(?:\s+(\d{4}))?\b",
+                    "day_group": 2,
+                    "month_group": 1,
+                    "year_group": 3
+                }
+            ]
+
+        for item in pattern_configs:
+            if not isinstance(item, dict):
                 continue
 
-            for term in terms:
-                normalized_term = normalize_text(str(term or ""), normalization)
-                if normalized_term and normalized_term == month_name:
-                    month = candidate_month
-                    break
+            pattern = str(item.get("regex") or "").strip()
 
-            if month is not None:
-                break
+            if not pattern:
+                continue
 
-        if not month:
-            return ""
-
-        year = int(year_text) if year_text else today.year
-
-        try:
-            candidate = datetime(year, month, day).date()
-        except ValueError:
-            return ""
-
-        if not year_text and candidate < today:
             try:
-                candidate = datetime(year + 1, month, day).date()
-            except ValueError:
-                return ""
+                match = re.search(pattern, normalized)
+            except re.error:
+                continue
 
-        return candidate.isoformat()
+            if not match:
+                continue
+
+            try:
+                day = int(match.group(int(item.get("day_group", 1))))
+                month_text = match.group(int(item.get("month_group", 2)))
+            except Exception:
+                continue
+
+            year_text = ""
+            try:
+                year_group = item.get("year_group", 0)
+                if year_group:
+                    year_text = match.group(int(year_group)) or ""
+            except Exception:
+                year_text = ""
+
+            month = resolve_month(month_text)
+
+            if not month:
+                continue
+
+            year = int(year_text) if str(year_text or "").strip() else today.year
+
+            try:
+                candidate = datetime(year, month, day).date()
+            except ValueError:
+                continue
+
+            if not year_text and candidate < today:
+                try:
+                    candidate = datetime(year + 1, month, day).date()
+                except ValueError:
+                    continue
+
+            return candidate.isoformat()
+
+        return ""
 
     def get_configured_path_list(
         self,
