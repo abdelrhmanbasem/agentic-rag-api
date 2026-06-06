@@ -738,6 +738,9 @@ def tool_result_exists(state: AgentState) -> bool:
 def should_use_simple_response(state: AgentState) -> bool:
     manifest = state.get("manifest", {}) or {}
 
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return False
+
     if manifest.get("needs_tool"):
         return False
     if manifest.get("needs_knowledge"):
@@ -1042,6 +1045,277 @@ def apply_routing_guardrails(
     return patched
 
 
+def flatten_update_paths(
+    updates: Dict[str, Any],
+    prefix: str = ""
+) -> Dict[str, Any]:
+    """
+    Convert nested update objects into dotted-path updates.
+
+    This prevents a manifest/subagent update like {"customer_profile": {"name": "..."}}
+    from replacing the entire existing customer_profile object and deleting sibling
+    fields such as phone or plate_number.
+    """
+    output: Dict[str, Any] = {}
+
+    if not isinstance(updates, dict):
+        return output
+
+    for key, value in updates.items():
+        key_text = str(key or "").strip()
+
+        if not key_text:
+            continue
+
+        path = f"{prefix}.{key_text}" if prefix else key_text
+
+        if isinstance(value, dict):
+            nested = flatten_update_paths(value, path)
+            if nested:
+                output.update(nested)
+            elif value not in [None, "", [], {}]:
+                output[path] = value
+        else:
+            output[path] = value
+
+    return output
+
+
+def apply_configured_manifest_aliases(
+    flat_updates: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    schema: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Promote extracted aliases using config/schema only.
+
+    Supported sources:
+    - assistant.manifest_update_aliases:
+      [{"source_path": "...", "target_path": "..."}]
+    - schema variables with alias_for / alias_for_path / target_path
+    - nested schema properties with alias_for / alias_for_path / target_path
+
+    No domain-specific alias names are embedded here.
+    """
+    output = dict(flat_updates or {})
+
+    if not isinstance(output, dict):
+        return {}
+
+    configured_aliases = agent_config.get("manifest_update_aliases", [])
+    if isinstance(configured_aliases, list):
+        for item in configured_aliases:
+            if not isinstance(item, dict):
+                continue
+
+            source_path = str(item.get("source_path") or "").strip()
+            target_path = str(item.get("target_path") or "").strip()
+
+            if not source_path or not target_path:
+                continue
+
+            if source_path in output and output.get(source_path) not in [None, "", [], {}]:
+                output.setdefault(target_path, output.get(source_path))
+
+    fields = get_schema_fields(schema or {})
+
+    if isinstance(fields, dict):
+        for key, meta in fields.items():
+            if not isinstance(meta, dict):
+                continue
+
+            source_key = str(key or "").strip()
+            if not source_key:
+                continue
+
+            for alias_key in ["alias_for_path", "target_path", "alias_for"]:
+                target = str(meta.get(alias_key) or "").strip()
+                if not target:
+                    continue
+
+                target_path = target if "." in target else target
+
+                if source_key in output and output.get(source_key) not in [None, "", [], {}]:
+                    output.setdefault(target_path, output.get(source_key))
+
+            properties = meta.get("properties", {})
+            if not isinstance(properties, dict):
+                continue
+
+            for prop_key, prop_meta in properties.items():
+                if not isinstance(prop_meta, dict):
+                    continue
+
+                source_path = f"{source_key}.{str(prop_key or '').strip()}"
+
+                if source_path not in output or output.get(source_path) in [None, "", [], {}]:
+                    continue
+
+                for alias_key in ["alias_for_path", "target_path", "alias_for"]:
+                    target = str(prop_meta.get(alias_key) or "").strip()
+                    if not target:
+                        continue
+
+                    target_path = target if "." in target else f"{source_key}.{target}"
+                    output.setdefault(target_path, output.get(source_path))
+
+    return output
+
+
+def prepare_manifest_extracted_updates(
+    updates: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    schema: Dict[str, Any]
+) -> Dict[str, Any]:
+    flat = flatten_update_paths(updates or {})
+    return apply_configured_manifest_aliases(
+        flat_updates=flat,
+        agent_config=agent_config or {},
+        schema=schema or {},
+    )
+
+
+def prepare_variable_updates_for_patch(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Subagent results may return either patch-style dotted paths or a full state
+    object. Flattening gives apply_variable_patch merge semantics instead of
+    replacing nested objects.
+    """
+    return flatten_update_paths(updates or {})
+
+
+def get_active_configured_flow_subagent_id(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    manifest: Optional[Dict[str, Any]] = None,
+    message: str = ""
+) -> str:
+    """
+    Config-driven deterministic-flow lock.
+
+    Any routing_guardrails entry can force a target subagent while configured
+    state paths have active values. This lets deterministic executors handle
+    state transitions even when the manifest says needs_tool=false.
+    """
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return ""
+
+    normalization = agent_config.get("normalization", {}) or {}
+    manifest = manifest or {}
+
+    for _, rule in guardrails.items():
+        if not isinstance(rule, dict) or not rule.get("enabled", False):
+            continue
+
+        target_subagent = str(rule.get("target_subagent_id") or "").strip()
+        if not target_subagent:
+            continue
+
+        stage_paths = rule.get("active_stage_paths", [])
+        stage_values = {
+            str(item or "").strip()
+            for item in rule.get("active_stage_values", []) or []
+            if str(item or "").strip()
+        }
+
+        if not isinstance(stage_paths, list) or not stage_paths:
+            continue
+
+        active = False
+
+        for path in stage_paths:
+            value = deep_get(variables, str(path or "").strip(), "")
+            value_text = str(value or "").strip()
+
+            if not value_text:
+                continue
+
+            if not stage_values or value_text in stage_values:
+                active = True
+                break
+
+        if not active:
+            continue
+
+        must_not_select = {
+            str(item or "").strip()
+            for item in rule.get("must_not_select_subagents", []) or []
+            if str(item or "").strip()
+        }
+
+        selected = str(manifest.get("selected_subagent_id") or "").strip()
+        if selected in must_not_select:
+            return target_subagent
+
+        detail_marker_paths = rule.get("detail_marker_paths", [])
+        if isinstance(detail_marker_paths, list) and detail_marker_paths:
+            markers = collect_configured_phrases(agent_config, detail_marker_paths)
+            if markers and matches_any(message, markers, normalization):
+                return target_subagent
+
+        if rule.get("force_for_active_stage", True):
+            return target_subagent
+
+    return ""
+
+
+def apply_active_deterministic_flow_guardrails(
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Patch the manifest when config says a deterministic subagent owns the active
+    flow. This is not a tool-only concept; the executor may need to extract,
+    merge, ask the next missing detail, or finalize the operation.
+    """
+    target = get_active_configured_flow_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+        manifest=manifest,
+        message=message,
+    )
+
+    if not target:
+        return manifest
+
+    patched = dict(manifest or {})
+    patched["selected_subagent_id"] = unify_subagent_id(target)
+    patched["simple_response_mode"] = False
+    patched["needs_tool"] = True
+    patched["needs_subagent_reasoning"] = False
+    patched["needs_quality_guard"] = True
+
+    brief = patched.get("response_brief")
+    if not isinstance(brief, dict):
+        brief = {}
+
+    brief["must_do"] = append_unique(brief.get("must_do", []), [
+        "run the configured deterministic executor for this active flow",
+        "preserve existing variables when adding new user details",
+        "ask only for the next missing detail if something is still missing",
+    ])
+    brief["must_not_do"] = append_unique(brief.get("must_not_do", []), [
+        "do not answer with simple response while this active flow is incomplete",
+        "do not claim an external action was completed without a successful tool result",
+    ])
+
+    patched["response_brief"] = brief
+    return patched
+
+
+def active_deterministic_flow_subagent_id_from_state(state: AgentState) -> str:
+    return get_active_configured_flow_subagent_id(
+        agent_config=state.get("agent_config", {}) or {},
+        variables=state.get("variables", {}) or {},
+        manifest=state.get("manifest", {}) or {},
+        message=last_user_message(state),
+    )
+
+
+
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -1102,6 +1376,12 @@ def unified_manifest_node(state: AgentState):
         parsed = normalize_json_manifest(parsed)
         parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
         parsed = apply_routing_guardrails(
+            manifest=parsed,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
+        parsed = apply_active_deterministic_flow_guardrails(
             manifest=parsed,
             message=message,
             agent_config=agent_config,
@@ -1192,14 +1472,26 @@ def unified_manifest_node(state: AgentState):
             agent_config=agent_config,
             variables=variables,
         )
+        manifest = apply_active_deterministic_flow_guardrails(
+            manifest=manifest,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
         manifest["selected_subagent_id"] = unify_subagent_id(
             manifest.get("selected_subagent_id", "")
         )
 
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
-    safe_manifest_updates = filter_manifest_updates(
+    prepared_manifest_updates = prepare_manifest_extracted_updates(
         manifest.get("extracted_updates", {}) or {},
+        agent_config,
+        schema,
+    )
+
+    safe_manifest_updates = filter_manifest_updates(
+        prepared_manifest_updates,
         agent_config,
     )
 
@@ -1212,6 +1504,7 @@ def unified_manifest_node(state: AgentState):
         variables,
         safe_manifest_updates,
         safe_manifest_deletions,
+        assistant_config=agent_config,
     )
 
     return {
@@ -1224,6 +1517,9 @@ def unified_manifest_node(state: AgentState):
 
 def decide_after_manifest(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
 
     if should_use_simple_response(state):
         return "simple_response"
@@ -1275,6 +1571,9 @@ def retrieve_memory_node(state: AgentState):
 
 def decide_after_memory(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
 
     if manifest.get("needs_knowledge"):
         return "retrieve_knowledge"
@@ -1331,6 +1630,9 @@ def retrieve_knowledge_node(state: AgentState):
 
 def decide_after_knowledge(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
 
     if manifest.get("needs_tool"):
         return "tool_execution"
@@ -1709,8 +2011,9 @@ def tool_execution_node(state: AgentState):
 
         updated_variables = apply_subagent_variable_patch(
             vars_in,
-            result.variable_updates or {},
+            prepare_variable_updates_for_patch(result.variable_updates or {}),
             result.clear_variables or [],
+            assistant_config=agent_config,
         )
 
         return result, updated_variables, result.observations or []
