@@ -3078,6 +3078,196 @@ def run_parallel_direct_tool_requests(
     }
 
 
+
+def get_post_subagent_chain_rules(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return config-driven post-subagent chain rules.
+
+    Purpose:
+    Sometimes the manifest selects only the first step of a dependent workflow
+    (for example, a location lookup) even though the same user turn also asks
+    for a downstream action that becomes executable after the first subagent
+    updates variables. This rule family allows graph.py to run the downstream
+    configured subagent in the same turn after the primary result.
+
+    Preferred config keys:
+    - post_subagent_chain_rules
+    - post_execution_chain_rules
+    - dependent_subagent_chains
+
+    The derived compatibility rule uses configured subagent availability only;
+    it does not embed user-facing phrases, branch names, dates, slots, or
+    business wording. It can be disabled with:
+      routing_guardrails.derive_post_subagent_chains_from_subagent_config=false
+    """
+    raw = agent_config.get("post_subagent_chain_rules")
+    if not isinstance(raw, list):
+        raw = agent_config.get("post_execution_chain_rules")
+    if not isinstance(raw, list):
+        raw = agent_config.get("dependent_subagent_chains")
+
+    rules = [item for item in (raw or []) if isinstance(item, dict)] if isinstance(raw, list) else []
+    if rules:
+        return rules
+
+    derived_enabled = get_config_bool(
+        agent_config,
+        "routing_guardrails.derive_post_subagent_chains_from_subagent_config",
+        True,
+    )
+
+    if not derived_enabled:
+        return []
+
+    location_config = get_subagent_config(agent_config, "location")
+    booking_config = get_subagent_config(agent_config, "booking")
+
+    if not location_config or not booking_config:
+        return []
+
+    return [{
+        "id": "derived_post_location_booking_chain",
+        "enabled": True,
+        "source_subagent_id": "location",
+        "target_subagent_id": "booking",
+        "only_when_target_not_already_run": True,
+        "only_when_no_configured_chain_executed": True,
+        "requires_known_branch": True,
+        "requires_date_from_subagent": "booking",
+        "target_must_handle": True,
+        "response_strategy_append": (
+            "After the configured location subagent resolves a branch, the same user turn "
+            "still contains a configured date expression. Give the configured booking "
+            "subagent a chance to handle the downstream availability/booking step in the "
+            "same turn. Use the target subagent result only if it handles the turn."
+        ),
+    }]
+
+
+def post_subagent_chain_rule_matches(
+    rule: Dict[str, Any],
+    source_subagent_id: str,
+    already_run: set,
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    configured_chain_executed: bool,
+) -> bool:
+    if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+        return False
+
+    source_id = unify_subagent_id(str(rule.get("source_subagent_id") or rule.get("primary_subagent_id") or "").strip())
+    target_id = unify_subagent_id(str(rule.get("target_subagent_id") or rule.get("chained_subagent_id") or "").strip())
+
+    if not source_id or not target_id:
+        return False
+
+    if unify_subagent_id(source_subagent_id) != source_id:
+        return False
+
+    if rule.get("only_when_target_not_already_run", True) and target_id in already_run:
+        return False
+
+    if rule.get("only_when_no_configured_chain_executed", True) and configured_chain_executed:
+        return False
+
+    if target_id not in SUBAGENT_EXECUTORS:
+        return False
+
+    target_config = get_subagent_config(agent_config, target_id)
+    if isinstance(target_config, dict) and target_config.get("enabled", True) is False:
+        return False
+
+    if rule.get("requires_known_branch", False) and not has_known_branch(variables):
+        return False
+
+    required_variable_paths = rule.get("required_variable_paths", [])
+    if isinstance(required_variable_paths, list):
+        for path in required_variable_paths:
+            if not str(path or "").strip():
+                continue
+            if not is_present(deep_get(variables, str(path).strip(), "")):
+                return False
+
+    blocked_stage_values = {
+        str(item or "").strip()
+        for item in (rule.get("blocked_stage_values", []) or [])
+        if str(item or "").strip()
+    }
+    stage_paths = rule.get("stage_paths", [])
+    if blocked_stage_values and isinstance(stage_paths, list):
+        for path in stage_paths:
+            value = str(deep_get(variables, str(path or "").strip(), "") or "").strip()
+            if value and value in blocked_stage_values:
+                return False
+
+    intent_labels = rule.get("requires_any_intent_labels", [])
+    normalization = agent_config.get("normalization", {}) or {}
+    if isinstance(intent_labels, list) and intent_labels:
+        if not manifest_matches_any_intent_label(manifest, intent_labels, normalization):
+            return False
+
+    all_sources = rule.get("requires_all_message_phrase_sources", [])
+    if isinstance(all_sources, list):
+        for source in all_sources:
+            if not isinstance(source, dict):
+                continue
+            if not message_matches_phrase_source(message, agent_config, source):
+                return False
+
+    any_sources = rule.get("requires_any_message_phrase_sources", [])
+    if isinstance(any_sources, list) and any_sources:
+        if not any(
+            isinstance(source, dict) and message_matches_phrase_source(message, agent_config, source)
+            for source in any_sources
+        ):
+            return False
+
+    date_subagent = str(rule.get("requires_date_from_subagent") or "").strip()
+    if date_subagent and not message_has_date_for_subagent(message, agent_config, date_subagent):
+        return False
+
+    return True
+
+
+def append_post_chain_strategy_to_manifest(
+    manifest: Dict[str, Any],
+    rule: Dict[str, Any],
+    source_subagent_id: str,
+    target_subagent_id: str,
+) -> Dict[str, Any]:
+    patched = dict(manifest or {})
+
+    strategy_append = str(rule.get("response_strategy_append") or "").strip()
+    if strategy_append:
+        previous_strategy = str(patched.get("response_strategy") or "").strip()
+        patched["response_strategy"] = (
+            f"{previous_strategy}\n{strategy_append}".strip()
+            if previous_strategy
+            else strategy_append
+        )
+
+    synthesis = patched.get("response_synthesis")
+    if not isinstance(synthesis, dict):
+        synthesis = {}
+
+    applied = synthesis.get("post_subagent_chain_applied")
+    if not isinstance(applied, list):
+        applied = []
+
+    applied.append({
+        "rule_id": str(rule.get("id") or ""),
+        "source_subagent_id": source_subagent_id,
+        "target_subagent_id": target_subagent_id,
+    })
+
+    synthesis["post_subagent_chain_applied"] = applied
+    patched["response_synthesis"] = synthesis
+
+    return patched
+
+
 def tool_execution_node(state: AgentState):
     manifest = state.get("manifest", {}) or {}
     agent_config = state.get("agent_config", {}) or {}
@@ -3153,6 +3343,8 @@ def tool_execution_node(state: AgentState):
     primary_result = None
     chained_result = None
 
+    configured_chain_executed = False
+
     if selected_id:
         primary_result, variables, obs1 = run_executor(selected_id, variables)
         all_observations.extend(obs1)
@@ -3174,6 +3366,7 @@ def tool_execution_node(state: AgentState):
                 all_observations.extend(obs2)
 
                 if chained_result and chained_result.handled:
+                    configured_chain_executed = True
                     already_run.add(chained_id)
                     executed_results.append({
                         "intent_id": "chained",
@@ -3184,6 +3377,58 @@ def tool_execution_node(state: AgentState):
                         "tool_calls_used": chained_result.tool_calls_used or 0,
                         "observations": obs2,
                     })
+
+            for post_rule in get_post_subagent_chain_rules(agent_config):
+                if not post_subagent_chain_rule_matches(
+                    rule=post_rule,
+                    source_subagent_id=selected_id,
+                    already_run=already_run,
+                    manifest=manifest,
+                    message=message,
+                    agent_config=agent_config,
+                    variables=variables,
+                    configured_chain_executed=configured_chain_executed,
+                ):
+                    continue
+
+                target_id = unify_subagent_id(
+                    str(
+                        post_rule.get("target_subagent_id")
+                        or post_rule.get("chained_subagent_id")
+                        or ""
+                    ).strip()
+                )
+
+                if not target_id or target_id in already_run:
+                    continue
+
+                post_result, variables, post_obs = run_executor(target_id, variables)
+                all_observations.extend(post_obs)
+
+                target_must_handle = post_rule.get("target_must_handle", True)
+                if not post_result or not post_result.handled:
+                    if target_must_handle:
+                        continue
+                    already_run.add(target_id)
+                    continue
+
+                already_run.add(target_id)
+                executed_results.append({
+                    "intent_id": str(post_rule.get("id") or "post_chain"),
+                    "subagent": target_id,
+                    "answer_draft": post_result.answer,
+                    "action": post_result.action,
+                    "notes": post_result.notes,
+                    "tool_calls_used": post_result.tool_calls_used or 0,
+                    "observations": post_obs,
+                })
+
+                manifest = append_post_chain_strategy_to_manifest(
+                    manifest=manifest,
+                    rule=post_rule,
+                    source_subagent_id=selected_id,
+                    target_subagent_id=target_id,
+                )
 
     multi_intents_list = manifest.get("multi_intents", [])
     if not isinstance(multi_intents_list, list):
@@ -3251,6 +3496,8 @@ def tool_execution_node(state: AgentState):
             "variables": variables,
             "tool_result": tool_result,
             "multi_tool_results": executed_results,
+            "manifest": manifest,
+            "response_synthesis": manifest.get("response_synthesis", {}),
         }
 
     if selected_id and all_observations:
