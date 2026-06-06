@@ -1786,7 +1786,9 @@ class BookingSubagent:
 
         return False
 
-    def next_weekday(today, weekday_index: int, force_next_week: bool = False):
+    def next_weekday(self, today, weekday_index: int, force_next_week: bool = False):
+        # Instance method because resolve_date_text calls self.next_weekday(...).
+        # Keep this signature stable to avoid TypeError during weekday normalization.
         days_ahead = weekday_index - today.weekday()
 
         if days_ahead < 0:
