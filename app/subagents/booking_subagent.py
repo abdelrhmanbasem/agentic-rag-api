@@ -330,6 +330,17 @@ class BookingSubagent:
 
         stage = deep_get(variables, stage_path, stage)
 
+        no_pending_continuation_result = self.handle_no_pending_booking_continuation_if_needed(
+            context=context,
+            config=config,
+            variables=variables,
+            observations=observations,
+            tool_calls_used=tool_calls_used
+        )
+
+        if no_pending_continuation_result:
+            return no_pending_continuation_result
+
         awaiting_confirmation_stage = config.get("stages", {}).get(
             "awaiting_confirmation",
             "awaiting_confirmation"
@@ -490,6 +501,178 @@ class BookingSubagent:
             )
 
         return SubagentResult(handled=False)
+
+    def handle_no_pending_booking_continuation_if_needed(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        observations: List[Dict[str, Any]],
+        tool_calls_used: int
+    ) -> Optional[SubagentResult]:
+        """
+        Prevent customer-detail / confirmation turns from continuing a booking
+        when no slot has actually been selected.
+
+        This is intentionally generic and config-driven:
+        - it does not know domain fields such as vehicle/plate/etc.
+        - it uses configured confirmation phrases, configured customer-detail
+          markers, configured stages, required_before_list_slots, and templates.
+        - it preserves any details that were already extracted into variables,
+          but it does not ask for more customer details until a pending slot
+          exists.
+        """
+        normalization = context.assistant_config.get("normalization", {})
+        message = str(context.user_message or "")
+
+        if self.has_pending_booking_selection(variables, config):
+            return None
+
+        if self.is_booking_completed(variables, config):
+            return None
+
+        is_continuation = (
+            matches_any(message, config.get("confirmation_phrases", []), normalization)
+            or self.has_customer_detail_signal(message, config, normalization)
+            or self.message_contains_time_intent_without_stored_context(
+                message,
+                config,
+                normalization
+            )
+        )
+
+        if not is_continuation:
+            return None
+
+        # If the latest message itself is a fresh availability request with
+        # branch/date context, let the normal availability path handle it.
+        if self.is_booking_or_availability_request(
+            context=context,
+            config=config,
+            variables=variables
+        ):
+            date_text = self.extract_date_text(
+                message=message,
+                config=config,
+                normalization=normalization
+            )
+            if date_text:
+                return None
+
+        stage_path = config.get("stage_path", "booking.stage")
+        stages = config.get("stages", {}) if isinstance(config.get("stages", {}), dict) else {}
+
+        slots = deep_get(variables, config.get("available_slots_path", "available_slots"), [])
+        if not isinstance(slots, list):
+            slots = []
+
+        slots_found = deep_get(variables, "slots_found")
+        known_branch = self.get_known_branch(variables, config)
+        appointment_date = (
+            deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+        )
+
+        template_key = "choose_slot_again"
+        notes = "booking continuation blocked because no selected slot exists"
+
+        if slots:
+            template_key = "choose_slot_again"
+            if stage_path:
+                variables = apply_variable_patch(
+                    variables,
+                    {stage_path: stages.get("slot_selection", "slot_selection")},
+                    []
+                )
+            notes = "customer detail/confirmation arrived before slot selection"
+
+        elif slots_found is False and known_branch and appointment_date:
+            template_key = "no_slots"
+            if stage_path:
+                variables = apply_variable_patch(
+                    variables,
+                    {
+                        stage_path: (
+                            config.get("no_slots_stage")
+                            or stages.get("awaiting_date")
+                            or "awaiting_date"
+                        )
+                    },
+                    []
+                )
+            notes = "customer tried to continue after a no-slots result"
+
+        else:
+            required_for_slots = config.get("required_before_list_slots", [])
+            missing_for_slots = get_missing_paths(required_for_slots, variables)
+            if missing_for_slots:
+                answer = self.render_missing_question(
+                    config=config,
+                    variables=variables,
+                    missing=missing_for_slots,
+                    message=message
+                )
+
+                return SubagentResult(
+                    handled=True,
+                    action="ask_user",
+                    answer=answer,
+                    variable_updates=variables,
+                    selected_subagent=self.name,
+                    observations=observations,
+                    tool_calls_used=tool_calls_used,
+                    notes="customer tried to continue booking before slot prerequisites were present"
+                )
+
+            template_key = "choose_slot_again"
+
+        templates = config.get("templates", {}) if isinstance(config.get("templates", {}), dict) else {}
+        answer = render_template(
+            templates.get(template_key, templates.get("missing_fields", "")),
+            {
+                "variables": variables,
+                "message": message,
+            }
+        )
+
+        return SubagentResult(
+            handled=True,
+            action="ask_user",
+            answer=answer,
+            variable_updates=variables,
+            selected_subagent=self.name,
+            observations=observations,
+            tool_calls_used=tool_calls_used,
+            notes=notes
+        )
+
+
+    def has_pending_booking_selection(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> bool:
+        pending_path = str(config.get("pending_booking_path") or "booking.pending")
+        pending = deep_get(variables, pending_path)
+
+        if not isinstance(pending, dict):
+            return False
+
+        time_value = str(pending.get("time") or pending.get("appointment_time") or "").strip()
+        branch_value = str(
+            pending.get("branch")
+            or self.get_known_branch(variables, config)
+            or ""
+        ).strip()
+        date_value = str(
+            pending.get("date")
+            or deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+            or ""
+        ).strip()
+
+        return bool(time_value and branch_value and date_value)
+
 
     def handle_awaiting_confirmation(
         self,
