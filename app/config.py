@@ -108,6 +108,13 @@ if CHUNK_OVERLAP_CHARS > CHUNK_CHARS // 2:
 
 MAX_OUTPUT_TOKENS = env_int("MAX_OUTPUT_TOKENS", 750)
 
+# Code expert 6.12 fix:
+# Used by graph.py quality_llm:
+# quality_llm = llm(MODEL_QUALITY, temperature=0, max_tokens=MAX_QUALITY_TOKENS)
+# This prevents the quality guard from producing unexpectedly long outputs while
+# keeping the value configurable per deployment.
+MAX_QUALITY_TOKENS = env_int("MAX_QUALITY_TOKENS", 600)
+
 # In the expert architecture, quality guard should be enabled by default.
 QUALITY_GUARD_ENABLED = env_bool("QUALITY_GUARD_ENABLED", default=True)
 
@@ -141,6 +148,12 @@ def validate_runtime_config() -> None:
 
     if CHUNK_OVERLAP_CHARS >= CHUNK_CHARS:
         raise RuntimeError("CHUNK_OVERLAP_CHARS must be smaller than CHUNK_CHARS.")
+
+    if MAX_OUTPUT_TOKENS <= 0:
+        missing.append("MAX_OUTPUT_TOKENS")
+
+    if MAX_QUALITY_TOKENS <= 0:
+        missing.append("MAX_QUALITY_TOKENS")
 
     if is_production():
         if MOCK_MODE:
@@ -184,6 +197,7 @@ def runtime_config_summary() -> dict:
         "chunk_chars": CHUNK_CHARS,
         "chunk_overlap_chars": CHUNK_OVERLAP_CHARS,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "max_quality_tokens": MAX_QUALITY_TOKENS,
         "estimate_chars_per_token": ESTIMATE_CHARS_PER_TOKEN,
         "has_app_secret": bool(APP_SECRET),
         "has_openai_api_key": bool(OPENAI_API_KEY),
