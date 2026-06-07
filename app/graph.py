@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.35-runtime-controls-no-hardcoding-graph
+# Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -3239,7 +3239,7 @@ def decide_after_knowledge(state: AgentState) -> str:
 def subagent_history_from_messages(messages: Sequence[BaseMessage]) -> List[Dict[str, str]]:
     output: List[Dict[str, str]] = []
 
-    for item in messages[-12:]:
+    for item in messages[-MANIFEST_HISTORY_LIMIT:]:
         if isinstance(item, HumanMessage):
             output.append({"role": "user", "content": item.content})
         elif isinstance(item, AIMessage):
