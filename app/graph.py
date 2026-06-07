@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.32-semantic-extraction-executor-write-no-hardcoding
+# Architecture batch: 6.35-runtime-controls-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -22,8 +22,20 @@ from app.config import (
     MODEL_EXTRACTION,
     OPENAI_API_KEY,
     MAX_OUTPUT_TOKENS,
+    MAX_RESPONSE_TOKENS,
+    MAX_PLANNER_TOKENS,
+    MAX_SUBAGENT_TOKENS,
+    MAX_EXTRACTION_TOKENS,
+    MAX_MEMORY_TOKENS,
     MAX_QUALITY_TOKENS,
     QUALITY_GUARD_ENABLED,
+    SEMANTIC_EXTRACTION_GLOBAL_ENABLED,
+    SEMANTIC_EXTRACTION_MIN_CONFIDENCE,
+    SEMANTIC_EXTRACTION_MAX_FIELDS,
+    SEMANTIC_EXTRACTION_MAX_WORKERS,
+    SEMANTIC_EXTRACTION_TIMEOUT_SECONDS,
+    SIMPLE_RESPONSE_HISTORY_LIMIT,
+    MANIFEST_HISTORY_LIMIT,
 )
 from app.rag import search_knowledge, compress_knowledge, search_memories
 from app.db import get_rag_cache, save_rag_cache
@@ -113,14 +125,14 @@ class QualityDecision(BaseModel):
     energy_issue: str = ""
 
 
-manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=1600).bind(
+manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=MAX_PLANNER_TOKENS).bind(
     response_format={"type": "json_object"}
 )
 subagent_llm = llm(MODEL_SUBAGENT, temperature=0.15).with_structured_output(SubagentAnalysis)
 subagent_llm_raw = llm(MODEL_SUBAGENT, temperature=0.15, max_tokens=700)
-response_llm = llm(MODEL_RESPONSE, temperature=0.45, max_tokens=MAX_OUTPUT_TOKENS)
+response_llm = llm(MODEL_RESPONSE, temperature=0.3, max_tokens=MAX_RESPONSE_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0, max_tokens=MAX_QUALITY_TOKENS).with_structured_output(QualityDecision)
-semantic_extraction_llm = llm(MODEL_EXTRACTION, temperature=0, max_tokens=500).bind(
+semantic_extraction_llm = llm(MODEL_EXTRACTION, temperature=0, max_tokens=MAX_EXTRACTION_TOKENS).bind(
     response_format={"type": "json_object"}
 )
 
@@ -1390,6 +1402,9 @@ def get_semantic_extraction_config(agent_config: Dict[str, Any]) -> Dict[str, An
 
 
 def semantic_extraction_is_enabled(agent_config: Dict[str, Any]) -> bool:
+    if not SEMANTIC_EXTRACTION_GLOBAL_ENABLED:
+        return False
+
     cfg = get_semantic_extraction_config(agent_config)
     return bool(cfg.get("enabled", False))
 
@@ -4836,7 +4851,7 @@ Tone guidance for this message:
 {state.get('language_instruction', '')}
 """
 
-    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
+    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-SIMPLE_RESPONSE_HISTORY_LIMIT:])
     dynamic_response_llm = llm(
         MODEL_RESPONSE,
         temperature=get_response_temperature(manifest, {}),
@@ -5018,7 +5033,7 @@ Template policy (if any): {safe_json(compact_template_response_policy(agent_conf
 {state.get('language_instruction', '')}
 """
 
-    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
+    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-SIMPLE_RESPONSE_HISTORY_LIMIT:])
     dynamic_response_llm = llm(
         MODEL_RESPONSE,
         temperature=get_response_temperature(manifest, tool_result),
