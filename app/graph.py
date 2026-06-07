@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.28-preextract-pending-required-details-no-hardcoding
+# Architecture batch: 6.31-semantic-extraction-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -19,6 +19,7 @@ from app.config import (
     MODEL_SUBAGENT,
     MODEL_RESPONSE,
     MODEL_QUALITY,
+    MODEL_EXTRACTION,
     OPENAI_API_KEY,
     MAX_OUTPUT_TOKENS,
     MAX_QUALITY_TOKENS,
@@ -119,6 +120,9 @@ subagent_llm = llm(MODEL_SUBAGENT, temperature=0.15).with_structured_output(Suba
 subagent_llm_raw = llm(MODEL_SUBAGENT, temperature=0.15, max_tokens=700)
 response_llm = llm(MODEL_RESPONSE, temperature=0.45, max_tokens=MAX_OUTPUT_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0, max_tokens=MAX_QUALITY_TOKENS).with_structured_output(QualityDecision)
+semantic_extraction_llm = llm(MODEL_EXTRACTION, temperature=0, max_tokens=500).bind(
+    response_format={"type": "json_object"}
+)
 
 
 SUBAGENT_EXECUTORS = {
@@ -1097,21 +1101,45 @@ def apply_routing_guardrails(
 
     patched["extracted_updates"] = extracted_updates
 
+    guardrail_cfg = agent_config.get("routing_guardrails", {})
+    visit_guardrail_cfg = (
+        guardrail_cfg.get("visit_intent_after_diagnostics", {})
+        if isinstance(guardrail_cfg, dict)
+        else {}
+    )
+    if not isinstance(visit_guardrail_cfg, dict):
+        visit_guardrail_cfg = {}
+
+    brief_tone = str(
+        visit_guardrail_cfg.get("brief_tone")
+        or agent_config.get("language_policy", "")
+        or ""
+    ).strip() or "warm and natural"
+
+    brief_language = str(
+        visit_guardrail_cfg.get("brief_language")
+        or ""
+    ).strip() or "same as user"
+
+    configured_must_not_do = visit_guardrail_cfg.get("brief_must_not_do", [])
+    if not isinstance(configured_must_not_do, list) or not configured_must_not_do:
+        configured_must_not_do = agent_config.get("routing_guardrail_default_must_not_do", [])
+    if not isinstance(configured_must_not_do, list):
+        configured_must_not_do = []
+
     brief = patched.get("response_brief")
     if not isinstance(brief, dict):
         brief = {}
 
-    brief["tone"] = "natural professional Egyptian Arabic"
-    brief["language"] = "Egyptian Arabic"
-    brief["reply_length"] = "short"
+    brief["tone"] = brief_tone
+    brief["language"] = brief_language
+    brief["reply_length"] = str(visit_guardrail_cfg.get("brief_reply_length") or "short")
     brief["next_move"] = next_move
     brief["must_do"] = append_unique(brief.get("must_do", []), must_do)
-    brief["must_not_do"] = append_unique(brief.get("must_not_do", []), [
-        "do not continue troubleshooting",
-        "do not ask what type of sound again",
-        "do not invent branch or slot",
-        "do not use formal MSA wording"
-    ])
+    brief["must_not_do"] = append_unique(
+        brief.get("must_not_do", []),
+        [str(item) for item in configured_must_not_do if str(item or "").strip()],
+    )
 
     patched["response_brief"] = brief
 
@@ -1354,6 +1382,344 @@ def prepare_variable_updates_for_patch(updates: Dict[str, Any]) -> Dict[str, Any
 
 
 
+# ── SEMANTIC VARIABLE EXTRACTION NODE ────────────────────────────────────────
+
+def get_semantic_extraction_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = agent_config.get("semantic_variable_extraction", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def semantic_extraction_is_enabled(agent_config: Dict[str, Any]) -> bool:
+    cfg = get_semantic_extraction_config(agent_config)
+    return bool(cfg.get("enabled", False))
+
+
+def field_is_required_now(
+    field: Dict[str, Any],
+    variables: Dict[str, Any],
+    manifest: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> bool:
+    """
+    Evaluate whether a semantic extraction field is required now.
+
+    Zero hardcoding:
+    - field target path comes from field.target_path
+    - stage path comes from field.required_when_stage_path
+    - stage values come from field.required_when_stages
+    - variable predicates come from field.required_when_paths
+    - manifest predicates come from field.required_when_manifest
+    """
+    if not isinstance(field, dict):
+        return False
+
+    target_path = str(field.get("target_path") or "").strip()
+    if not target_path:
+        return False
+
+    existing = deep_get(variables, target_path)
+    if existing not in [None, "", [], {}]:
+        return False
+
+    if field.get("always_required", False):
+        return True
+
+    conditions_met: List[bool] = []
+
+    stage_path = str(field.get("required_when_stage_path") or "").strip()
+    required_stages = field.get("required_when_stages", [])
+
+    if stage_path and isinstance(required_stages, list) and required_stages:
+        current_stage = str(deep_get(variables, stage_path) or "").strip()
+        stage_values = {
+            str(stage_value or "").strip()
+            for stage_value in required_stages
+            if str(stage_value or "").strip()
+        }
+        if current_stage:
+            conditions_met.append(current_stage in stage_values)
+
+    path_conditions = field.get("required_when_paths", [])
+    if isinstance(path_conditions, list):
+        for condition in path_conditions:
+            if not isinstance(condition, dict):
+                continue
+
+            check_path = str(condition.get("path") or "").strip()
+            if not check_path:
+                continue
+
+            value = deep_get(variables, check_path)
+
+            if condition.get("must_be_present", False):
+                conditions_met.append(value not in [None, "", [], {}])
+
+            if condition.get("must_be_absent", False):
+                conditions_met.append(value in [None, "", [], {}])
+
+            equals_values = condition.get("equals", None)
+            if equals_values is not None:
+                if not isinstance(equals_values, list):
+                    equals_values = [equals_values]
+                normalized_value = str(value or "").strip().lower()
+                allowed = {
+                    str(item or "").strip().lower()
+                    for item in equals_values
+                }
+                conditions_met.append(normalized_value in allowed)
+
+            not_in_values = condition.get("not_in", [])
+            if isinstance(not_in_values, list) and not_in_values:
+                normalized_value = str(value or "").strip().lower()
+                blocked = {
+                    str(item or "").strip().lower()
+                    for item in not_in_values
+                }
+                conditions_met.append(normalized_value not in blocked)
+
+    manifest_conditions = field.get("required_when_manifest", {})
+    if isinstance(manifest_conditions, dict):
+        for manifest_key, expected_value in manifest_conditions.items():
+            key_text = str(manifest_key or "").strip()
+            if not key_text:
+                continue
+
+            actual = manifest.get(key_text)
+
+            if isinstance(expected_value, list):
+                conditions_met.append(actual in expected_value)
+            else:
+                conditions_met.append(actual == expected_value)
+
+    if not conditions_met:
+        return True
+
+    return all(conditions_met)
+
+
+def build_extraction_prompt(
+    field: Dict[str, Any],
+    message: str,
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> str:
+    normalization = agent_config.get("normalization", {}) or {}
+    digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
+
+    digit_map_desc = ""
+    if isinstance(digit_map, dict) and digit_map:
+        digit_map_desc = (
+            "Digit normalization: apply this mapping → "
+            + ", ".join(f"{key}→{value}" for key, value in list(digit_map.items())[:16])
+        )
+
+    examples_text = ""
+    examples = field.get("examples", [])
+    if isinstance(examples, list) and examples:
+        lines: List[str] = []
+        for example in examples[:4]:
+            if not isinstance(example, dict):
+                continue
+            user_message = str(example.get("user_message") or "").strip()
+            value = str(example.get("value") or "").strip()
+            if user_message and value:
+                lines.append(f'  User said: "{user_message}" → Value: "{value}"')
+        if lines:
+            examples_text = "Examples:\n" + "\n".join(lines)
+
+    compact_vars = compact_variables(variables or {}, max_items=12)
+
+    return (
+        "Extract one specific field from the user message.\n\n"
+        f"Field ID: {field.get('id', '')}\n"
+        f"Description: {field.get('description', '')}\n"
+        f"Output format: {field.get('output_format', '')}\n"
+        f"Validation: {field.get('validation_description', '')}\n"
+        f"{digit_map_desc}\n"
+        f"{examples_text}\n\n"
+        f'User message: "{message}"\n\n'
+        "Known variables (context only; do not repeat these):\n"
+        f"{json.dumps(compact_vars, ensure_ascii=False)}\n\n"
+        "Return JSON only with exactly two keys:\n"
+        '  "found": true if the value is clearly present, false otherwise\n'
+        '  "value": the extracted value in the specified output format, or "" if not found\n'
+        "Do not invent, guess, infer absent values, or include prose."
+    )
+
+
+def run_single_field_extraction(
+    field: Dict[str, Any],
+    message: str,
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> Optional[str]:
+    prompt_text = build_extraction_prompt(
+        field=field,
+        message=message,
+        variables=variables,
+        agent_config=agent_config,
+    )
+
+    system_msg = str(
+        field.get("extractor_system_prompt")
+        or agent_config.get("semantic_extraction_system_prompt")
+        or "You are a precise field extractor. Return only valid JSON."
+    ).strip()
+
+    try:
+        response = semantic_extraction_llm.invoke([
+            SystemMessage(content=system_msg),
+            HumanMessage(content=prompt_text),
+        ])
+        raw = response.content if hasattr(response, "content") else str(response)
+        data = json.loads(raw)
+
+        if not isinstance(data, dict):
+            return None
+
+        found = bool(data.get("found", False))
+        value = str(data.get("value") or "").strip()
+
+        if found and value:
+            return value
+
+    except Exception:
+        return None
+
+    return None
+
+
+def semantic_extraction_node(state: AgentState):
+    """
+    Config-driven semantic variable extraction.
+
+    Runs only when semantic_variable_extraction.enabled=true. Each configured
+    field owns its own target path, conditions, prompt wording, examples,
+    validation description, and ask-if-missing text.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+
+    if not semantic_extraction_is_enabled(agent_config):
+        return {}
+
+    cfg = get_semantic_extraction_config(agent_config)
+    fields = cfg.get("fields", [])
+
+    if not isinstance(fields, list) or not fields:
+        return {}
+
+    variables = state.get("variables", {}) or {}
+    manifest = state.get("manifest", {}) or {}
+    message = last_user_message(state)
+
+    if not str(message or "").strip():
+        return {}
+
+    required_fields = [
+        field
+        for field in fields
+        if isinstance(field, dict)
+        and field_is_required_now(field, variables, manifest, agent_config)
+    ]
+
+    if not required_fields:
+        return {}
+
+    extracted_updates: Dict[str, Any] = {}
+    missing_asks: List[str] = []
+
+    try:
+        max_workers = int(cfg.get("max_parallel_extractions", 3) or 3)
+    except Exception:
+        max_workers = 3
+    max_workers = max(1, min(max_workers, len(required_fields)))
+
+    def extract_one(field: Dict[str, Any]):
+        target = str(field.get("target_path") or "").strip()
+        ask = str(field.get("ask_if_missing") or "").strip()
+
+        if not target:
+            return field, target, None, ask
+
+        value = run_single_field_extraction(
+            field=field,
+            message=message,
+            variables=variables,
+            agent_config=agent_config,
+        )
+
+        return field, target, value, ask
+
+    if len(required_fields) > 1 and max_workers > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(extract_one, field): field
+                for field in required_fields
+            }
+            for future in as_completed(future_map):
+                try:
+                    _, target, value, ask = future.result(timeout=20)
+                    if value and target:
+                        extracted_updates[target] = value
+                    elif ask:
+                        missing_asks.append(ask)
+                except Exception:
+                    continue
+    else:
+        for field in required_fields:
+            _, target, value, ask = extract_one(field)
+            if value and target:
+                extracted_updates[target] = value
+            elif ask:
+                missing_asks.append(ask)
+
+    if not extracted_updates and not missing_asks:
+        return {}
+
+    result: Dict[str, Any] = {}
+
+    if extracted_updates:
+        result["variables"] = merge_variables_intelligently(
+            existing=variables,
+            incoming=extracted_updates,
+            deletions=[],
+            agent_config=agent_config,
+        )
+
+    if missing_asks and not extracted_updates:
+        first_field = required_fields[0]
+        manifest_patch = dict(manifest)
+        brief = dict(manifest_patch.get("response_brief", {}) or {})
+        if not str(brief.get("next_move") or "").strip():
+            brief["next_move"] = missing_asks[0]
+
+        manifest_patch["response_brief"] = brief
+        manifest_patch["should_ask_question"] = True
+        manifest_patch["question_goal"] = str(
+            first_field.get("question_goal")
+            or f"collect_{first_field.get('id', 'field')}"
+        )
+        result["manifest"] = manifest_patch
+
+    return result
+
+
+def should_route_to_semantic_extraction(state: AgentState) -> bool:
+    agent_config = state.get("agent_config", {}) or {}
+
+    if not semantic_extraction_is_enabled(agent_config):
+        return False
+
+    manifest = state.get("manifest", {}) or {}
+
+    return bool(
+        manifest.get("needs_tool")
+        or manifest_has_parallel_tool_requests(manifest)
+        or active_deterministic_flow_subagent_id_from_state(state)
+    )
+
+
+
 def graph_normalize_digits(text: str, digit_map: Dict[str, str]) -> str:
     return "".join(digit_map.get(ch, ch) for ch in str(text or ""))
 
@@ -1557,10 +1923,13 @@ def booking_pending_requires_executor(
 
     active_stages = booking_config.get("extraction_active_stages", [])
     if not isinstance(active_stages, list) or not active_stages:
+        stages_map = booking_config.get("stages", {})
+        if not isinstance(stages_map, dict):
+            stages_map = {}
         active_stages = [
-            booking_config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details"),
-            booking_config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"),
-            "slot_selection",
+            value
+            for value in stages_map.values()
+            if str(value or "").strip()
         ]
 
     active_stage_set = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
@@ -2294,14 +2663,19 @@ def unified_manifest_node(state: AgentState):
         (
             "user",
             "=== ASSISTANT MANIFEST CARD ===\n{manifest_card}\n\n"
-            "=== CONVERSATION SUMMARY ===\n{summary}\n\n"
-            "=== WHAT IS ALREADY KNOWN (do not ask for these again) ===\n{variables}\n\n"
-            "=== LAST TOOL RESULT (if any) ===\n{tool_result}\n\n"
+            "=== CONVERSATION SUMMARY (what happened before) ===\n{summary}\n\n"
+            "=== WHAT IS ALREADY KNOWN — DO NOT ASK FOR THESE AGAIN ===\n"
+            "{variables}\n\n"
+            "=== LAST TOOL RESULT ===\n{tool_result}\n\n"
             "=== LATEST USER MESSAGE ===\n{message}\n\n"
-            "Think step by step about what the user means and needs. Then return the manifest JSON. "
-            "selected_subagent_id must be one of the configured subagent ids. "
-            "missing_tool_inputs must only list fields absent from BOTH the message AND the known variables above. "
-            "extracted_updates must only contain NEW or CHANGED soft user info not already in variables.",
+            "Think step by step:\n"
+            "1. What does the user MEAN (not just what they literally typed)?\n"
+            "2. What is already known from the variables above?\n"
+            "3. What is the minimum needed to move forward?\n"
+            "4. Which executor and tools are needed?\n"
+            "5. What should missing_tool_inputs contain? "
+            "   (Only fields absent from BOTH the message AND the known variables.)\n"
+            "Then return the manifest JSON.",
         ),
     ])
 
@@ -2368,6 +2742,22 @@ def unified_manifest_node(state: AgentState):
             and not normalize_parallel_tool_requests(manifest)
         )
 
+        _raw_updates = manifest.get("extracted_updates", {}) or {}
+        _prepared_retry_updates = prepare_manifest_extracted_updates(
+            _raw_updates,
+            agent_config,
+            schema,
+        )
+        _filtered_retry_updates = filter_manifest_updates(
+            _prepared_retry_updates,
+            agent_config,
+        )
+        _update_strip_ratio = (
+            (len(_prepared_retry_updates) - len(_filtered_retry_updates)) / max(len(_prepared_retry_updates), 1)
+            if _prepared_retry_updates
+            else 0.0
+        )
+
         should_retry_full = (
             bool(manifest.get("needs_full_manifest"))
             or manifest_confidence(manifest) < 0.65
@@ -2377,6 +2767,7 @@ def unified_manifest_node(state: AgentState):
             or (manifest.get("chained_subagent_id") and not manifest.get("selected_subagent_id"))
             or _parallel_declared_but_broken
             or (manifest_has_multi_intents(manifest) and not manifest.get("selected_subagent_id") and not _raw_parallel)
+            or _update_strip_ratio > 0.4
         )
 
         if should_retry_full:
@@ -2503,12 +2894,6 @@ def unified_manifest_node(state: AgentState):
 def decide_after_manifest(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
-    if active_deterministic_flow_subagent_id_from_state(state):
-        return "tool_execution"
-
-    if manifest_has_parallel_tool_requests(manifest):
-        return "tool_execution"
-
     if should_use_simple_response(state):
         return "simple_response"
 
@@ -2518,13 +2903,23 @@ def decide_after_manifest(state: AgentState) -> str:
     if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return "retrieve_knowledge"
 
-    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
+    if should_route_to_semantic_extraction(state):
+        return "semantic_extraction"
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
+
+    if manifest_has_parallel_tool_requests(manifest):
+        return "tool_execution"
+
+    if manifest.get("needs_tool"):
         return "tool_execution"
 
     if manifest.get("needs_subagent_reasoning"):
         return "subagent_reasoning"
 
     return "response"
+
 
 
 def retrieve_memory_node(state: AgentState):
@@ -2560,11 +2955,14 @@ def retrieve_memory_node(state: AgentState):
 def decide_after_memory(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
-    if active_deterministic_flow_subagent_id_from_state(state):
-        return "tool_execution"
-
     if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return "retrieve_knowledge"
+
+    if should_route_to_semantic_extraction(state):
+        return "semantic_extraction"
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
 
     if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
         return "tool_execution"
@@ -2573,6 +2971,7 @@ def decide_after_memory(state: AgentState) -> str:
         return "subagent_reasoning"
 
     return "response"
+
 
 
 def dedupe_strings(values: List[str], limit: int = 6) -> List[str]:
@@ -2802,6 +3201,9 @@ def retrieve_knowledge_node(state: AgentState):
 def decide_after_knowledge(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
+    if should_route_to_semantic_extraction(state):
+        return "semantic_extraction"
+
     if active_deterministic_flow_subagent_id_from_state(state):
         return "tool_execution"
 
@@ -2812,6 +3214,7 @@ def decide_after_knowledge(state: AgentState) -> str:
         return "subagent_reasoning"
 
     return "response"
+
 
 
 def subagent_history_from_messages(messages: Sequence[BaseMessage]) -> List[Dict[str, str]]:
@@ -4429,7 +4832,7 @@ Tone guidance for this message:
 {state.get('language_instruction', '')}
 """
 
-    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-4:])
+    messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-8:])
     dynamic_response_llm = llm(
         MODEL_RESPONSE,
         temperature=get_response_temperature(manifest, {}),
@@ -4629,6 +5032,63 @@ Template policy (if any): {safe_json(compact_template_response_policy(agent_conf
             "pre_quality_guard": True,
         },
     }
+
+def pre_response_guardrail_node(state: AgentState):
+    """
+    Lightweight config-driven post-response guardrail.
+
+    Currently it can append the configured confirmed record ID line when an
+    action has just been confirmed and the response omitted that ID.
+    """
+    answer = str(state.get("final_answer", "") or "").strip()
+
+    if not answer:
+        return {}
+
+    agent_config = state.get("agent_config", {}) or {}
+    safety_config = agent_config.get("answer_safety", {}) or {}
+    if not isinstance(safety_config, dict):
+        safety_config = {}
+
+    append_id = bool(
+        safety_config.get("append_visit_id_on_confirmed_booking", False)
+        or safety_config.get("append_record_id_on_confirmed_action", False)
+    )
+
+    if not append_id:
+        return {}
+
+    if not create_booking_confirmed(state):
+        return {}
+
+    record_id = extract_visit_id_from_state(state)
+
+    if not record_id or record_id in answer:
+        return {}
+
+    id_label = str(
+        safety_config.get("visit_id_label")
+        or safety_config.get("record_id_label")
+        or ""
+    ).strip()
+    id_format = str(
+        safety_config.get("visit_id_format")
+        or safety_config.get("record_id_format")
+        or "{label}: {id}"
+    ).strip()
+
+    if id_label:
+        id_line = id_format.replace("{label}", id_label).replace("{id}", record_id)
+    else:
+        id_line = record_id
+
+    updated_answer = f"{answer}\n{id_line}".strip()
+
+    return {
+        "final_answer": updated_answer,
+        "messages": [AIMessage(content=updated_answer)],
+    }
+
 
 def extract_visit_id_from_state(state: AgentState) -> str:
     agent_config = state.get("agent_config", {}) or {}
@@ -4848,7 +5308,10 @@ def get_tool_action(state: AgentState) -> str:
 
 def get_booking_stage(state: AgentState) -> str:
     variables = state.get("variables", {}) or {}
-    return str(deep_get(variables, "booking.stage", "") or "").strip()
+    agent_config = state.get("agent_config", {}) or {}
+    booking_config = get_subagent_config(agent_config, "booking")
+    stage_path = str(booking_config.get("stage_path") or "booking.stage")
+    return str(deep_get(variables, stage_path, "") or "").strip()
 
 
 def safe_example_for_answer_draft(state: AgentState, answer_draft: str = "") -> str:
@@ -4951,7 +5414,17 @@ def should_use_safe_template_answer(answer: str, state: AgentState) -> bool:
     if answer_draft in missing_labels:
         return True
 
-    if action == "ask_user" and booking_stage in {"awaiting_customer_details", "awaiting_confirmation"}:
+    booking_config_inner = get_subagent_config(agent_config, "booking")
+    safe_template_active_stages = booking_config_inner.get("extraction_active_stages", [])
+    if not isinstance(safe_template_active_stages, list):
+        safe_template_active_stages = []
+    safe_template_stage_set = {
+        str(stage_value or "").strip()
+        for stage_value in safe_template_active_stages
+        if str(stage_value or "").strip()
+    }
+
+    if action == "ask_user" and (not safe_template_stage_set or booking_stage in safe_template_stage_set):
         banned_groups = []
         banned_groups.extend(safety_config.get("banned_pending_booking_terms", []) or [])
         banned_groups.extend(safety_config.get("banned_unconfirmed_booking_terms", []) or [])
@@ -5068,17 +5541,28 @@ def quality_guard_node(state: AgentState):
         (
             "system",
             "You are the quality guardian of a configurable multi-tenant assistant. "
-            "Check the assistant's answer for the user. Run five checks in this exact order:\n\n"
-            "1. CORRECTNESS — Does it contain hallucinated facts, invented slots, IDs, branch names, prices, or confirmations not present in context? If yes: rewrite.\n\n"
-            "2. SAFETY — Does it contain banned terms or claim a booking/action is confirmed when tool_result does not confirm it? If yes: rewrite.\n\n"
-            "3. LANGUAGE — Is it in the right language? Does it expose internal jargon such as RAG, variables, routing, agent, tool, JSON, or hidden logic? If yes: rewrite.\n\n"
-            "4. ENERGY — Does it sound like a warm, confident human expert? Or does it sound like a scripted bot, a list of facts, repeated user wording, overly formal language, or a generic 'Sure/Certainly/Of course' response? If yes: rewrite naturally.\n\n"
-            "5. VARIABLE AWARENESS — Does it ask for something already present in known variables, such as name, phone, branch, date, or selected appointment? If yes: rewrite to use the known value.\n\n"
-            "If all five pass: pass_check=true, revised_answer=''. "
+            "Check the assistant's answer. Run these checks in order:\n\n"
+            "1. CORRECTNESS — Any hallucinated facts, invented slots, IDs, branch names, "
+            "prices, or confirmations not in the provided context? Rewrite if yes.\n\n"
+            "2. SAFETY — Any banned terms, or claiming a confirmed action when "
+            "tool_result does not confirm it? Rewrite if yes.\n\n"
+            "3. LANGUAGE — Wrong language, or exposes internal jargon "
+            "(RAG, variables, routing, agent, tool, JSON)? Rewrite if yes.\n\n"
+            "4. ENERGY — Sounds like a scripted bot, repeats the user's question, "
+            "starts with 'Sure/Certainly/Of course', uses overly formal language, "
+            "or lists facts mechanically instead of speaking naturally? Rewrite if yes.\n\n"
+            "5. VARIABLE AWARENESS — Asks for something already in the known variables "
+            "(name, phone, branch, date, appointment, customer details)? "
+            "Rewrite to use the known value instead of asking again.\n\n"
+            "6. ONE QUESTION — Does the response ask more than one question, even "
+            "phrased indirectly? Rewrite to ask only the single most important thing. "
+            "The second question can wait for the next turn.\n\n"
+            "If all six pass: pass_check=true, revised_answer=''. "
             "If any fail: pass_check=false, revised_answer=the corrected answer. "
-            "Keep revised_answer in the same language as the original and preserve all grounded facts. "
-            "If tool_result.action is ask_user or tool_result.answer_draft is a missing-field label, never rewrite it into completed-action wording. "
-            "If an ID is required by confirmed action policy, do not remove it.",
+            "Keep revised_answer in the same language as the original. "
+            "Preserve all grounded facts when rewriting. "
+            "If tool_result.action is ask_user, never rewrite into completed-action wording. "
+            "If an ID is required by the confirmed action policy, do not remove it.",
         ),
         (
             "user",
@@ -5244,10 +5728,12 @@ workflow.add_node("manifest_node", unified_manifest_node)
 workflow.add_node("retrieve_memory_node", retrieve_memory_node)
 workflow.add_node("retrieve_knowledge_node", retrieve_knowledge_node)
 workflow.add_node("tool_execution_node", tool_execution_node)
+workflow.add_node("semantic_extraction_node", semantic_extraction_node)
 workflow.add_node("subagent_reasoning_node", subagent_reasoning_node)
 workflow.add_node("simple_response_node", simple_response_node)
 workflow.add_node("response_node", response_node)
 workflow.add_node("quality_guard_node", quality_guard_node)
+workflow.add_node("pre_response_guardrail_node", pre_response_guardrail_node)
 workflow.add_node("memory_writer_node", memory_writer_node)
 
 workflow.set_entry_point("manifest_node")
@@ -5260,6 +5746,7 @@ workflow.add_conditional_edges(
         "retrieve_memory": "retrieve_memory_node",
         "retrieve_knowledge": "retrieve_knowledge_node",
         "tool_execution": "tool_execution_node",
+        "semantic_extraction": "semantic_extraction_node",
         "subagent_reasoning": "subagent_reasoning_node",
         "response": "response_node",
     },
@@ -5271,6 +5758,7 @@ workflow.add_conditional_edges(
     {
         "retrieve_knowledge": "retrieve_knowledge_node",
         "tool_execution": "tool_execution_node",
+        "semantic_extraction": "semantic_extraction_node",
         "subagent_reasoning": "subagent_reasoning_node",
         "response": "response_node",
     },
@@ -5281,10 +5769,13 @@ workflow.add_conditional_edges(
     decide_after_knowledge,
     {
         "tool_execution": "tool_execution_node",
+        "semantic_extraction": "semantic_extraction_node",
         "subagent_reasoning": "subagent_reasoning_node",
         "response": "response_node",
     },
 )
+
+workflow.add_edge("semantic_extraction_node", "tool_execution_node")
 
 workflow.add_conditional_edges(
     "tool_execution_node",
@@ -5296,8 +5787,9 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("subagent_reasoning_node", "response_node")
-workflow.add_edge("response_node", "quality_guard_node")
-workflow.add_edge("simple_response_node", "quality_guard_node")
+workflow.add_edge("response_node", "pre_response_guardrail_node")
+workflow.add_edge("simple_response_node", "pre_response_guardrail_node")
+workflow.add_edge("pre_response_guardrail_node", "quality_guard_node")
 workflow.add_edge("quality_guard_node", "memory_writer_node")
 workflow.add_edge("memory_writer_node", END)
 
