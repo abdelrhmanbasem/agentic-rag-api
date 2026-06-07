@@ -1,3 +1,4 @@
+# Architecture batch: 6.33-config-driven-main-error-handling-no-hardcoding
 import copy
 import hashlib
 import json
@@ -38,7 +39,10 @@ ASSISTANTS_DIR.mkdir(parents=True, exist_ok=True)
 SCHEMAS_DIR.mkdir(parents=True, exist_ok=True)
 CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Modular Agentic LangGraph API")
+API_TITLE = os.getenv("API_TITLE", "Modular Agentic LangGraph API")
+API_SERVICE_NAME = os.getenv("API_SERVICE_NAME", "modular-agentic-langgraph-api")
+
+app = FastAPI(title=API_TITLE)
 
 _CONVERSATION_LOCKS: Dict[str, threading.RLock] = {}
 _CONVERSATION_LOCKS_LAST_USED: Dict[str, float] = {}
@@ -717,31 +721,125 @@ def get_conversation_lock(assistant_id: str, conversation_id: str) -> threading.
         return _CONVERSATION_LOCKS[key]
 
 
-def get_error_answer(assistant_config: Dict[str, Any], error_type: str = "graph_error") -> str:
-    fallback = assistant_config.get("fallback_messages", {})
-    if not isinstance(fallback, dict):
-        fallback = {}
 
-    answer = (
-        fallback.get(error_type)
-        or fallback.get("default_final")
+def clean_config_text(value: Any) -> str:
+    if value in [None, "", [], {}]:
+        return ""
+
+    return str(value).strip()
+
+
+def get_config_list(config: Dict[str, Any], path: str, default: Optional[List[Any]] = None) -> List[Any]:
+    value = get_config_path(config, path, default if default is not None else [])
+
+    if isinstance(value, list):
+        return value
+
+    return default if default is not None else []
+
+
+def get_fallback_messages(assistant_config: Dict[str, Any]) -> Dict[str, str]:
+    fallback = assistant_config.get("fallback_messages", {})
+
+    if not isinstance(fallback, dict):
+        return {}
+
+    output: Dict[str, str] = {}
+
+    for key, value in fallback.items():
+        text = clean_config_text(value)
+        if text:
+            output[str(key)] = text
+
+    return output
+
+
+def get_configured_message(
+    assistant_config: Dict[str, Any],
+    path: str,
+    default: str = "",
+    **format_values: Any
+) -> str:
+    value = clean_config_text(get_config_path(assistant_config, path, ""))
+
+    if not value:
+        value = clean_config_text(default)
+
+    if not value:
+        return ""
+
+    if format_values:
+        try:
+            return value.format(**format_values)
+        except Exception:
+            return value
+
+    return value
+
+
+def get_api_error_message(
+    assistant_config: Dict[str, Any],
+    key: str,
+    default: str,
+    **format_values: Any
+) -> str:
+    # API error messages are developer/client-facing, not the assistant's final
+    # answer. Still, assistants can override them in config when desired.
+    return get_configured_message(
+        assistant_config=assistant_config,
+        path=f"api_error_messages.{key}",
+        default=default,
+        **format_values
     )
 
-    if answer:
-        return str(answer)
 
-    language_policy = str(assistant_config.get("language_policy") or "").lower()
-    if "arabic" in language_policy or "egyptian" in language_policy:
-        return "حصلت مشكلة، ممكن تحاول تاني؟"
+def get_error_answer(assistant_config: Dict[str, Any], error_type: str = "graph_error") -> str:
+    """
+    Config-driven final-answer fallback.
 
-    return "Something went wrong. Please try again."
+    User-facing error/empty-answer wording must come from domain_bundle.json
+    under fallback_messages. Python does not infer language-specific wording.
+    The last English fallback is an emergency platform default only.
+    """
+    fallback = get_fallback_messages(assistant_config)
+
+    configured_order = get_config_list(
+        assistant_config,
+        "request_handling.error_fallback_order",
+        []
+    )
+
+    order: List[str] = []
+
+    if error_type:
+        order.append(str(error_type))
+
+    for key in configured_order:
+        key_text = str(key or "").strip()
+        if key_text and key_text not in order:
+            order.append(key_text)
+
+    for key in ["default_final", "empty_answer", "graph_error", "emergency_final"]:
+        if key not in order:
+            order.append(key)
+
+    for key in order:
+        answer = clean_config_text(fallback.get(key))
+        if answer:
+            return answer
+
+    return get_configured_message(
+        assistant_config=assistant_config,
+        path="request_handling.emergency_error_answer",
+        default="Something went wrong. Please try again."
+    )
 
 
 @app.get("/health")
 def health():
     return {
         "ok": True,
-        "service": "modular-agentic-langgraph-api"
+        "service": API_SERVICE_NAME
     }
 
 
@@ -844,7 +942,10 @@ def chat(
         )
 
     if not str(request.message or "").strip():
-        raise HTTPException(status_code=400, detail="message is required")
+        raise HTTPException(
+            status_code=400,
+            detail=get_api_error_message(assistant_config, "message_required", "message is required")
+        )
 
     max_message_chars = get_config_int(
         assistant_config,
@@ -853,7 +954,10 @@ def chat(
     )
 
     if len(str(request.message)) > max_message_chars:
-        raise HTTPException(status_code=400, detail="message is too long")
+        raise HTTPException(
+            status_code=400,
+            detail=get_api_error_message(assistant_config, "message_too_long", "message is too long")
+        )
 
     lock_timeout = get_config_int(
         assistant_config,
@@ -866,7 +970,14 @@ def chat(
     acquired = lock.acquire(timeout=max(lock_timeout, 1))
 
     if not acquired:
-        raise HTTPException(status_code=409, detail="Conversation is busy; retry shortly")
+        raise HTTPException(
+            status_code=409,
+            detail=get_api_error_message(
+                assistant_config,
+                "conversation_busy",
+                "Conversation is busy; retry shortly"
+            )
+        )
 
     try:
         ensure_conversation(
@@ -967,7 +1078,14 @@ def chat(
             )
 
             if not return_error_answer:
-                raise HTTPException(status_code=500, detail="Graph execution failed")
+                raise HTTPException(
+                    status_code=500,
+                    detail=get_api_error_message(
+                        assistant_config,
+                        "graph_execution_failed",
+                        "Graph execution failed"
+                    )
+                )
 
             answer = get_error_answer(assistant_config, "graph_error")
             result = {
