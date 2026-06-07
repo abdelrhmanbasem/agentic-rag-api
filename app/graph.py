@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.31-semantic-extraction-no-hardcoding-graph
+# Architecture batch: 6.32-semantic-extraction-executor-write-no-hardcoding
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1679,11 +1679,15 @@ def semantic_extraction_node(state: AgentState):
     result: Dict[str, Any] = {}
 
     if extracted_updates:
-        result["variables"] = merge_variables_intelligently(
-            existing=variables,
-            incoming=extracted_updates,
-            deletions=[],
-            agent_config=agent_config,
+        # Semantic extraction is a configured executor step, not a free-form
+        # manifest update. It must be allowed to write configured target paths
+        # even when those paths are protected from the manifest by
+        # source_of_truth_variables/source_of_truth_prefixes.
+        result["variables"] = apply_subagent_variable_patch(
+            variables,
+            prepare_variable_updates_for_patch(extracted_updates),
+            [],
+            assistant_config=agent_config,
         )
 
     if missing_asks and not extracted_updates:
