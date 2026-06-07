@@ -22,7 +22,7 @@ from app.subagents.base import (
 )
 
 
-# Architecture batch: 6.27-missing-required-path-direct-capture-no-hardcoding
+# Architecture batch: 6.29-customer-detail-stage-no-slot-hijack-no-hardcoding
 
 class BookingSubagent:
     """
@@ -337,6 +337,10 @@ class BookingSubagent:
             normalization=normalization,
             message=context.user_message
         )
+        variables = self.mirror_canonical_customer_profile_to_booking_profile(
+            variables=variables,
+            config=config
+        )
         variables = self.ensure_booking_confirmation_context(
             variables=variables,
             config=config
@@ -359,10 +363,16 @@ class BookingSubagent:
             "awaiting_confirmation",
             "awaiting_confirmation"
         )
+        awaiting_customer_details_stage = config.get("stages", {}).get(
+            "awaiting_customer_details",
+            "awaiting_customer_details"
+        )
 
-        # Do not re-resolve slot selection while waiting for confirmation.
-        # Confirmation words must be handled by handle_awaiting_confirmation.
-        if stage != awaiting_confirmation_stage:
+        # Do not re-resolve slot selection while waiting for confirmation OR
+        # customer details. Customer-detail messages often contain digits
+        # (phone, plate, IDs). Treating those digits as slot ordinals/times
+        # hijacks the booking flow and sends the user back to slot selection.
+        if stage not in {awaiting_confirmation_stage, awaiting_customer_details_stage}:
             selected_slot_before_request = self.resolve_slot_selection(
                 context=context,
                 config=config,
@@ -968,6 +978,50 @@ class BookingSubagent:
         )
 
 
+    def mirror_canonical_customer_profile_to_booking_profile(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Keep booking.customer_profile aligned with the canonical customer_profile.
+
+        This is generic: it mirrors configured customer detail target paths under
+        customer_profile.* into booking.customer_profile.*. It prevents stale
+        intermediate captures from older turns from surviving in booking profile
+        after the canonical root profile has been corrected.
+        """
+        if not isinstance(variables, dict):
+            return variables
+
+        updates: Dict[str, Any] = {}
+
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = self.strip_variables_prefix(str(field_config.get("target_path") or "").strip())
+
+            if not target_path.startswith("customer_profile."):
+                continue
+
+            field_name = target_path.split(".", 1)[1].strip()
+            if not field_name:
+                continue
+
+            value = deep_get(variables, target_path)
+            if value in [None, "", [], {}]:
+                continue
+
+            updates[f"booking.customer_profile.{field_name}"] = value
+
+            pending_profile_path = f"booking.pending.customer_profile.{field_name}"
+            if deep_get(variables, "booking.pending") not in [None, "", [], {}]:
+                updates[pending_profile_path] = value
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+
     def handle_awaiting_customer_details(
         self,
         context: SubagentContext,
@@ -1052,6 +1106,10 @@ class BookingSubagent:
             config=config,
             normalization=normalization,
             message=context.user_message
+        )
+        variables = self.mirror_canonical_customer_profile_to_booking_profile(
+            variables=variables,
+            config=config
         )
 
         variables = self.ensure_pending_booking_context(
