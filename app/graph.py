@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.26-booking-pending-execution-lock-no-hardcoding
+# Architecture batch: 6.28-preextract-pending-required-details-no-hardcoding
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1351,6 +1351,151 @@ def prepare_variable_updates_for_patch(updates: Dict[str, Any]) -> Dict[str, Any
     """
     return flatten_update_paths(updates or {})
 
+
+
+
+def graph_normalize_digits(text: str, digit_map: Dict[str, str]) -> str:
+    return "".join(digit_map.get(ch, ch) for ch in str(text or ""))
+
+
+def graph_path_parts(path: str) -> List[str]:
+    text = str(path or "").strip()
+    if text.startswith("variables."):
+        text = text[len("variables."):]
+    return [part for part in text.split(".") if part]
+
+
+def graph_strip_variables_prefix(path: str) -> str:
+    text = str(path or "").strip()
+    if text.startswith("variables."):
+        return text[len("variables."):]
+    return text
+
+
+def graph_required_path_missing(variables: Dict[str, Any], path: str) -> bool:
+    return deep_get(variables, graph_strip_variables_prefix(path), None) in [None, "", [], {}]
+
+
+def graph_extract_pending_required_details_from_patterns(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    message: str,
+) -> Dict[str, Any]:
+    """
+    Deterministically pre-extract configured missing required details before the
+    booking executor runs.
+
+    This is intentionally generic:
+    - uses booking.required_before_create to know missing paths
+    - uses booking.extraction_patterns to capture values
+    - does not know field names, labels, Arabic phrases, or car-specific terms
+    """
+    booking_config = get_subagent_config(agent_config, "booking")
+    if not isinstance(booking_config, dict) or not booking_config.get("enabled", False):
+        return variables
+
+    pending_path = str(booking_config.get("pending_booking_path") or "booking.pending")
+    pending = deep_get(variables, pending_path, None)
+    if not isinstance(pending, dict) or not pending:
+        return variables
+
+    patterns = booking_config.get("extraction_patterns", [])
+    required_paths = booking_config.get("required_before_create", [])
+
+    if not isinstance(patterns, list) or not isinstance(required_paths, list):
+        return variables
+
+    missing_paths = [
+        graph_strip_variables_prefix(path)
+        for path in required_paths
+        if str(path or "").strip() and graph_required_path_missing(variables, str(path))
+    ]
+
+    if not missing_paths:
+        return variables
+
+    normalization = agent_config.get("normalization", {}) or {}
+    digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
+    raw_message = str(message or "")
+    digit_message = graph_normalize_digits(raw_message, digit_map)
+
+    updates: Dict[str, Any] = {}
+
+    for missing_path in missing_paths:
+        for item in patterns:
+            if not isinstance(item, dict):
+                continue
+
+            target = graph_strip_variables_prefix(
+                str(
+                    item.get("variable")
+                    or item.get("path")
+                    or item.get("target_path")
+                    or ""
+                ).strip()
+            )
+            when_missing = graph_strip_variables_prefix(str(item.get("when_missing") or "").strip())
+
+            if target != missing_path and when_missing != missing_path:
+                continue
+
+            pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
+            if not pattern_text:
+                continue
+
+            try:
+                group_index = int(item.get("group", 1))
+            except Exception:
+                group_index = 1
+
+            candidates: List[str] = []
+            for haystack in [raw_message, digit_message]:
+                if not haystack:
+                    continue
+                try:
+                    match = re.search(pattern_text, haystack, flags=re.IGNORECASE)
+                except re.error:
+                    continue
+
+                if not match:
+                    continue
+
+                try:
+                    candidate = match.group(group_index).strip() if match.groups() else match.group(0).strip()
+                except Exception:
+                    candidate = match.group(0).strip()
+
+                candidate = graph_normalize_digits(candidate, digit_map)
+                candidate = re.sub(r"[،,.!?؟:;]+", " ", candidate)
+                candidate = re.sub(r"\s+", " ", candidate).strip()
+
+                if candidate:
+                    candidates.append(candidate)
+
+            if not candidates:
+                continue
+
+            candidates.sort(key=lambda value: (len(value), bool(re.search(r"\d", value))), reverse=True)
+            value = candidates[0]
+            updates[missing_path] = value
+
+            if missing_path.startswith("customer_profile."):
+                field_name = missing_path.split(".", 1)[1].strip()
+                if field_name:
+                    updates.setdefault(f"booking.customer_profile.{field_name}", value)
+                    updates.setdefault(f"booking.pending.customer_profile.{field_name}", value)
+
+            break
+
+    if not updates:
+        return variables
+
+    return apply_subagent_variable_patch(
+        variables,
+        updates,
+        [],
+        assistant_config=agent_config,
+    )
 
 
 def booking_pending_requires_executor(
@@ -3573,6 +3718,12 @@ def tool_execution_node(state: AgentState):
     variables = state.get("variables", {}) or {}
     schema = state.get("schema", {}) or {}
     message = last_user_message(state)
+
+    variables = graph_extract_pending_required_details_from_patterns(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+    )
 
     selected_id = unify_subagent_id(manifest.get("selected_subagent_id", ""))
     chained_id = unify_subagent_id(manifest.get("chained_subagent_id", ""))
