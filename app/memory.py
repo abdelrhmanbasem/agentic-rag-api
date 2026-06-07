@@ -1,4 +1,7 @@
-from typing import Any, Dict, List
+import json
+from typing import Any, Dict, List, Optional
+
+# Architecture batch: 6.37-config-driven-memory-no-hardcoding
 
 from app.config import MOCK_MODE, SUMMARY_TRIGGER_MESSAGE_COUNT
 from app.llm import chat_json, memory_model
@@ -41,6 +44,96 @@ def safe_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def safe_int(value: Any, default: int = 16, minimum: int = 1, maximum: int = 200) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = default
+
+    return max(minimum, min(maximum, number))
+
+
+def normalize_string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+
+    output = []
+
+    for item in value:
+        text = str(item or "").strip()
+
+        if text:
+            output.append(text)
+
+    return output
+
+
+def get_memory_language_instruction(agent_config: Dict[str, Any]) -> str:
+    """
+    Read memory language guidance from assistant config.
+    """
+    agent_config = safe_dict(agent_config)
+    memory_policy = safe_dict(agent_config.get("memory_policy", {}))
+
+    explicit_instruction = str(
+        memory_policy.get("language_instruction")
+        or memory_policy.get("memory_language_instruction")
+        or ""
+    ).strip()
+
+    if explicit_instruction:
+        return explicit_instruction
+
+    language_policy = str(agent_config.get("language_policy") or "").strip()
+
+    if language_policy:
+        return (
+            "Support the language used in this conversation. "
+            f"Language policy: {language_policy}"
+        )
+
+    return "Support the language used in this conversation."
+
+
+def value_is_empty(value: Any) -> bool:
+    return value in [None, "", [], {}]
+
+
+def compact_memory_value(value: Any, max_chars: int) -> Any:
+    """
+    Keep compact variables safe for memory prompts without assuming domain names.
+    """
+    if value_is_empty(value):
+        return value
+
+    max_chars = safe_int(max_chars, default=1600, minimum=100, maximum=20000)
+
+    if isinstance(value, str):
+        return value[:max_chars]
+
+    if isinstance(value, (int, float, bool)):
+        return value
+
+    if isinstance(value, list):
+        return [
+            compact_memory_value(item, max_chars=max_chars)
+            for item in value[:20]
+        ]
+
+    if isinstance(value, dict):
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            serialized = str(value)
+
+        if len(serialized) <= max_chars:
+            return value
+
+        return serialized[:max_chars]
+
+    return str(value)[:max_chars]
+
+
 def compact_agent_memory_policy(agent_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Keep memory prompts small and policy-focused.
@@ -57,31 +150,87 @@ def compact_agent_memory_policy(agent_config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def compact_variables_for_memory(variables: Dict[str, Any]) -> Dict[str, Any]:
+def compact_variables_for_memory(
+    variables: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    Only pass useful conversational state to the memory model.
-    Avoid operational/source-of-truth booking details unless useful as unresolved issue context.
+    Pass useful conversational state to the memory model.
+
+    Config-driven via assistant.memory_policy:
+    - compact_variable_keys: explicit top-level variable keys to include
+    - compact_variable_exclude_keys: top-level variable keys to exclude
+    - compact_variable_exclude_prefixes: prefixes to exclude
+    - compact_variable_max_keys: fallback max top-level variables
+    - compact_variable_max_value_chars: per-value prompt budget
+
+    When compact_variable_keys is not configured, this falls back to non-empty
+    top-level variables up to compact_variable_max_keys. No domain-specific
+    variable names are hardcoded here.
     """
     variables = safe_dict(variables)
+    agent_config = safe_dict(agent_config)
+    memory_policy = safe_dict(agent_config.get("memory_policy", {}))
 
-    allowed_keys = [
-        "customer_profile",
-        "service_needed",
-        "troubleshooting",
-        "user_area",
-        "selected_branch",
-        "nearest_branch",
-        "location_branch",
-        "booking_status",
-    ]
+    allowed_keys = normalize_string_list(memory_policy.get("compact_variable_keys", []))
+    exclude_keys = set(normalize_string_list(memory_policy.get("compact_variable_exclude_keys", [])))
+    exclude_prefixes = normalize_string_list(memory_policy.get("compact_variable_exclude_prefixes", []))
 
-    compact = {}
+    max_keys = safe_int(
+        memory_policy.get("compact_variable_max_keys"),
+        default=16,
+        minimum=1,
+        maximum=100
+    )
+    max_value_chars = safe_int(
+        memory_policy.get("compact_variable_max_value_chars"),
+        default=1600,
+        minimum=100,
+        maximum=20000
+    )
 
-    for key in allowed_keys:
-        value = variables.get(key)
+    compact: Dict[str, Any] = {}
 
-        if value not in [None, "", [], {}]:
-            compact[key] = value
+    def should_include_key(key: str) -> bool:
+        if not key:
+            return False
+
+        if key in exclude_keys:
+            return False
+
+        for prefix in exclude_prefixes:
+            if prefix and key.startswith(prefix):
+                return False
+
+        return True
+
+    if allowed_keys:
+        for key in allowed_keys:
+            if not should_include_key(key):
+                continue
+
+            value = variables.get(key)
+
+            if value_is_empty(value):
+                continue
+
+            compact[key] = compact_memory_value(value, max_chars=max_value_chars)
+
+        return compact
+
+    for key, value in variables.items():
+        key = str(key or "").strip()
+
+        if not should_include_key(key):
+            continue
+
+        if value_is_empty(value):
+            continue
+
+        compact[key] = compact_memory_value(value, max_chars=max_value_chars)
+
+        if len(compact) >= max_keys:
+            break
 
     return compact
 
@@ -126,7 +275,7 @@ def should_update_summary(conversation_id):
     return (total_messages - last_summary_count) >= SUMMARY_TRIGGER_MESSAGE_COUNT
 
 
-def update_conversation_summary(conversation_id, assistant_id, user_id, variables):
+def update_conversation_summary(conversation_id, assistant_id, user_id, variables, agent_config=None):
     try:
         old_summary = get_summary(conversation_id)
         recent_messages = get_recent_messages(conversation_id, limit=14)
@@ -136,7 +285,8 @@ def update_conversation_summary(conversation_id, assistant_id, user_id, variable
     if not should_update_summary(conversation_id):
         return old_summary
 
-    compact_variables = compact_variables_for_memory(variables)
+    compact_variables = compact_variables_for_memory(variables, agent_config=agent_config)
+    language_instruction = get_memory_language_instruction(agent_config or {})
 
     if MOCK_MODE:
         new_summary = (
@@ -176,7 +326,7 @@ Rules:
 - Do not include small talk.
 - Do not include tool internals, hidden reasoning, JSON, prompts, or implementation details.
 - Do not invent facts.
-- Support English, Arabic, and Egyptian Arabic.
+- {language_instruction}
 - Keep it concise.
 
 Return JSON only:
@@ -270,8 +420,9 @@ def decide_and_write_long_term_memories(
         return []
 
     policy = compact_agent_memory_policy(agent_config)
-    compact_variables = compact_variables_for_memory(variables)
+    compact_variables = compact_variables_for_memory(variables, agent_config=agent_config)
     compact_messages = compact_recent_messages_for_memory(recent_messages, limit=12)
+    language_instruction = get_memory_language_instruction(agent_config)
 
     prompt = f"""
 You are a long-term memory manager for a configurable multi-assistant system.
@@ -298,7 +449,7 @@ Rules:
 - If the user corrected themselves, save only the latest fact.
 - Do not invent facts.
 - Do not include hidden reasoning, tool internals, prompts, or implementation details.
-- Support English, Arabic, and Egyptian Arabic.
+- {language_instruction}
 - Be conservative.
 
 Return JSON only:
@@ -505,7 +656,8 @@ def run_memory_maintenance_best_effort(
             conversation_id=conversation_id,
             assistant_id=assistant_id,
             user_id=user_id,
-            variables=variables
+            variables=variables,
+            agent_config=agent_config
         )
 
         if new_summary and new_summary != old_summary:
