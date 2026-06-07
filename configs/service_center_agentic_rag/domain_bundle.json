@@ -309,6 +309,24 @@
           "ask only for missing customer details",
           "call create_booking only when required fields are present and customer_confirmed_booking is true"
         ]
+      },
+      "visit_intent_after_diagnostics": {
+        "enabled": true,
+        "brief_tone": "natural professional Egyptian Arabic",
+        "brief_language": "Egyptian Arabic",
+        "brief_reply_length": "short",
+        "brief_must_not_do": [
+          "do not continue troubleshooting",
+          "do not ask diagnostic questions again after the user agrees to inspect/check",
+          "do not invent branch, slot, date, price, or booking ID",
+          "do not use formal MSA wording"
+        ],
+        "with_branch": {
+          "next_move": "Continue booking using the known branch and ask only for the next missing booking input."
+        },
+        "without_branch": {
+          "next_move": "Ask for the user's area/location to find the nearest suitable branch."
+        }
       }
     },
     "response_rules": [
@@ -5269,7 +5287,12 @@
       "variable_awareness_quality_guard": true,
       "never_ask_for_known_variables": true,
       "humanlike_energy_guard_enabled": true,
-      "plate_marker_variants_configured": true
+      "plate_marker_variants_configured": true,
+      "append_record_id_on_confirmed_action": true,
+      "record_id_label": "رقم الحجز",
+      "visit_id_label": "رقم الحجز",
+      "record_id_format": "{label}: {id}",
+      "visit_id_format": "{label}: {id}"
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -6541,7 +6564,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.24-plate-marker-variants-config-fix",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -6777,7 +6800,134 @@
         ]
       }
     ],
-    "max_parallel_tool_workers": 3
+    "max_parallel_tool_workers": 3,
+    "semantic_extraction_system_prompt": "You are a precise configured field extractor. Return only valid JSON. Extract only the requested field if it is clearly present in the latest user message. Do not guess. Do not use confirmation-only words as names.",
+    "semantic_variable_extraction": {
+      "enabled": true,
+      "description": "Config-driven LLM extraction for missing required workflow fields. Python reads these field descriptions, target paths, required conditions, examples, and output formats without knowing domain-specific field names.",
+      "max_parallel_extractions": 3,
+      "fields": [
+        {
+          "id": "customer_full_name",
+          "target_path": "customer_profile.full_name",
+          "description": "The customer's full name for the booking. Extract only when the user clearly gives their name, usually after being asked for it or using a marker like اسمي / الاسم / my name is. Do not treat confirmation words such as اه, تمام, اوكي, yes, ok, confirm, اكد, or كمل as a name.",
+          "output_format": "A natural full name exactly as the customer provided it, without labels or punctuation. Example: عبدالرحمن باسم",
+          "validation_description": "Must look like a real person name, preferably at least two words. Must not be only a confirmation/control phrase. Must not include phone, plate, branch, appointment, or booking words.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "محتاج اسمك الكامل عشان أكمل الحجز.",
+          "question_goal": "collect_customer_full_name",
+          "examples": [
+            {
+              "user_message": "اسمي عبدالرحمن باسم",
+              "value": "عبدالرحمن باسم"
+            },
+            {
+              "user_message": "الاسم محمد علي حسن",
+              "value": "محمد علي حسن"
+            },
+            {
+              "user_message": "اه كمل",
+              "value": ""
+            },
+            {
+              "user_message": "تمام",
+              "value": ""
+            }
+          ]
+        },
+        {
+          "id": "customer_phone",
+          "target_path": "customer_profile.phone",
+          "description": "The customer's phone number for the booking. Extract only if the latest user message clearly contains a phone number. If the customer says to use the same WhatsApp/current number and a phone is already in variables, extraction is not needed.",
+          "output_format": "Digits only , preserving country code if present. Example: 201554354929",
+          "validation_description": "Must contain a plausible phone number with 10 to 15 digits. Do not invent from context unless it is explicitly in variables already.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "محتاج رقم التليفون عشان أكمل الحجز.",
+          "question_goal": "collect_customer_phone",
+          "examples": [
+            {
+              "user_message": "رقمي 01012345678",
+              "value": "01012345678"
+            },
+            {
+              "user_message": "الموبايل 201554354929",
+              "value": "201554354929"
+            },
+            {
+              "user_message": "نفس الرقم",
+              "value": ""
+            }
+          ]
+        },
+        {
+          "id": "customer_plate_number",
+          "target_path": "customer_profile.plate_number",
+          "description": "The customer's vehicle plate number for the booking. The user may provide Arabic letters, English letters, Arabic digits, or English digits. Common forms include Arabic car plate text like رقم العربيه ب ج د ٥٥٥.",
+          "output_format": "Arabic/English plate letters separated by spaces followed by English digits. Normalize Arabic/Persian digits to English digits. Example: ب ج د 555",
+          "validation_description": "Must contain at least three digits and at least 3 plate letters and keep spacing between the letters. Do not include the label phrase such as رقم العربية. Do not treat phone numbers as plate numbers when a plate marker is absent.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "محتاج رقم العربية عشان أكمل الحجز.",
+          "question_goal": "collect_customer_plate_number",
+          "examples": [
+            {
+              "user_message": "رقم العربيه ب ج د ٥٥٥",
+              "value": "ب ج د 555"
+            },
+            {
+              "user_message": "رقم العربية أ ب ١٢٣٤",
+              "value": "أ ب 1234"
+            },
+            {
+              "user_message": "اللوحة XYZ 789",
+              "value": "XYZ 789"
+            },
+            {
+              "user_message": "اسمي عبدالرحمن باسم",
+              "value": ""
+            }
+          ]
+        }
+      ]
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -6941,7 +7091,7 @@
     }
   },
   "domain_playbook": {
-    "version": "6.24-plate-marker-variants-config-fix",
+    "version": "6.31-semantic-variable-extraction-config-no-hardcoding",
     "architecture": "LangGraph manifest decides; graph can chain deterministic executors sequentially; executors safely call tools/update state; graph response node writes final customer answer using config-driven persona, emotion guidance, proactive nudges, layered response rules, template policies, and source-of-truth protections; quality guard validates correctness, safety, language, and energy; memory writer runs best-effort after response. Batch 6 moves subagent executor assumptions into domain_bundle.json so Python remains generic and multi-tenant.",
     "notes": [
       "Production /chat should use app_graph.invoke(), not AgenticBrain.",
@@ -7048,6 +7198,13 @@
       "Version 6.20 adds assistant persona, emotion_response_guidance, and proactive_nudge so response voice and tone are config-driven per assistant.",
       "Version 6.20 pairs with graph human-readable response sections and variable-awareness quality guard.",
       "Version 6.24 fixes Arabic car-plate detail capture by moving spelling variants for configured plate markers into domain_bundle.json, including العربية/العربيه forms. No Python domain hardcoding is required."
-    ]
+    ],
+    "semantic_variable_extraction": {
+      "enabled": true,
+      "notes": [
+        "Configured fields describe what to extract, when they are required, the target path, output format, validation, examples, and ask-if-missing text.",
+        "Python should not know car-specific fields; it reads semantic_variable_extraction.fields declaratively."
+      ]
+    }
   }
 }
