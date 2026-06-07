@@ -5331,7 +5331,43 @@
         "temporary slot lists",
         "one-time tool traces",
         "sensitive data unless required by assistant config"
-      ]
+      ],
+      "write_enabled": true,
+      "memory_policy_version": "6.38-config-driven-memory-policy-no-hardcoding",
+      "language_instruction": "Support the language used in this conversation. Follow the assistant language_policy and preserve the customer's dialect when summarizing useful conversational context.",
+      "compact_variable_keys": [
+        "customer_profile",
+        "service_needed",
+        "troubleshooting",
+        "user_area",
+        "selected_branch",
+        "nearest_branch",
+        "location_branch",
+        "booking_status",
+        "appointment_date",
+        "appointment_time",
+        "date_text",
+        "booking",
+        "handoff_requested"
+      ],
+      "compact_variable_exclude_keys": [
+        "available_slots",
+        "available_slots_text",
+        "nearest_slots",
+        "nearest_slots_text",
+        "tool_result",
+        "last_tool_result",
+        "manifest",
+        "debug",
+        "messages"
+      ],
+      "compact_variable_exclude_prefixes": [
+        "_",
+        "__"
+      ],
+      "compact_variable_max_keys": 16,
+      "compact_variable_max_value_chars": 1600,
+      "run_every_messages": 8
     },
     "template_response_policy": {
       "BOOKING_CONFIRM_SELECTED_SLOT": {
@@ -6927,7 +6963,10 @@
           ]
         }
       ]
-    }
+    },
+    "architecture_patches": [
+      "6.38-config-driven-memory-policy-no-hardcoding"
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
