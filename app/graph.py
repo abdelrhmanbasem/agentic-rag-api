@@ -1,6 +1,7 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
+# Architecture patch: 6.39-previous-manifest-summary-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -73,6 +74,7 @@ class AgentState(TypedDict, total=False):
     multi_tool_results: List[Dict[str, Any]]
 
     manifest: Dict[str, Any]
+    previous_manifest_summary: str
     multi_intents: List[Dict[str, Any]]
     parallel_tool_requests: List[Dict[str, Any]]
     knowledge_queries: List[str]
@@ -757,6 +759,166 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "manifest_error": manifest.get("manifest_error", ""),
         "reasoning_summary": manifest.get("reasoning_summary", ""),
     }
+
+
+def graph_config_int(
+    config: Dict[str, Any],
+    path: str,
+    default: int,
+    minimum: int = 1,
+    maximum: int = 20000,
+) -> int:
+    try:
+        value = get_config_path_value(config or {}, path, default)
+        number = int(value)
+    except Exception:
+        number = default
+
+    return max(minimum, min(maximum, number))
+
+
+def graph_dotted_get(obj: Dict[str, Any], path: str, default: Any = None) -> Any:
+    current: Any = obj
+
+    for part in str(path or "").split("."):
+        part = part.strip()
+
+        if not part:
+            continue
+
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return default
+
+        if current is None:
+            return default
+
+    return current
+
+
+def get_manifest_context_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return config for planner continuity.
+
+    Supported config:
+    assistant.manifest_context or assistant.planner_context:
+      previous_manifest_summary_enabled: bool
+      previous_manifest_summary_max_chars: int
+      previous_manifest_summary_fields: list[str]
+
+    This is intentionally assistant-level config and contains no domain-specific
+    workflow, booking, or field names.
+    """
+    for key in ["manifest_context", "planner_context"]:
+        value = (agent_config or {}).get(key)
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def previous_manifest_summary_enabled(agent_config: Dict[str, Any]) -> bool:
+    config = get_manifest_context_config(agent_config)
+
+    if "previous_manifest_summary_enabled" not in config:
+        return True
+
+    value = config.get("previous_manifest_summary_enabled")
+
+    if isinstance(value, bool):
+        return value
+
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def summarize_manifest_for_next_turn(
+    manifest: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Build a compact, configurable summary of the manifest for the next turn.
+
+    The goal is conversation momentum: the next manifest can see what it decided
+    last turn, what workflow/stage it believed it was in, and what next move it
+    had planned. This avoids reclassifying every turn in isolation.
+    """
+    agent_config = agent_config or {}
+
+    if not previous_manifest_summary_enabled(agent_config):
+        return ""
+
+    if not isinstance(manifest, dict) or not manifest:
+        return ""
+
+    config = get_manifest_context_config(agent_config)
+    max_chars = graph_config_int(
+        {"manifest_context": config},
+        "manifest_context.previous_manifest_summary_max_chars",
+        default=1200,
+        minimum=200,
+        maximum=6000,
+    )
+
+    configured_fields = config.get("previous_manifest_summary_fields", [])
+
+    if isinstance(configured_fields, list) and configured_fields:
+        compact: Dict[str, Any] = {}
+
+        for path in configured_fields:
+            path_text = str(path or "").strip()
+
+            if not path_text:
+                continue
+
+            value = graph_dotted_get(manifest, path_text, None)
+
+            if value in [None, "", [], {}]:
+                continue
+
+            compact[path_text] = value
+    else:
+        compact = compact_manifest(manifest)
+
+    if not compact:
+        return ""
+
+    return safe_json(compact, max_chars=max_chars)
+
+
+def previous_manifest_summary_from_state(state: AgentState) -> str:
+    """
+    Read the previous manifest summary from persisted state when available.
+
+    If an older state only persisted the prior manifest object, derive a summary
+    from that object. The unified_manifest_node stores the current summary back
+    into previous_manifest_summary for the next graph invocation.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+
+    if not previous_manifest_summary_enabled(agent_config):
+        return ""
+
+    config = get_manifest_context_config(agent_config)
+    max_chars = graph_config_int(
+        {"manifest_context": config},
+        "manifest_context.previous_manifest_summary_max_chars",
+        default=1200,
+        minimum=200,
+        maximum=6000,
+    )
+
+    stored = str(state.get("previous_manifest_summary") or "").strip()
+
+    if stored:
+        return clip_text(stored, max_chars)
+
+    prior_manifest = state.get("manifest", {}) or {}
+
+    if isinstance(prior_manifest, dict) and prior_manifest:
+        return summarize_manifest_for_next_turn(prior_manifest, agent_config)
+
+    return ""
 
 
 def compact_analysis(analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -2597,6 +2759,7 @@ def unified_manifest_node(state: AgentState):
     variables = state.get("variables", {}) or {}
     schema = state.get("schema", {}) or {}
     tool_result = state.get("tool_result", {}) or {}
+    previous_manifest_summary = previous_manifest_summary_from_state(state)
 
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -2616,8 +2779,9 @@ def unified_manifest_node(state: AgentState):
             "   - 'غير الموعد' means change an existing appointment — not a new independent booking.\n"
             "   - 'تمام اتفقنا' means confirmed — move to the confirmation/next step.\n"
             "   - 'لا معلش' or 'actually no' means cancelled or changed mind — update accordingly.\n"
-            "3. Infer implicit context: if a user said their name, phone, branch, or preference earlier and it is in variables, it is already known. Do not ask for it again.\n"
-            "4. Detect the FULL intent, including things the user implied but did not say explicitly.\n"
+            "3. Check previous_manifest_summary to understand the flow momentum from last turn: what was selected, what stage was active, what next move was planned, and whether the current message continues, confirms, corrects, or cancels that flow.\n"
+            "4. Infer implicit context: if a user said their name, phone, branch, or preference earlier and it is in variables, it is already known. Do not ask for it again.\n"
+            "5. Detect the FULL intent, including things the user implied but did not say explicitly.\n"
             "\n\n"
             # VARIABLE INTELLIGENCE
             "VARIABLE AWARENESS:\n"
@@ -2682,6 +2846,8 @@ def unified_manifest_node(state: AgentState):
         (
             "user",
             "=== ASSISTANT MANIFEST CARD ===\n{manifest_card}\n\n"
+            "=== PREVIOUS TURN MANIFEST SUMMARY — WHAT YOU DECIDED LAST TURN ===\n"
+            "{previous_manifest_summary}\n\n"
             "=== CONVERSATION SUMMARY (what happened before) ===\n{summary}\n\n"
             "=== WHAT IS ALREADY KNOWN — DO NOT ASK FOR THESE AGAIN ===\n"
             "{variables}\n\n"
@@ -2690,9 +2856,10 @@ def unified_manifest_node(state: AgentState):
             "Think step by step:\n"
             "1. What does the user MEAN (not just what they literally typed)?\n"
             "2. What is already known from the variables above?\n"
-            "3. What is the minimum needed to move forward?\n"
-            "4. Which executor and tools are needed?\n"
-            "5. What should missing_tool_inputs contain? "
+            "3. What did you decide last turn, and does this message continue, confirm, correct, or cancel that flow?\n"
+            "4. What is the minimum needed to move forward?\n"
+            "5. Which executor and tools are needed?\n"
+            "6. What should missing_tool_inputs contain? "
             "   (Only fields absent from BOTH the message AND the known variables.)\n"
             "Then return the manifest JSON.",
         ),
@@ -2706,6 +2873,7 @@ def unified_manifest_node(state: AgentState):
                 unified_manifest_card(agent_config, schema, profile=profile),
                 max_chars=manifest_card_max,
             ),
+            "previous_manifest_summary": clip_text(previous_manifest_summary, 1200) or "No previous manifest summary.",
             "summary": clip_text(state.get("summary", ""), 650),
             "variables": safe_json(compact_variables(variables, schema), max_chars=2200),
             "tool_result": safe_json(tool_result, max_chars=2600),
@@ -2907,6 +3075,7 @@ def unified_manifest_node(state: AgentState):
         "parallel_tool_requests": manifest.get("parallel_tool_requests", []),
         "knowledge_queries": manifest.get("knowledge_queries", []),
         "response_synthesis": manifest.get("response_synthesis", {}),
+        "previous_manifest_summary": summarize_manifest_for_next_turn(manifest, agent_config),
     }
 
 
