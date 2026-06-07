@@ -22,7 +22,7 @@ from app.subagents.base import (
 )
 
 
-# Architecture batch: 6.29-customer-detail-stage-no-slot-hijack-no-hardcoding
+# Architecture batch: 6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding
 
 class BookingSubagent:
     """
@@ -150,22 +150,31 @@ class BookingSubagent:
             normalization=normalization
         )
 
-        # Critical universal slot-selection guard:
-        # A user can choose a slot even if booking.stage was not persisted as
-        # slot_selection by an older config/tool-update path. If fresh
-        # available_slots exist, time/ordinal selection must be handled before
-        # any new availability request or missing-date path can relist slots or
-        # ask for a date again.
-        existing_slot_selection_result = self.handle_existing_slot_selection_if_present(
-            context=context,
-            config=config,
-            variables=variables,
-            observations=observations,
-            tool_calls_used=tool_calls_used
+        awaiting_confirmation_stage = config.get("stages", {}).get(
+            "awaiting_confirmation",
+            "awaiting_confirmation"
+        )
+        awaiting_customer_details_stage = config.get("stages", {}).get(
+            "awaiting_customer_details",
+            "awaiting_customer_details"
         )
 
-        if existing_slot_selection_result:
-            return existing_slot_selection_result
+        # Critical universal slot-selection guard:
+        # A user can choose a slot even if booking.stage was not persisted as
+        # slot_selection by an older config/tool-update path. However, once the
+        # flow is waiting for confirmation or customer details, digits in user
+        # messages belong to details such as phone/plate/IDs, not slot numbers.
+        if stage not in {awaiting_confirmation_stage, awaiting_customer_details_stage}:
+            existing_slot_selection_result = self.handle_existing_slot_selection_if_present(
+                context=context,
+                config=config,
+                variables=variables,
+                observations=observations,
+                tool_calls_used=tool_calls_used
+            )
+
+            if existing_slot_selection_result:
+                return existing_slot_selection_result
 
         # Critical slot-selection guard:
         # In slot_selection stage, a time-only reply must be resolved
