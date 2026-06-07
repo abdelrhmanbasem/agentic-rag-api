@@ -1,6 +1,6 @@
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
-# Architecture batch: 6.20-humanlike-memory-response-no-hardcoding
+# Architecture batch: 6.26-booking-pending-execution-lock-no-hardcoding
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1352,6 +1352,148 @@ def prepare_variable_updates_for_patch(updates: Dict[str, Any]) -> Dict[str, Any
     return flatten_update_paths(updates or {})
 
 
+
+def booking_pending_requires_executor(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    message: str = "",
+) -> bool:
+    """
+    Config-driven booking execution lock.
+
+    If a pending booking exists and it has not been confirmed by a successful
+    create_booking result, route the turn to the booking executor. This prevents
+    the response LLM from merely acknowledging customer details without allowing
+    the booking executor to persist them and run create_booking.
+
+    No domain detail names or phrases are hardcoded here. The actual detail
+    extraction remains owned by booking_subagent.py and domain_bundle.json.
+    """
+    booking_config = get_subagent_config(agent_config, "booking")
+    if not isinstance(booking_config, dict) or not booking_config.get("enabled", False):
+        return False
+
+    pending_path = str(booking_config.get("pending_booking_path") or "booking.pending")
+    pending = deep_get(variables, pending_path, None)
+
+    if not isinstance(pending, dict) or not pending:
+        return False
+
+    # Do not keep forcing booking after a successful booking id/status exists.
+    completion = booking_config.get("booking_completion", {})
+    if not isinstance(completion, dict):
+        completion = {}
+
+    id_paths = completion.get("id_paths", ["visit_id"])
+    if not isinstance(id_paths, list):
+        id_paths = ["visit_id"]
+
+    for path in id_paths:
+        if deep_get(variables, str(path or ""), None) not in [None, "", [], {}]:
+            return False
+
+    status_paths = completion.get("status_paths", ["booking_status"])
+    if not isinstance(status_paths, list):
+        status_paths = ["booking_status"]
+
+    completed_statuses = {
+        str(item or "").strip().lower()
+        for item in completion.get("completed_statuses", ["confirmed", "booked"])
+        if str(item or "").strip()
+    }
+
+    for path in status_paths:
+        value = deep_get(variables, str(path or ""), None)
+        if str(value or "").strip().lower() in completed_statuses:
+            return False
+
+    stage_path = str(booking_config.get("stage_path") or "booking.stage")
+    stage = str(deep_get(variables, stage_path, "") or "").strip()
+
+    active_stages = booking_config.get("extraction_active_stages", [])
+    if not isinstance(active_stages, list) or not active_stages:
+        active_stages = [
+            booking_config.get("stages", {}).get("awaiting_customer_details", "awaiting_customer_details"),
+            booking_config.get("stages", {}).get("awaiting_confirmation", "awaiting_confirmation"),
+            "slot_selection",
+        ]
+
+    active_stage_set = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
+
+    if stage and (not active_stage_set or stage in active_stage_set):
+        return True
+
+    # Even if stage was lost by an older deployment, a pending slot plus explicit
+    # confirmation means the deterministic booking executor should own the next
+    # customer-detail turn.
+    if deep_get(variables, "customer_confirmed_booking", None) is True:
+        return True
+
+    normalization = agent_config.get("normalization", {}) or {}
+    detail_marker_paths = (
+        agent_config.get("routing_guardrails", {})
+        .get("active_booking_customer_detail_routing", {})
+        .get("detail_marker_paths", [])
+    )
+    if isinstance(detail_marker_paths, list):
+        markers = collect_configured_phrases_deep(agent_config, detail_marker_paths)
+        if markers and matches_any(message, markers, normalization):
+            return True
+
+    return False
+
+
+def collect_strings_deep(value: Any) -> List[str]:
+    """
+    Recursively collect strings from a config value.
+
+    This is needed because some config paths point to lists of field objects,
+    not plain phrase arrays. The graph should still be able to read configured
+    markers without hardcoding any field names.
+    """
+    output: List[str] = []
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            output.append(text)
+        return output
+
+    if isinstance(value, list):
+        for item in value:
+            output.extend(collect_strings_deep(item))
+        return output
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).endswith("_markers") or str(key) in {
+                "markers",
+                "phrases",
+                "detail_signal_phrases",
+                "trigger_phrases",
+                "strong_phrases",
+            }:
+                output.extend(collect_strings_deep(item))
+            elif isinstance(item, (list, dict)):
+                output.extend(collect_strings_deep(item))
+        return output
+
+    return output
+
+
+def collect_configured_phrases_deep(
+    agent_config: Dict[str, Any],
+    paths: List[str]
+) -> List[str]:
+    phrases: List[str] = []
+
+    for path in paths or []:
+        value = get_config_path_value(agent_config, str(path), [])
+        phrases.extend(collect_strings_deep(value))
+
+    return append_unique([], phrases)
+
+
 def get_active_configured_flow_subagent_id(
     agent_config: Dict[str, Any],
     variables: Dict[str, Any],
@@ -1368,6 +1510,13 @@ def get_active_configured_flow_subagent_id(
     guardrails = agent_config.get("routing_guardrails", {})
     if not isinstance(guardrails, dict):
         return ""
+
+    if booking_pending_requires_executor(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+    ):
+        return "booking"
 
     normalization = agent_config.get("normalization", {}) or {}
     manifest = manifest or {}
@@ -3427,6 +3576,14 @@ def tool_execution_node(state: AgentState):
 
     selected_id = unify_subagent_id(manifest.get("selected_subagent_id", ""))
     chained_id = unify_subagent_id(manifest.get("chained_subagent_id", ""))
+
+    if booking_pending_requires_executor(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+    ):
+        selected_id = "booking"
+        chained_id = ""
 
     tool_runner = ToolRunner(agent_config)
     all_observations: List[Dict[str, Any]] = []
