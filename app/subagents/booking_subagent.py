@@ -22,7 +22,7 @@ from app.subagents.base import (
 )
 
 
-# Architecture batch: 6.25-required-detail-pattern-capture-no-hardcoding
+# Architecture batch: 6.27-missing-required-path-direct-capture-no-hardcoding
 
 class BookingSubagent:
     """
@@ -320,6 +320,12 @@ class BookingSubagent:
                 message=context.user_message
             )
         variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+        variables = self.capture_missing_required_paths_from_config_patterns(
             variables=variables,
             config=config,
             normalization=normalization,
@@ -1030,6 +1036,12 @@ class BookingSubagent:
             message=context.user_message
         )
         variables = self.ensure_customer_profile_context(
+            variables=variables,
+            config=config,
+            normalization=normalization,
+            message=context.user_message
+        )
+        variables = self.capture_missing_required_paths_from_config_patterns(
             variables=variables,
             config=config,
             normalization=normalization,
@@ -4656,6 +4668,273 @@ class BookingSubagent:
                 output[target_path] = value
 
         return output
+
+
+    def capture_missing_required_paths_from_config_patterns(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+        message: str
+    ) -> Dict[str, Any]:
+        """
+        Deterministic last-mile capture for missing required create fields.
+
+        This intentionally does not depend on customer_detail_fields being
+        merged correctly. It reads required_before_create, finds currently
+        missing required paths, then runs only config.extraction_patterns that
+        explicitly target that missing path.
+
+        No domain-specific field names or phrases are hardcoded here.
+        """
+        if not isinstance(variables, dict):
+            variables = {}
+
+        text = str(message or "").strip()
+        if not text:
+            return variables
+
+        patterns = config.get("extraction_patterns", [])
+        if not isinstance(patterns, list) or not patterns:
+            return variables
+
+        missing_paths = self.get_missing_required_create_fields(config, variables)
+        missing_clean = [
+            self.strip_variables_prefix(str(path or "").strip())
+            for path in missing_paths
+            if str(path or "").strip()
+        ]
+
+        if not missing_clean:
+            return variables
+
+        field_configs_by_path: Dict[str, Dict[str, Any]] = {}
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = self.strip_variables_prefix(str(field_config.get("target_path") or "").strip())
+            if target_path:
+                field_configs_by_path[target_path] = field_config
+
+        updates: Dict[str, Any] = {}
+
+        for missing_path in missing_clean:
+            if deep_get(variables, missing_path) not in [None, "", [], {}]:
+                continue
+
+            value = self.extract_missing_required_path_from_config_patterns(
+                message=text,
+                target_path=missing_path,
+                patterns=patterns,
+                field_config=field_configs_by_path.get(missing_path, {}),
+                config=config,
+                normalization=normalization
+            )
+
+            if not value:
+                continue
+
+            updates[missing_path] = value
+
+            field_config = field_configs_by_path.get(missing_path, {})
+            backup_paths = field_config.get("backup_paths", []) if isinstance(field_config, dict) else []
+            if isinstance(backup_paths, list):
+                for backup_path in backup_paths:
+                    backup_clean = self.strip_variables_prefix(str(backup_path or "").strip())
+                    if backup_clean:
+                        updates[backup_clean] = value
+
+            # Generic mirror for customer_profile.* fields when no explicit
+            # backup path is configured or loaded.
+            if missing_path.startswith("customer_profile."):
+                field_name = missing_path.split(".", 1)[1].strip()
+                if field_name:
+                    updates.setdefault(f"booking.customer_profile.{field_name}", value)
+
+        if not updates:
+            return variables
+
+        return apply_variable_patch(variables, updates, [])
+
+
+    def extract_missing_required_path_from_config_patterns(
+        self,
+        message: str,
+        target_path: str,
+        patterns: List[Any],
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        clean_target = self.strip_variables_prefix(str(target_path or "").strip())
+
+        if not clean_target:
+            return ""
+
+        digit_map = normalization.get("digit_map", {})
+        raw_message = str(message or "")
+        digit_message = normalize_digits(raw_message, digit_map)
+        normalized_message = normalize_text(digit_message, normalization)
+
+        candidates: List[Dict[str, Any]] = []
+
+        for item in patterns:
+            if not isinstance(item, dict):
+                continue
+
+            item_target = self.strip_variables_prefix(
+                str(
+                    item.get("variable")
+                    or item.get("path")
+                    or item.get("target_path")
+                    or ""
+                ).strip()
+            )
+            when_missing = self.strip_variables_prefix(str(item.get("when_missing") or "").strip())
+
+            if item_target != clean_target and when_missing != clean_target:
+                continue
+
+            pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
+            if not pattern_text:
+                continue
+
+            try:
+                group_index = int(item.get("group", 1))
+            except Exception:
+                group_index = 1
+
+            for haystack, source in [
+                (raw_message, "required_pattern_raw"),
+                (digit_message, "required_pattern_digits"),
+                (normalized_message, "required_pattern_normalized"),
+            ]:
+                if not haystack:
+                    continue
+
+                try:
+                    matches = list(re.finditer(pattern_text, haystack, flags=re.IGNORECASE))
+                except re.error:
+                    continue
+
+                for match in matches:
+                    try:
+                        candidate = (
+                            match.group(group_index).strip()
+                            if match.groups()
+                            else match.group(0).strip()
+                        )
+                    except Exception:
+                        candidate = match.group(0).strip()
+
+                    value = self.normalize_missing_required_pattern_value(
+                        candidate=candidate,
+                        item=item,
+                        field_config=field_config,
+                        config=config,
+                        normalization=normalization
+                    )
+
+                    if value:
+                        candidates.append({
+                            "value": value,
+                            "raw": candidate,
+                            "source": source
+                        })
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda item: self.score_configured_customer_detail_candidate(
+                value=str(item.get("value") or ""),
+                raw=str(item.get("raw") or ""),
+                source=str(item.get("source") or ""),
+                field_config=field_config if isinstance(field_config, dict) else {},
+                normalization=normalization
+            ),
+            reverse=True
+        )
+
+        return str(candidates[0].get("value") or "").strip()
+
+
+    def normalize_missing_required_pattern_value(
+        self,
+        candidate: Any,
+        item: Dict[str, Any],
+        field_config: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        text = normalize_digits(str(candidate or "").strip(), normalization.get("digit_map", {}))
+
+        if not text:
+            return ""
+
+        if isinstance(field_config, dict) and field_config:
+            value = self.normalize_customer_profile_value(
+                value=text,
+                validator=str(field_config.get("validator") or ""),
+                config=config,
+                normalization=normalization,
+                field_config=field_config
+            )
+
+            if value:
+                return value
+
+            # Fall through to item-level loose validation because strict field
+            # regexes can be too conservative even after an explicit configured
+            # extraction pattern matched the missing required path.
+
+        cleanup_patterns = item.get("cleanup_patterns", [])
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    text = re.sub(pattern_text, " ", text).strip()
+                except re.error:
+                    continue
+
+        separator_pattern = str(item.get("separator_pattern", r"[،,.!?؟:;]+") or "")
+        if separator_pattern:
+            try:
+                text = re.sub(separator_pattern, " ", text)
+            except re.error:
+                pass
+
+        text = re.sub(r"\s+", " ", text).strip()
+
+        if not text:
+            return ""
+
+        # Generic item-level safeguards. These are config-driven where present
+        # and intentionally light when the regex itself already targeted the
+        # required missing path.
+        if item.get("require_digit") is True and not re.search(r"\d", text):
+            return ""
+
+        if item.get("require_letter") is True and not re.search(r"[A-Za-z\u0600-\u06FF]", text):
+            return ""
+
+        if item.get("require_letter_or_digit") is True and not re.search(r"[A-Za-z0-9\u0600-\u06FF]", text):
+            return ""
+
+        try:
+            min_length = int(item.get("min_length", 1) or 1)
+        except Exception:
+            min_length = 1
+
+        try:
+            max_length = int(item.get("max_length", 300) or 300)
+        except Exception:
+            max_length = 300
+
+        if len(text) < min_length or len(text) > max_length:
+            return ""
+
+        return text
 
 
     def capture_missing_configured_details_from_current_message(
