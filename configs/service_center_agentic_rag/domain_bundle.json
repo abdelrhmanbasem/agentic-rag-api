@@ -9,7 +9,7 @@
     "language_policy": "Reply in the same language and dialect as the customer. If the customer writes Arabic or Egyptian Arabic, reply in natural professional Egyptian Arabic, not Modern Standard Arabic. Prefer ممكن over يرجى, عندك over لديك, لو over إذا, تحب over ترغب, إيه over ما هو, بتسمع over تسمع, عايز/عاوز over ترغب.",
     "routing_policy": "The LangGraph manifest is the decision maker. It should infer the user's intent, selected subagent, missing inputs, and next move from the latest message, current variables, tool results, and conversation history. Subagents are safe executors, not the final speaker. For branch-list requests, select lookup. For nearest-branch requests, select location and call find_nearest_branch when location text or coordinates are available; otherwise ask for the user's area/location. For appointment/slot/booking requests, select booking. For vehicle symptom/problem reports, select troubleshooting first unless the customer directly asks to book or clearly agrees to a visit. Do not start booking just because the user mentions a symptom. Do not ask for location or appointment slots in the first symptom response unless the customer directly asks for a visit, branch, or booking. If the customer says phrases like حابب اكشف، عايز اكشف، عاوز اكشف، اكشف واطمن، عاوز اطمن، عاوز اطمن عليها، اكشف عليها، اودي العربية، اروح اكشف، احجز كشف، عايز اطمن على العربية after troubleshooting, treat it as visit/booking intent and move toward finding branch/date, not more troubleshooting. If troubleshooting.inspection_recommended is true or troubleshooting.stage is complete, and the customer replies with agreement words like اه، أيوه، ياريت، تمام، ماشي plus words like اطمن، اكشف، اوديها، اشوفها, treat it as visit/booking intent. If nearest_branch, location_branch, or selected_branch exists and the customer asks for appointments, continue booking from the known branch. If the customer asks for available appointments but no date or appointment_date is known, ask for the preferred day/date and do not call list_available_slots. If the customer says بكرة، بكره، tomorrow, weekday names, or Arabic date phrases with an appointment request, resolve them to appointment_date and use that date for sheet availability. For multi-intent messages, detect all intents in detected_intents. If the user asks for the nearest branch and available appointments/slots in the same message, set selected_subagent_id='location' and chained_subagent_id='booking' so location runs first and booking uses the returned selected_branch. If the user asks for branch list and then availability, do not chain unless a concrete branch/date is available. If the second action is missing required inputs after the first action, the response should summarize the completed action and ask only for the missing input. For messages containing area/location plus date phrase like بكرة or الأحد الجاي and availability intent, extract location intent and booking date in the same turn. During an active booking flow, if available_slots exist and the user selects an ordinal/time, select from those slots and keep the slot branch. If slot.branch is missing, use selected_branch, then location_branch, then nearest_branch. Never route to branch selection after a slot was selected when any known branch exists. When list_available_slots returns multiple slots, do not select or recommend any slot; ask the customer to choose. A waiting phrase like خد وقتك is not slot selection. During booking.stage awaiting_customer_details, customer detail messages such as name, phone, same-phone confirmation, or plate number must route to booking, not handoff and not simple response. During booking.stage awaiting_customer_details, if the customer provides one detail, booking must preserve previous customer_profile fields and ask only for the remaining missing detail. During booking.stage awaiting_confirmation, confirmation words must route to booking. During booking.stage slot_selection, time phrases like 3 العصر, 10 الصبح, or ordinal choices must route to booking and resolve only against current available_slots. When a selected slot exists, final wording must use booking.pending.time or appointment_time from state. Never invent or rewrite a different time. If the customer says 3 العصر, treat it as a time selection, not option number 3, unless the user explicitly says option/choice/number 3. If the customer asks a date-only question like what date a day corresponds to, answer the date only and do not list available slots. During active booking flow, date-only clarification questions must not trigger list_available_slots unless the latest message also asks for availability/appointments. If the customer selects a time and that time matches a current available slot after 12-hour normalization, select that slot and ask for confirmation instead of listing slots again. If the customer says الساعة 1 and 13:00 is the only matching 12-hour available slot, treat it as 13:00. When list_available_slots returns no slots, keep the fact grounded as BOOKING_NO_SLOTS and let the response phrasing be natural under template_response_policy constraints. Do not force a fixed no-slots sentence; the LLM can phrase it naturally only after slots_found=false is grounded. If the customer changes the requested date while slots or a pending slot are active, booking must clear stale slots and pending time before checking the new date. A date-change message such as actually, بدل, غير, خليها, what about, or a different resolved weekday/date should trigger fresh availability for the new date when branch is known. After date_change, never treat the message as a slot selection against the old available_slots. For hesitant or corrected messages, latest explicit preference wins unless the user clearly asks to compare alternatives. Do not parallelize changed date, branch, slot, service, or booking alternatives; use the latest selected preference. If a branch/location changes while slots or a pending booking are active, clear stale slots and pending time before any new availability or booking action. If the customer gives multiple symptoms, troubleshooting should score all configured matching rules and use the strongest primary rule while preserving matched_rules for response synthesis. If the customer asks for inspection/visit after troubleshooting, stop diagnostics and continue toward location/booking using configured visit intent policy.",
     "grounding_policy": "Never invent branches, slots, dates, prices, booking IDs, unavailable reasons, or booking confirmations. Tool results are the source of truth for branch lists, nearest branch, available slots, and booking creation. Variables may store previously confirmed tool results. If tool data is missing, ask one natural clarifying question. Do not say a booking is confirmed unless create_booking returns ok=true. If create_booking returns ok=true and visit_id exists, include the visit_id in the final answer. If a tool returns ok=false because required inputs are missing, ask for the missing input naturally. If a tool returns ok=false for a real tool/API error, explain safely and do not hallucinate a successful result. Pending booking selections are not confirmations. If booking.pending exists but create_booking has not returned ok=true, describe it only as the selected appointment before confirmation. Never ask the customer to choose a branch when selected_branch, nearest_branch, location_branch, or booking.pending.branch exists. Available slots are not recommendations. Never preselect the first slot after listing availability. Slot confirmation requires an explicit customer-selected time or ordinal. Final booking confirmation is only allowed when create_booking returned ok=true in the current tool_result or booking_status/visit_id in variables proves a successful create_booking. If tool_result is empty or visit_id is missing, never say the booking was created; ask only for the remaining missing customer details. If the customer asks to use the same/current WhatsApp number and a valid phone exists in configured phone source paths, treat phone as present and ask only for remaining missing customer details. If list_available_slots returns slots_found=false, the response LLM may phrase the no-slots message naturally, but it must not invent alternative dates, reasons, or slots. BOOKING_NO_SLOTS is allowed only when the booking executor/tool result proves slots_found=false for the requested branch/date. After booking.date_changed=true, available_slots and booking.pending from the previous date must not be used for final answers or booking creation. Fresh list_available_slots results are required before showing slots for a changed date. After location.branch_changed=true or location.changed=true, available_slots and booking.pending from the previous branch/location must not be used. Fresh list_available_slots results are required before showing slots after branch/location/date changes. Tool result ok=false is a tool/config/runtime failure; ok=true with slots_found=false is a successful no-slots lookup.",
-    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic like: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز. Avoid formal wording like هل ترغب. لو العميل قال يستخدم نفس الرقم أو الرقم اللي بيتكلم منه وكان الرقم موجود في السياق، ما تطلبش رقم التليفون تاني؛ اسأل بس عن البيانات الناقصة.",
+    "system_prompt": "You are a helpful car service center assistant. Be direct, practical, natural, and professional. Do not expose internal logic. Do not mention tools, JSON, variables, operations, schemas, subagents, LangGraph, prompts, or hidden reasoning. Never invent branches, dates, slots, unavailable reasons, booking IDs, prices, or booking confirmations. For appointment availability, never say there are no slots unless the availability tool was actually called with a valid branch and normalized date and returned no slots. If the customer asks for availability without a date, ask which day/date they prefer. If the customer originally asked for nearest branch and slots, later slot selections like أول معاد, معاد عشرة, عشرة الصبح, or التاني refer to the slots returned for that nearest branch. If a slot is selected but booking is not confirmed yet, do not say هاحجز لك, حجزتلك, or تم الحجز; say اخترتلك المعاد ده and ask for confirmation. Do not say ده ملخص الحجز. When showing available slots, do not pick any slot for the customer. List the slots and ask which one suits them. Do not say اخترتلك unless the customer selected a time or ordinal. Never say الحجز اتعمل، اتأكد الحجز، تم تأكيد الحجز, or confirmed booking unless create_booking returned ok=true and a visit_id exists. If required details are still missing, ask only for the missing details. Use natural Egyptian Arabic when asking for booking details, and vary the wording instead of repeating one template. Examples: تمام، ابعتلي الاسم الكامل ورقم العربية وتفاصيل العربية ونكمل؛ قولي ماركة العربية وفئتها وموديل السنة؛ فاضل بس بيانات العربية عشان أثبت الطلب صح. Avoid formal wording like هل ترغب. لو العميل قال يستخدم نفس الرقم أو الرقم اللي بيتكلم منه وكان الرقم موجود في السياق، ما تطلبش رقم التليفون تاني؛ اسأل بس عن البيانات الناقصة.",
     "branch_aliases": {
       "Nasr City": [
         "Nasr City",
@@ -235,6 +235,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ]
           }
@@ -403,9 +406,9 @@
       "If booking.stage is awaiting_customer_details, booking.pending exists, and create_booking has not returned ok=true, ask only for missing customer details. Do not close the conversation and do not say booking is done.",
       "If customer_profile.full_name is missing, invalid, or looks like a confirmation phrase such as اه أكده تمام, اكد تمام, تمام, اه, ايوه, or اوكي, ask for the customer's full name.",
       "If the customer provides plate_number while full_name is still missing, acknowledge briefly and ask only for the full name. Do not say the booking was created.",
-      "When asking for both full name and plate number, use natural Egyptian Arabic: تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز.",
-      "When asking for only full name, use: تمام، محتاج اسمك الكامل عشان أكمل الحجز.",
-      "When asking for only plate number, use: تمام، محتاج رقم العربية عشان أكمل الحجز.",
+      "When asking for both full name and plate number, vary the wording naturally, for example: ابعتلي اسمك الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة.",
+      "When asking for only full name, vary the wording naturally, for example: قولي الاسم الكامل اللي نسجل بيه الزيارة.",
+      "When asking for only plate number, vary the wording naturally, for example: فاضل رقم العربية بس عشان نثبت بيانات الزيارة.",
       "Use تأكدلي أكمل الحجز؟ instead of هل ترغب في تأكيد الحجز؟",
       "Use اخترتلك معاد 11:00 الصبح في فرع مدينة نصر. تأكدلي أكمل الحجز؟ instead of تم تأكيد المعاد الساعة 11:00 صباحًا... هل ترغب في تأكيد الحجز؟",
       "After create_booking ok=true, final confirmation must include visit_id when returned, branch, date/date_text, time, and a short friendly close.",
@@ -437,7 +440,14 @@
       "If the user asks multiple things in one message, answer completed grounded parts briefly and ask only for the missing input.",
       "If the user corrects themselves in the same message, follow the latest correction and do not mention discarded alternatives unless helpful.",
       "Troubleshooting responses should use configured rule metadata and ask only one useful diagnostic question unless inspection is recommended.",
-      "If troubleshooting detects visit intent, stop asking diagnostic questions and move toward branch/date."
+      "If troubleshooting detects visit intent, stop asking diagnostic questions and move toward branch/date.",
+      "Collect vehicle details during customer-detail collection when configured as required: car brand, car class/trim, and car model year.",
+      "When asking for missing vehicle details, do not repeat the same sentence for every field. Vary the phrasing naturally and ask only for the fields still missing.",
+      "For missing car brand, natural options include: قولي ماركة العربية إيه؟ or إيه نوع العربية؟",
+      "For missing car class/trim, natural options include: فاضل أعرف فئة العربية أو النسخة بتاعتها. or هي أنهي فئة/trim؟",
+      "For missing car model year, natural options include: العربية موديل سنة كام؟ or قولي سنة الموديل بس.",
+      "If multiple vehicle details are missing, group them naturally in one question: قولي ماركة العربية وفئتها وموديل السنة، بدل ما نسأل على كل واحدة لوحدها.",
+      "Do not phrase every missing-detail question as محتاج ... عشان أكمل الحجز. Use varied, short, natural Egyptian Arabic."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -590,6 +600,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ],
             "optional": [
@@ -614,6 +627,26 @@
                 "vehicle_number",
                 "car_plate",
                 "customer_profile.plate_number"
+              ],
+              "car_brand": [
+                "vehicle_brand",
+                "car_make",
+                "make",
+                "customer_profile.car_brand"
+              ],
+              "car_class": [
+                "vehicle_class",
+                "car_trim",
+                "trim",
+                "class",
+                "customer_profile.car_class"
+              ],
+              "car_model_year": [
+                "vehicle_model_year",
+                "model_year",
+                "car_year",
+                "year_model",
+                "customer_profile.car_model_year"
               ]
             },
             "idempotency": {
@@ -1247,7 +1280,10 @@
             "available_branches_text",
             "user_area",
             "phone",
-            "customer_phone"
+            "customer_phone",
+            "car_brand",
+            "car_class",
+            "car_model_year"
           ]
         },
         "stages": {
@@ -1344,6 +1380,9 @@
           "variables.customer_profile.full_name",
           "variables.customer_profile.phone",
           "variables.customer_profile.plate_number",
+          "variables.customer_profile.car_brand",
+          "variables.customer_profile.car_class",
+          "variables.customer_profile.car_model_year",
           "variables.customer_confirmed_booking"
         ],
         "field_labels": {
@@ -1358,7 +1397,10 @@
           "variables.customer_profile.full_name": "full name",
           "variables.customer_profile.phone": "phone",
           "variables.customer_profile.plate_number": "plate number",
-          "variables.customer_confirmed_booking": "booking confirmation"
+          "variables.customer_confirmed_booking": "booking confirmation",
+          "variables.customer_profile.car_brand": "car brand",
+          "variables.customer_profile.car_class": "car class",
+          "variables.customer_profile.car_model_year": "car model year"
         },
         "date_direct_terms": [
           "بكرة",
@@ -1777,7 +1819,10 @@
           "full_name": "variables.customer_profile.full_name",
           "phone": "variables.customer_profile.phone",
           "plate_number": "variables.customer_profile.plate_number",
-          "customer_confirmed_booking": "variables.customer_confirmed_booking"
+          "customer_confirmed_booking": "variables.customer_confirmed_booking",
+          "car_brand": "variables.customer_profile.car_brand",
+          "car_class": "variables.customer_profile.car_class",
+          "car_model_year": "variables.customer_profile.car_model_year"
         },
         "on_missing_list_slots_updates": {
           "booking.stage": "awaiting_date"
@@ -1827,7 +1872,12 @@
           "missing_name_phone_and_plate": "BOOKING_MISSING_NAME_PHONE_AND_PLATE",
           "date_resolved": "BOOKING_DATE_RESOLVED",
           "requested_time_not_available": "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
-          "requested_time_ambiguous": "BOOKING_REQUESTED_TIME_AMBIGUOUS"
+          "requested_time_ambiguous": "BOOKING_REQUESTED_TIME_AMBIGUOUS",
+          "missing_car_brand": "BOOKING_MISSING_CAR_BRAND",
+          "missing_car_class": "BOOKING_MISSING_CAR_CLASS",
+          "missing_car_model_year": "BOOKING_MISSING_CAR_MODEL_YEAR",
+          "missing_vehicle_details": "BOOKING_MISSING_VEHICLE_DETAILS",
+          "missing_customer_vehicle_details": "BOOKING_MISSING_CUSTOMER_VEHICLE_DETAILS"
         },
         "slot_context_carryover": {
           "enabled": true,
@@ -1899,7 +1949,39 @@
             "plate",
             "plate number",
             "car plate",
-            "vehicle number"
+            "vehicle number",
+            "ماركة العربية",
+            "ماركه العربيه",
+            "ماركة",
+            "ماركه",
+            "نوع العربية",
+            "نوع العربيه",
+            "brand",
+            "car brand",
+            "make",
+            "car make",
+            "فئة العربية",
+            "فئه العربيه",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "trim",
+            "class",
+            "car class",
+            "category",
+            "version",
+            "هاي لاين",
+            "هاى لاين",
+            "موديل العربية",
+            "موديل العربيه",
+            "موديل السنة",
+            "سنة الموديل",
+            "موديل",
+            "سنة",
+            "model year",
+            "year model",
+            "car year"
           ],
           "if_name_missing_after_plate": "ask_only_for_full_name",
           "if_name_and_plate_missing_after_confirmation": "ask_for_full_name_and_plate"
@@ -2039,7 +2121,39 @@
             "رقم اللوحة بتاعتي",
             "plate number",
             "car plate",
-            "vehicle number"
+            "vehicle number",
+            "ماركة العربية",
+            "ماركه العربيه",
+            "ماركة",
+            "ماركه",
+            "نوع العربية",
+            "نوع العربيه",
+            "brand",
+            "car brand",
+            "make",
+            "car make",
+            "فئة العربية",
+            "فئه العربيه",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "trim",
+            "class",
+            "car class",
+            "category",
+            "version",
+            "هاي لاين",
+            "هاى لاين",
+            "موديل العربية",
+            "موديل العربيه",
+            "موديل السنة",
+            "سنة الموديل",
+            "موديل",
+            "سنة",
+            "model year",
+            "year model",
+            "car year"
           ],
           "same_phone_markers": [
             "نفس الرقم",
@@ -2066,6 +2180,44 @@
             "use this number",
             "whatsapp number",
             "same whatsapp number"
+          ],
+          "brand_markers": [
+            "ماركة العربية",
+            "ماركه العربيه",
+            "ماركة",
+            "ماركه",
+            "نوع العربية",
+            "نوع العربيه",
+            "brand",
+            "car brand",
+            "make",
+            "car make"
+          ],
+          "class_markers": [
+            "فئة العربية",
+            "فئه العربيه",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "trim",
+            "class",
+            "car class",
+            "category",
+            "version",
+            "هاي لاين",
+            "هاى لاين"
+          ],
+          "model_year_markers": [
+            "موديل العربية",
+            "موديل العربيه",
+            "موديل السنة",
+            "سنة الموديل",
+            "موديل",
+            "سنة",
+            "model year",
+            "year model",
+            "car year"
           ]
         },
         "customer_detail_guards": {
@@ -2164,7 +2316,20 @@
             "confirmed",
             "yes",
             "ok",
-            "okay"
+            "okay",
+            "ماركة",
+            "ماركه",
+            "نوع",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "موديل",
+            "سنة",
+            "هاي لاين",
+            "trim",
+            "class",
+            "brand"
           ],
           "customer_marker_exceptions": [
             "اسمي",
@@ -2203,7 +2368,39 @@
             "لوحتى",
             "plate number",
             "car plate",
-            "vehicle number"
+            "vehicle number",
+            "ماركة العربية",
+            "ماركه العربيه",
+            "ماركة",
+            "ماركه",
+            "نوع العربية",
+            "نوع العربيه",
+            "brand",
+            "car brand",
+            "make",
+            "car make",
+            "فئة العربية",
+            "فئه العربيه",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "trim",
+            "class",
+            "car class",
+            "category",
+            "version",
+            "هاي لاين",
+            "هاى لاين",
+            "موديل العربية",
+            "موديل العربيه",
+            "موديل السنة",
+            "سنة الموديل",
+            "موديل",
+            "سنة",
+            "model year",
+            "year model",
+            "car year"
           ],
           "min_name_parts": 2,
           "max_name_parts": 6,
@@ -2679,7 +2876,10 @@
           "variables.selected_branch": "missing_branch",
           "variables.customer_profile.full_name": "missing_full_name",
           "variables.customer_profile.phone": "missing_phone",
-          "variables.customer_profile.plate_number": "missing_plate_number"
+          "variables.customer_profile.plate_number": "missing_plate_number",
+          "variables.customer_profile.car_brand": "missing_car_brand",
+          "variables.customer_profile.car_class": "missing_car_class",
+          "variables.customer_profile.car_model_year": "missing_car_model_year"
         },
         "missing_template_rules": [
           {
@@ -2710,6 +2910,24 @@
               "variables.customer_profile.plate_number"
             ],
             "template_key": "missing_name_phone_and_plate"
+          },
+          {
+            "paths": [
+              "variables.customer_profile.car_brand",
+              "variables.customer_profile.car_class",
+              "variables.customer_profile.car_model_year"
+            ],
+            "template_key": "missing_vehicle_details"
+          },
+          {
+            "paths": [
+              "variables.customer_profile.full_name",
+              "variables.customer_profile.plate_number",
+              "variables.customer_profile.car_brand",
+              "variables.customer_profile.car_class",
+              "variables.customer_profile.car_model_year"
+            ],
+            "template_key": "missing_customer_vehicle_details"
           }
         ],
         "customer_profile_persistence": {
@@ -3015,6 +3233,176 @@
               },
               "required": true,
               "label": "plate number"
+            },
+            "car_brand": {
+              "target_path": "customer_profile.car_brand",
+              "source_paths": [
+                "customer_profile.car_brand",
+                "booking.customer_profile.car_brand",
+                "booking.pending.customer_profile.car_brand",
+                "booking.confirmed.car_brand",
+                "car_brand",
+                "vehicle_brand",
+                "car_make",
+                "make"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_brand"
+              ],
+              "validator": "non_empty_string",
+              "argument_names": [
+                "car_brand",
+                "vehicle_brand",
+                "car_make",
+                "make"
+              ],
+              "markers": [
+                "ماركة العربية",
+                "ماركه العربيه",
+                "ماركة",
+                "ماركه",
+                "نوع العربية",
+                "نوع العربيه",
+                "brand",
+                "car brand",
+                "make",
+                "car make"
+              ],
+              "extraction": {
+                "capture_patterns": [
+                  {
+                    "regex": "(?:ماركة العربية|ماركه العربيه|ماركة|ماركه|نوع العربية|نوع العربيه|brand|car brand|make|car make)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                    "group": 1
+                  }
+                ],
+                "cleanup_patterns": [],
+                "blocklist": [
+                  "رقم",
+                  "لوحة",
+                  "اللوحة",
+                  "تليفون",
+                  "موبايل",
+                  "ميعاد",
+                  "معاد",
+                  "موعد",
+                  "فرع"
+                ]
+              },
+              "required": true,
+              "label": "car brand"
+            },
+            "car_class": {
+              "target_path": "customer_profile.car_class",
+              "source_paths": [
+                "customer_profile.car_class",
+                "booking.customer_profile.car_class",
+                "booking.pending.customer_profile.car_class",
+                "booking.confirmed.car_class",
+                "car_class",
+                "vehicle_class",
+                "car_trim",
+                "trim",
+                "class"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_class"
+              ],
+              "validator": "non_empty_string",
+              "argument_names": [
+                "car_class",
+                "vehicle_class",
+                "car_trim",
+                "trim",
+                "class"
+              ],
+              "markers": [
+                "فئة العربية",
+                "فئه العربيه",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "trim",
+                "class",
+                "car class",
+                "category",
+                "version",
+                "هاي لاين",
+                "هاى لاين"
+              ],
+              "extraction": {
+                "capture_patterns": [
+                  {
+                    "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                    "group": 1
+                  }
+                ],
+                "cleanup_patterns": [],
+                "blocklist": [
+                  "رقم",
+                  "لوحة",
+                  "اللوحة",
+                  "تليفون",
+                  "موبايل",
+                  "ميعاد",
+                  "معاد",
+                  "موعد",
+                  "فرع"
+                ]
+              },
+              "required": true,
+              "label": "car class"
+            },
+            "car_model_year": {
+              "target_path": "customer_profile.car_model_year",
+              "source_paths": [
+                "customer_profile.car_model_year",
+                "booking.customer_profile.car_model_year",
+                "booking.pending.customer_profile.car_model_year",
+                "booking.confirmed.car_model_year",
+                "car_model_year",
+                "vehicle_model_year",
+                "model_year",
+                "year_model",
+                "car_year"
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_model_year"
+              ],
+              "validator": "non_empty_string",
+              "argument_names": [
+                "car_model_year",
+                "vehicle_model_year",
+                "model_year",
+                "year_model",
+                "car_year"
+              ],
+              "markers": [
+                "موديل العربية",
+                "موديل العربيه",
+                "موديل السنة",
+                "سنة الموديل",
+                "موديل",
+                "سنة",
+                "model year",
+                "year model",
+                "car year"
+              ],
+              "extraction": {
+                "capture_patterns": [
+                  {
+                    "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*([12][0-9٠-٩۰-۹]{3})",
+                    "group": 1
+                  },
+                  {
+                    "regex": "\\b([12][0-9٠-٩۰-۹]{3})\\b",
+                    "group": 1
+                  }
+                ],
+                "cleanup_patterns": []
+              },
+              "required": true,
+              "label": "car model year"
             }
           },
           "aliases": [
@@ -3533,6 +3921,179 @@
               "prefer_marker_remainder": true
             },
             "required": true
+          },
+          {
+            "target_path": "customer_profile.car_brand",
+            "source_paths": [
+              "customer_profile.car_brand",
+              "booking.customer_profile.car_brand",
+              "booking.pending.customer_profile.car_brand",
+              "booking.confirmed.car_brand",
+              "car_brand",
+              "vehicle_brand",
+              "car_make",
+              "make"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.car_brand"
+            ],
+            "validator": "non_empty_string",
+            "argument_names": [
+              "car_brand",
+              "vehicle_brand",
+              "car_make",
+              "make"
+            ],
+            "markers": [
+              "ماركة العربية",
+              "ماركه العربيه",
+              "ماركة",
+              "ماركه",
+              "نوع العربية",
+              "نوع العربيه",
+              "brand",
+              "car brand",
+              "make",
+              "car make"
+            ],
+            "extraction": {
+              "capture_patterns": [
+                {
+                  "regex": "(?:ماركة العربية|ماركه العربيه|ماركة|ماركه|نوع العربية|نوع العربيه|brand|car brand|make|car make)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                }
+              ],
+              "cleanup_patterns": [],
+              "blocklist": [
+                "رقم",
+                "لوحة",
+                "اللوحة",
+                "تليفون",
+                "موبايل",
+                "ميعاد",
+                "معاد",
+                "موعد",
+                "فرع"
+              ]
+            },
+            "required": true,
+            "label": "car brand",
+            "field": "car_brand"
+          },
+          {
+            "target_path": "customer_profile.car_class",
+            "source_paths": [
+              "customer_profile.car_class",
+              "booking.customer_profile.car_class",
+              "booking.pending.customer_profile.car_class",
+              "booking.confirmed.car_class",
+              "car_class",
+              "vehicle_class",
+              "car_trim",
+              "trim",
+              "class"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.car_class"
+            ],
+            "validator": "non_empty_string",
+            "argument_names": [
+              "car_class",
+              "vehicle_class",
+              "car_trim",
+              "trim",
+              "class"
+            ],
+            "markers": [
+              "فئة العربية",
+              "فئه العربيه",
+              "فئة",
+              "فئه",
+              "الفئة",
+              "الفئه",
+              "trim",
+              "class",
+              "car class",
+              "category",
+              "version",
+              "هاي لاين",
+              "هاى لاين"
+            ],
+            "extraction": {
+              "capture_patterns": [
+                {
+                  "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                }
+              ],
+              "cleanup_patterns": [],
+              "blocklist": [
+                "رقم",
+                "لوحة",
+                "اللوحة",
+                "تليفون",
+                "موبايل",
+                "ميعاد",
+                "معاد",
+                "موعد",
+                "فرع"
+              ]
+            },
+            "required": true,
+            "label": "car class",
+            "field": "car_class"
+          },
+          {
+            "target_path": "customer_profile.car_model_year",
+            "source_paths": [
+              "customer_profile.car_model_year",
+              "booking.customer_profile.car_model_year",
+              "booking.pending.customer_profile.car_model_year",
+              "booking.confirmed.car_model_year",
+              "car_model_year",
+              "vehicle_model_year",
+              "model_year",
+              "year_model",
+              "car_year"
+            ],
+            "backup_paths": [
+              "booking.customer_profile.car_model_year"
+            ],
+            "validator": "non_empty_string",
+            "argument_names": [
+              "car_model_year",
+              "vehicle_model_year",
+              "model_year",
+              "year_model",
+              "car_year"
+            ],
+            "markers": [
+              "موديل العربية",
+              "موديل العربيه",
+              "موديل السنة",
+              "سنة الموديل",
+              "موديل",
+              "سنة",
+              "model year",
+              "year model",
+              "car year"
+            ],
+            "extraction": {
+              "capture_patterns": [
+                {
+                  "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*([12][0-9٠-٩۰-۹]{3})",
+                  "group": 1
+                },
+                {
+                  "regex": "\\b([12][0-9٠-٩۰-۹]{3})\\b",
+                  "group": 1
+                }
+              ],
+              "cleanup_patterns": []
+            },
+            "required": true,
+            "label": "car model year",
+            "field": "car_model_year"
           }
         ],
         "required_customer_details": [
@@ -4414,6 +4975,115 @@
           "when_slots_exist_without_selection_template": "BOOKING_SLOT_SELECTION_UNCLEAR",
           "do_not_collect_customer_details_before_slot_selection": true,
           "do_not_create_booking_without_pending_selection": true
+        },
+        "vehicle_detail_extraction": {
+          "enabled": true,
+          "fields": {
+            "car_brand": {
+              "target_path": "customer_profile.car_brand",
+              "markers": [
+                "ماركة العربية",
+                "ماركه العربيه",
+                "ماركة",
+                "ماركه",
+                "نوع العربية",
+                "نوع العربيه",
+                "brand",
+                "car brand",
+                "make",
+                "car make"
+              ],
+              "capture_patterns": [
+                {
+                  "regex": "(?:ماركة العربية|ماركه العربيه|ماركة|ماركه|نوع العربية|نوع العربيه|brand|car brand|make|car make)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                }
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_brand"
+              ],
+              "argument_names": [
+                "car_brand",
+                "vehicle_brand",
+                "car_make",
+                "make"
+              ],
+              "required": true,
+              "label": "car brand"
+            },
+            "car_class": {
+              "target_path": "customer_profile.car_class",
+              "markers": [
+                "فئة العربية",
+                "فئه العربيه",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "trim",
+                "class",
+                "car class",
+                "category",
+                "version",
+                "هاي لاين",
+                "هاى لاين"
+              ],
+              "capture_patterns": [
+                {
+                  "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
+                  "group": 1
+                }
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_class"
+              ],
+              "argument_names": [
+                "car_class",
+                "vehicle_class",
+                "car_trim",
+                "trim",
+                "class"
+              ],
+              "required": true,
+              "label": "car class"
+            },
+            "car_model_year": {
+              "target_path": "customer_profile.car_model_year",
+              "markers": [
+                "موديل العربية",
+                "موديل العربيه",
+                "موديل السنة",
+                "سنة الموديل",
+                "موديل",
+                "سنة",
+                "model year",
+                "year model",
+                "car year"
+              ],
+              "capture_patterns": [
+                {
+                  "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*([12][0-9٠-٩۰-۹]{3})",
+                  "group": 1
+                },
+                {
+                  "regex": "\\b([12][0-9٠-٩۰-۹]{3})\\b",
+                  "group": 1
+                }
+              ],
+              "backup_paths": [
+                "booking.customer_profile.car_model_year"
+              ],
+              "argument_names": [
+                "car_model_year",
+                "vehicle_model_year",
+                "model_year",
+                "year_model",
+                "car_year"
+              ],
+              "required": true,
+              "label": "car model year"
+            }
+          }
         }
       },
       "troubleshooting": {
@@ -5367,7 +6037,8 @@
       ],
       "compact_variable_max_keys": 16,
       "compact_variable_max_value_chars": 1600,
-      "run_every_messages": 8
+      "run_every_messages": 8,
+      "vehicle_details_version": "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding"
     },
     "template_response_policy": {
       "BOOKING_CONFIRM_SELECTED_SLOT": {
@@ -6961,11 +7632,135 @@
               "value": ""
             }
           ]
+        },
+        {
+          "id": "customer_car_brand",
+          "target_path": "customer_profile.car_brand",
+          "description": "The customer's car brand or make. Extract only when the user clearly provides the car brand, either labelled or as part of vehicle details. Brand may be Arabic or English.",
+          "output_format": "Clean car brand only, without labels or extra words. Preserve the language the user used when possible.",
+          "validation_description": "Must be a plausible car brand/make. Do not extract service type, branch, plate number, customer name, phone, appointment date, or confirmation words.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "قولي ماركة العربية إيه؟",
+          "question_goal": "collect_customer_car_brand",
+          "examples": [
+            {
+              "user_message": "العربية هيونداي النترا 2022",
+              "value": "هيونداي"
+            },
+            {
+              "user_message": "عربيتي Toyota Corolla",
+              "value": "Toyota"
+            },
+            {
+              "user_message": "ماركة العربية كيا",
+              "value": "كيا"
+            },
+            {
+              "user_message": "رقم العربيه ب ج د ٥٥٥",
+              "value": ""
+            }
+          ]
+        },
+        {
+          "id": "customer_car_class",
+          "target_path": "customer_profile.car_class",
+          "description": "The customer's car class, trim, category, or version. Extract only when the user clearly gives class/trim/version/category.",
+          "output_format": "Clean class/trim/category exactly as the customer said it, without labels.",
+          "validation_description": "Must describe a car class, trim, version, or category. Do not extract brand alone, model year, plate number, phone, branch, appointment time, or confirmation words.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "فاضل أعرف فئة العربية أو النسخة بتاعتها.",
+          "question_goal": "collect_customer_car_class",
+          "examples": [
+            {
+              "user_message": "العربية هيونداي النترا 2022 الفئة التانية",
+              "value": "الفئة التانية"
+            },
+            {
+              "user_message": "هي هاي لاين",
+              "value": "هاي لاين"
+            },
+            {
+              "user_message": "Mercedes C-Class موديل 2021",
+              "value": "C-Class"
+            },
+            {
+              "user_message": "ماركة العربية كيا",
+              "value": ""
+            }
+          ]
+        },
+        {
+          "id": "customer_car_model_year",
+          "target_path": "customer_profile.car_model_year",
+          "description": "The customer's car model year. Extract only when the user clearly gives the car model year.",
+          "output_format": "A 4-digit Western year only. Normalize Arabic/Persian digits to Western digits.",
+          "validation_description": "Must be a plausible 4-digit car model year, usually between 1980 and 2035. Do not extract appointment dates, booking dates, phone numbers, plate numbers, or service dates.",
+          "required_when_stage_path": "booking.stage",
+          "required_when_stages": [
+            "awaiting_customer_details"
+          ],
+          "required_when_paths": [
+            {
+              "path": "booking.pending",
+              "must_be_present": true
+            },
+            {
+              "path": "customer_confirmed_booking",
+              "equals": true
+            }
+          ],
+          "ask_if_missing": "العربية موديل سنة كام؟",
+          "question_goal": "collect_customer_car_model_year",
+          "examples": [
+            {
+              "user_message": "العربية موديل ٢٠٢٢",
+              "value": "2022"
+            },
+            {
+              "user_message": "هيونداي النترا 2020",
+              "value": "2020"
+            },
+            {
+              "user_message": "Toyota Corolla model year 2019",
+              "value": "2019"
+            },
+            {
+              "user_message": "المعاد يوم 2026-06-07",
+              "value": ""
+            }
+          ]
         }
       ]
     },
     "architecture_patches": [
-      "6.38-config-driven-memory-policy-no-hardcoding"
+      "6.38-config-driven-memory-policy-no-hardcoding",
+      "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding"
     ]
   },
   "schema": {
