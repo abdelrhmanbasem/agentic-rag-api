@@ -447,7 +447,13 @@
       "For missing car class/trim, natural options include: فاضل أعرف فئة العربية أو النسخة بتاعتها. or هي أنهي فئة/trim؟",
       "For missing car model year, natural options include: العربية موديل سنة كام؟ or قولي سنة الموديل بس.",
       "If multiple vehicle details are missing, group them naturally in one question: قولي ماركة العربية وفئتها وموديل السنة، بدل ما نسأل على كل واحدة لوحدها.",
-      "Do not phrase every missing-detail question as محتاج ... عشان أكمل الحجز. Use varied, short, natural Egyptian Arabic."
+      "Do not phrase every missing-detail question as محتاج ... عشان أكمل الحجز. Use varied, short, natural Egyptian Arabic.",
+      "If the customer says they need to get/check the license or documents, acknowledge and wait naturally; do not treat the phrase as a vehicle detail and do not create a booking.",
+      "If the customer asks what car class/fئة means, explain it simply first, then ask for the value again only if still missing.",
+      "If the customer gives a 4-digit year while answering class/fئة, store it as car_model_year and continue asking for the actual car class if missing.",
+      "If the customer gives a trim/class while answering model year, store it as car_class and continue asking for the model year if missing.",
+      "For vehicle detail questions, avoid repeating the same محتاج ... عشان أكمل الحجز structure. Use the configured missing_detail_response_policy variants and keep the tone natural.",
+      "When several vehicle details are missing, group them in one natural question instead of asking three separate robotic questions."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -1877,7 +1883,11 @@
           "missing_car_class": "BOOKING_MISSING_CAR_CLASS",
           "missing_car_model_year": "BOOKING_MISSING_CAR_MODEL_YEAR",
           "missing_vehicle_details": "BOOKING_MISSING_VEHICLE_DETAILS",
-          "missing_customer_vehicle_details": "BOOKING_MISSING_CUSTOMER_VEHICLE_DETAILS"
+          "missing_customer_vehicle_details": "BOOKING_MISSING_CUSTOMER_VEHICLE_DETAILS",
+          "field_help_car_brand": "BOOKING_FIELD_HELP_CAR_BRAND",
+          "field_help_car_class": "BOOKING_FIELD_HELP_CAR_CLASS",
+          "field_help_car_model_year": "BOOKING_FIELD_HELP_CAR_MODEL_YEAR",
+          "hold_for_license": "BOOKING_HOLD_FOR_LICENSE_OR_DOCUMENTS"
         },
         "slot_context_carryover": {
           "enabled": true,
@@ -1984,7 +1994,9 @@
             "car year"
           ],
           "if_name_missing_after_plate": "ask_only_for_full_name",
-          "if_name_and_plate_missing_after_confirmation": "ask_for_full_name_and_plate"
+          "if_name_and_plate_missing_after_confirmation": "ask_for_full_name_and_plate",
+          "hold_or_delay_phrases_are_not_customer_details": true,
+          "do_not_extract_vehicle_details_from_help_questions": true
         },
         "customer_detail_markers": {
           "name_markers": [
@@ -2153,7 +2165,30 @@
             "سنة",
             "model year",
             "year model",
-            "car year"
+            "car year",
+            "استنى",
+            "استنا",
+            "استني",
+            "لحظة",
+            "ثانية",
+            "دقيقة",
+            "هجيب الرخصة",
+            "اجيب الرخصة",
+            "أجيب الرخصة",
+            "اشوف الرخصة",
+            "أشوف الرخصة",
+            "ابص في الرخصة",
+            "أبص في الرخصة",
+            "هراجع الرخصة",
+            "لما اجيب الرخصة",
+            "لما أجيب الرخصة",
+            "الرخصة معايا",
+            "هجيب الورق",
+            "اشوف الورق",
+            "wait",
+            "one second",
+            "give me a minute",
+            "let me check the license"
           ],
           "same_phone_markers": [
             "نفس الرقم",
@@ -2218,6 +2253,31 @@
             "model year",
             "year model",
             "car year"
+          ],
+          "hold_or_delay_markers": [
+            "استنى",
+            "استنا",
+            "استني",
+            "لحظة",
+            "ثانية",
+            "دقيقة",
+            "هجيب الرخصة",
+            "اجيب الرخصة",
+            "أجيب الرخصة",
+            "اشوف الرخصة",
+            "أشوف الرخصة",
+            "ابص في الرخصة",
+            "أبص في الرخصة",
+            "هراجع الرخصة",
+            "لما اجيب الرخصة",
+            "لما أجيب الرخصة",
+            "الرخصة معايا",
+            "هجيب الورق",
+            "اشوف الورق",
+            "wait",
+            "one second",
+            "give me a minute",
+            "let me check the license"
           ]
         },
         "customer_detail_guards": {
@@ -5084,6 +5144,196 @@
               "label": "car model year"
             }
           }
+        },
+        "hold_or_delay_phrases": [
+          "استنى",
+          "استنا",
+          "استني",
+          "لحظة",
+          "ثانية",
+          "دقيقة",
+          "هجيب الرخصة",
+          "اجيب الرخصة",
+          "أجيب الرخصة",
+          "اشوف الرخصة",
+          "أشوف الرخصة",
+          "ابص في الرخصة",
+          "أبص في الرخصة",
+          "هراجع الرخصة",
+          "لما اجيب الرخصة",
+          "لما أجيب الرخصة",
+          "الرخصة معايا",
+          "هجيب الورق",
+          "اشوف الورق",
+          "wait",
+          "one second",
+          "give me a minute",
+          "let me check the license"
+        ],
+        "hold_or_delay_response_policy": {
+          "enabled": true,
+          "intent": "The user is pausing to check the license/documents or gather vehicle details.",
+          "do_not_extract_as_vehicle_detail": true,
+          "do_not_create_booking": true,
+          "do_not_repeat_all_missing_fields_every_time": true,
+          "response_variants": [
+            "تمام، خد وقتك. لما تكون جاهز ابعتلي بيانات العربية اللي ظاهرة في الرخصة.",
+            "ولا يهمك، شوف الرخصة براحتك. لما ترجع ابعتلي اللي لسه ناقص من بيانات العربية.",
+            "ماشي، مستنيك. ابعتلي الماركة والفئة وموديل السنة لما تبقى قدامك.",
+            "تمام، راجع الرخصة براحتك، ولما تجهز نكمّل من آخر نقطة وقفنا عندها.",
+            "خد وقتك، أول ما تكون جاهز قولي بيانات العربية ونثبتها صح."
+          ],
+          "response_style": "Natural Egyptian Arabic, short, calm, not robotic, no repeated fixed template."
+        },
+        "field_help": {
+          "customer_profile.car_brand": {
+            "label": "car brand",
+            "when_user_asks": [
+              "يعني ايه الماركة",
+              "يعني إيه الماركة",
+              "ايه الماركة",
+              "إيه الماركة",
+              "ماركة يعني ايه",
+              "مش فاهم الماركة",
+              "what do you mean by brand",
+              "what is car brand"
+            ],
+            "answer_variants": [
+              "قصدي ماركة العربية، زي هيونداي، كيا، تويوتا، شيفروليه، مرسيدس.",
+              "الماركة يعني اسم الشركة أو نوع العربية، زي Kia أو Hyundai أو Toyota.",
+              "يعني اسم مصنع العربية المكتوب في الرخصة، مثلاً نيسان أو شيفروليه أو BMW."
+            ],
+            "follow_up_variants": [
+              "قولي الماركة المكتوبة في الرخصة.",
+              "ابعتلي اسم الماركة بس لما تعرفه.",
+              "لو مش متأكد، انقلها من الرخصة زي ما هي."
+            ]
+          },
+          "customer_profile.car_class": {
+            "label": "car class",
+            "when_user_asks": [
+              "يعني ايه الفئة",
+              "يعني إيه الفئة",
+              "ايه الفئة",
+              "إيه الفئة",
+              "الفئة يعني ايه",
+              "مش فاهم الفئة",
+              "تقصد ايه بالفئة",
+              "تقصد إيه بالفئة",
+              "class يعني ايه",
+              "what do you mean by class",
+              "what is car class"
+            ],
+            "answer_variants": [
+              "قصدي فئة أو نسخة العربية، زي الفئة الأولى، الفئة التانية، Base Line، High Line، أو C-Class.",
+              "الفئة هي نسخة العربية أو trim بتاعها؛ ممكن تكون مكتوبة في الرخصة أو في بيانات العربية زي هاي لاين أو أول فئة.",
+              "يعني الإصدار أو النسخة، مش الماركة نفسها. مثال: النترا الفئة التانية، أو مرسيدس C-Class."
+            ],
+            "follow_up_variants": [
+              "لو مش متأكد، ابعتلي اللي مكتوب في الرخصة.",
+              "قولي الفئة أو النسخة لو ظاهرة قدامك.",
+              "لو مش واضحة، ابعتلي وصفها زي ما هو مكتوب."
+            ]
+          },
+          "customer_profile.car_model_year": {
+            "label": "car model year",
+            "when_user_asks": [
+              "يعني ايه موديل السنة",
+              "يعني إيه موديل السنة",
+              "ايه موديل السنة",
+              "إيه موديل السنة",
+              "موديل سنة كام يعني ايه",
+              "سنة الموديل يعني ايه",
+              "what do you mean by model year",
+              "what is model year"
+            ],
+            "answer_variants": [
+              "قصدي سنة موديل العربية، زي 2019 أو 2022، وبتكون مكتوبة في الرخصة.",
+              "موديل السنة يعني سنة إنتاج/موديل العربية، مش يوم الحجز. مثال: 2020.",
+              "يعني سنة العربية نفسها، زي موديل ٢٠٢١ أو 2018."
+            ],
+            "follow_up_variants": [
+              "قولي السنة بس لما تلاقيها.",
+              "ابعتلي موديل السنة المكتوب في الرخصة.",
+              "لو مكتوبة بالأرقام العربي، ابعتها زي ما هي وأنا أظبطها."
+            ]
+          }
+        },
+        "missing_detail_response_policy": {
+          "enabled": true,
+          "style": "Natural professional Egyptian Arabic.",
+          "avoid_repeating_exact_template": true,
+          "avoid_repeated_phrase_fragments": [
+            "محتاج ... عشان أكمل الحجز",
+            "محتاج ... عشان اكمل الحجز"
+          ],
+          "ask_only_for_missing_fields": true,
+          "group_related_vehicle_fields": true,
+          "single_field_variants": {
+            "full_name": [
+              "قولي الاسم الكامل اللي نسجل بيه الزيارة.",
+              "ابعتلي اسمك الكامل زي ما تحب نسجله.",
+              "فاضل الاسم الكامل بس عشان البيانات تبقى كاملة."
+            ],
+            "plate_number": [
+              "فاضل رقم العربية بس عشان نثبت بيانات الزيارة.",
+              "ابعتلي رقم اللوحة زي ما هو مكتوب.",
+              "قولي رقم العربية ونكمّل."
+            ],
+            "car_brand": [
+              "قولي ماركة العربية إيه؟",
+              "إيه نوع العربية أو الماركة المكتوبة في الرخصة؟",
+              "ابعتلي اسم ماركة العربية بس."
+            ],
+            "car_class": [
+              "فاضل أعرف فئة العربية أو النسخة بتاعتها.",
+              "هي أنهي فئة أو trim؟",
+              "قولي الفئة المكتوبة في الرخصة لو ظاهرة عندك."
+            ],
+            "car_model_year": [
+              "العربية موديل سنة كام؟",
+              "قولي سنة موديل العربية.",
+              "ابعتلي موديل السنة المكتوب في الرخصة."
+            ],
+            "phone": [
+              "قولي رقم تليفون للتواصل.",
+              "ابعتلي رقم موبايل نقدر نأكد عليه الزيارة.",
+              "فاضل رقم تليفون للتأكيد."
+            ]
+          },
+          "multi_field_variants": {
+            "vehicle_details": [
+              "قولي ماركة العربية وفئتها وموديل السنة، ونبقى كده كملنا بيانات العربية.",
+              "ابعتلي بيانات العربية من الرخصة: الماركة، الفئة، وسنة الموديل.",
+              "فاضل بيانات العربية نفسها: الماركة، الفئة، وموديل السنة.",
+              "لما تبقى الرخصة قدامك، قولي نوع العربية وفئتها وسنة الموديل."
+            ],
+            "name_and_plate": [
+              "ابعتلي الاسم الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة.",
+              "فاضل الاسم ورقم اللوحة بس.",
+              "قولي اسمك الكامل ورقم العربية زي ما هو مكتوب."
+            ],
+            "customer_and_vehicle_details": [
+              "ابعتلي الاسم الكامل ورقم العربية وبيانات العربية من الرخصة، ونكمل بعدها.",
+              "فاضل شوية بيانات للتسجيل: الاسم، رقم العربية، الماركة، الفئة، وموديل السنة.",
+              "قولي بياناتك وبيانات العربية مرة واحدة لو تحب: الاسم، اللوحة، الماركة، الفئة، والسنة."
+            ]
+          }
+        },
+        "field_clarification_routing": {
+          "enabled": true,
+          "source": "subagents.booking.field_help",
+          "during_stages": [
+            "awaiting_customer_details",
+            "awaiting_confirmation",
+            "slot_selection"
+          ],
+          "behavior": [
+            "Answer the clarification question directly.",
+            "Do not store the clarification question as the missing value.",
+            "After explaining, ask only for the same missing field or group of missing fields still needed.",
+            "Use answer_variants and follow_up_variants to avoid repetitive phrasing."
+          ]
         }
       },
       "troubleshooting": {
@@ -6038,7 +6288,8 @@
       "compact_variable_max_keys": 16,
       "compact_variable_max_value_chars": 1600,
       "run_every_messages": 8,
-      "vehicle_details_version": "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding"
+      "vehicle_details_version": "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding",
+      "vehicle_field_help_version": "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding"
     },
     "template_response_policy": {
       "BOOKING_CONFIRM_SELECTED_SLOT": {
@@ -6201,7 +6452,7 @@
           "ask only for the missing customer details"
         ],
         "safe_examples": [
-          "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
+          "ابعتلي الاسم الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة."
         ],
         "must_not_do": [
           "do not say الحجز اتعمل",
@@ -6212,7 +6463,7 @@
         "deterministic_response": true,
         "force_template_answer": true,
         "must_use_grounded_template": true,
-        "response_template": "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
+        "response_template": "ابعتلي الاسم الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة."
       },
       "BOOKING_MISSING_FULL_NAME": {
         "state": "collecting_customer_name",
@@ -6227,7 +6478,7 @@
           "ask only for the missing full name"
         ],
         "safe_examples": [
-          "تمام، محتاج اسمك الكامل عشان أكمل الحجز."
+          "قولي الاسم الكامل اللي نسجل بيه الزيارة."
         ],
         "must_not_do": [
           "do not ask for plate if already captured",
@@ -6237,7 +6488,7 @@
         "deterministic_response": true,
         "force_template_answer": true,
         "must_use_grounded_template": true,
-        "response_template": "تمام، محتاج اسمك الكامل عشان أكمل الحجز."
+        "response_template": "قولي الاسم الكامل اللي نسجل بيه الزيارة."
       },
       "BOOKING_MISSING_PLATE_NUMBER": {
         "state": "collecting_plate_number",
@@ -6249,7 +6500,7 @@
           "ask only for the missing plate number"
         ],
         "safe_examples": [
-          "تمام، محتاج رقم العربية عشان أكمل الحجز."
+          "فاضل رقم العربية بس عشان نثبت بيانات الزيارة."
         ],
         "must_not_do": [
           "do not say booking failed when any required customer detail is still missing"
@@ -6257,7 +6508,7 @@
         "deterministic_response": true,
         "force_template_answer": true,
         "must_use_grounded_template": true,
-        "response_template": "تمام، محتاج رقم العربية عشان أكمل الحجز."
+        "response_template": "فاضل رقم العربية بس عشان نثبت بيانات الزيارة."
       },
       "BOOKING_CONFIRMED": {
         "state": "booking_created",
@@ -6360,7 +6611,7 @@
           "if the customer asks to use the same number, preserve the context phone and ask only for remaining details"
         ],
         "safe_examples": [
-          "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز."
+          "ابعتلي الاسم الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة."
         ],
         "must_not_do": [
           "do not ask for phone if phone exists in WhatsApp/user_id context",
@@ -6776,9 +7027,9 @@
     "egyptian_arabic_booking_style": {
       "preferred_phrases": [
         "تأكدلي أكمل الحجز؟",
-        "تمام، محتاج اسمك الكامل ورقم العربية عشان أكمل الحجز.",
-        "تمام، محتاج اسمك الكامل عشان أكمل الحجز.",
-        "تمام، محتاج رقم العربية عشان أكمل الحجز.",
+        "ابعتلي الاسم الكامل ورقم العربية، وبعدها نكمل تأكيد الزيارة.",
+        "قولي الاسم الكامل اللي نسجل بيه الزيارة.",
+        "فاضل رقم العربية بس عشان نثبت بيانات الزيارة.",
         "تمام، اتأكد حجزك.",
         "رقم الحجز:",
         "تمام، هنستخدم نفس الرقم.",
@@ -7672,7 +7923,11 @@
               "user_message": "رقم العربيه ب ج د ٥٥٥",
               "value": ""
             }
-          ]
+          ],
+          "clarification_policy": {
+            "if_user_asks_meaning": "Explain that the brand is the manufacturer/make, like هيونداي، كيا، تويوتا, then ask for it again only if still missing.",
+            "do_not_extract_hold_phrases": true
+          }
         },
         {
           "id": "customer_car_class",
@@ -7710,10 +7965,23 @@
               "value": "C-Class"
             },
             {
-              "user_message": "ماركة العربية كيا",
+              "user_message": "الفئة 2022",
+              "value": ""
+            },
+            {
+              "user_message": "يعني إيه الفئة؟",
+              "value": ""
+            },
+            {
+              "user_message": "استنى أجيب الرخصة",
               "value": ""
             }
-          ]
+          ],
+          "clarification_policy": {
+            "if_user_asks_meaning": "Explain that class means trim/version/category, like الفئة الأولى، الفئة التانية، High Line، C-Class, then ask for it again only if still missing.",
+            "if_user_gives_year_instead": "Do not store the year as car_class. Let customer_car_model_year capture it and keep car_class missing.",
+            "do_not_extract_hold_phrases": true
+          }
         },
         {
           "id": "customer_car_model_year",
@@ -7751,16 +8019,35 @@
               "value": "2019"
             },
             {
+              "user_message": "الموديل هاي لاين",
+              "value": ""
+            },
+            {
+              "user_message": "يعني إيه موديل السنة؟",
+              "value": ""
+            },
+            {
               "user_message": "المعاد يوم 2026-06-07",
               "value": ""
+            },
+            {
+              "user_message": "استنى أجيب الرخصة",
+              "value": ""
             }
-          ]
+          ],
+          "clarification_policy": {
+            "if_user_asks_meaning": "Explain that model year means the vehicle year, like 2019 or 2022, not the appointment date.",
+            "if_user_gives_class_instead": "Do not store trim/class as car_model_year. Let customer_car_class capture it and keep car_model_year missing.",
+            "do_not_extract_appointment_dates": true,
+            "do_not_extract_hold_phrases": true
+          }
         }
       ]
     },
     "architecture_patches": [
       "6.38-config-driven-memory-policy-no-hardcoding",
-      "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding"
+      "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding",
+      "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding"
     ]
   },
   "schema": {
