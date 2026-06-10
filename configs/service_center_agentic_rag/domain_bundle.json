@@ -453,7 +453,17 @@
       "If the customer gives a 4-digit year while answering class/fئة, store it as car_model_year and continue asking for the actual car class if missing.",
       "If the customer gives a trim/class while answering model year, store it as car_class and continue asking for the model year if missing.",
       "For vehicle detail questions, avoid repeating the same محتاج ... عشان أكمل الحجز structure. Use the configured missing_detail_response_policy variants and keep the tone natural.",
-      "When several vehicle details are missing, group them in one natural question instead of asking three separate robotic questions."
+      "When several vehicle details are missing, group them in one natural question instead of asking three separate robotic questions.",
+      "When confidence is low but the likely intent is clear, confirm the best guess instead of asking an open-ended clarification question.",
+      "Mirror the customer's message length: short customer messages should get very short replies unless safety or booking details require more.",
+      "Use emotion_trajectory, not only the latest customer_emotion. If frustration persists, reduce questions and give the simplest next step.",
+      "If the customer hesitates or says they are not sure, switch to advisor mode and help them choose without pushing.",
+      "If exactly one option was offered and the customer gives a short affirmation, treat it as confirming that option when safe.",
+      "If the customer changes a date, branch, slot, service, or vehicle detail, briefly acknowledge the change before moving on.",
+      "If proactive_surface_items are available and directly relevant, weave them naturally into the answer without creating a separate robotic section.",
+      "If stuck_pattern is present, do not ask the same question again; use a different approach or offer a simple choice.",
+      "If memory pre-populates a preference, use it as a soft preference, not as a confirmed booking choice unless the customer confirms.",
+      "If progressive_display_context says there are more options, show the configured subset and mention more are available naturally."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -8042,13 +8052,1492 @@
             "do_not_extract_hold_phrases": true
           }
         }
-      ]
+      ],
+      "batch_extraction": {
+        "enabled": true,
+        "max_fields": 6,
+        "system_prompt": "You are a precise multi-field extractor for a service-center assistant. Return JSON only. Never invent absent values. Normalize Arabic/Persian digits when the field format asks for Western digits."
+      }
     },
     "architecture_patches": [
       "6.38-config-driven-memory-policy-no-hardcoding",
       "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding",
-      "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding"
-    ]
+      "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding",
+      "6.42-breathtaking-smartness-config-no-hardcoding"
+    ],
+    "smartness": {
+      "smart_clarification": {
+        "enabled": true,
+        "confidence_threshold": 0.8,
+        "hypothesis_min_confidence": 0.55,
+        "ask_confirm_when_low_confidence": true,
+        "avoid_open_ended_confusion_questions": true,
+        "response_policy": {
+          "lead_with_hypothesis": true,
+          "ask_yes_no": true,
+          "style": "Natural, brief, same language as customer.",
+          "examples": [
+            "يعني عايز تحجز الخميس الجاي في فرع المعادي، صح؟",
+            "تقصد إنك عايز أقرب فرع وبعدها نشوف مواعيد بكرة؟",
+            "أفهم من كلامك إنك عايز تغيّر المعاد للأحد، مظبوط؟"
+          ]
+        }
+      },
+      "message_length_mirroring": {
+        "enabled": true,
+        "thresholds": {
+          "very_short_max_chars": 20,
+          "short_max_chars": 60,
+          "medium_max_chars": 180
+        },
+        "labels": {
+          "very_short": "very_short",
+          "short": "short",
+          "medium": "medium",
+          "detailed": "detailed"
+        },
+        "explicit_length_paths": [
+          "reply_length",
+          "response_brief.reply_length"
+        ],
+        "reply_length_guidance": {
+          "very_short": "One short sentence, two only if needed.",
+          "short": "Two or three concise sentences.",
+          "medium": "Three to five useful sentences.",
+          "detailed": "Structured answer allowed only when the user gave detail or asked for detail."
+        }
+      },
+      "emotion_arc_tracking": {
+        "enabled": true,
+        "window_size": 3,
+        "max_history": 8,
+        "negative_emotions": [
+          "frustrated",
+          "urgent",
+          "skeptical",
+          "angry",
+          "upset",
+          "confused"
+        ],
+        "positive_emotions": [
+          "excited",
+          "happy",
+          "satisfied",
+          "relieved"
+        ]
+      },
+      "hesitation_detection": {
+        "enabled": true,
+        "emotion_label": "undecided",
+        "tone": "advisor",
+        "should_offer_next_action": false,
+        "phrases": [
+          "مش عارف",
+          "مش عارفة",
+          "مش متأكد",
+          "مش متأكدة",
+          "محتار",
+          "محتارة",
+          "هفكر",
+          "خليني افكر",
+          "خليني أفكر",
+          "مش عارف اختار",
+          "مش عارف أختار",
+          "انهي احسن",
+          "أنهي أحسن",
+          "ايه الافضل",
+          "إيه الأفضل",
+          "hmm",
+          "not sure",
+          "i don't know",
+          "which one",
+          "hard to choose"
+        ],
+        "must_do": [
+          "switch to advisor mode",
+          "help the customer choose instead of pushing for completion",
+          "ask one targeted question only if needed"
+        ],
+        "must_not_do": [
+          "do not pressure the customer",
+          "do not treat hesitation as cancellation",
+          "do not move to final booking until the customer chooses"
+        ],
+        "next_move": "Help the customer decide with one useful comparison or question."
+      },
+      "last_offered_options": {
+        "enabled": true,
+        "result_rules": [
+          {
+            "enabled": true,
+            "type": "slots",
+            "answer_draft_labels": [
+              "BOOKING_SLOTS_FOUND"
+            ],
+            "result_path": "available_slots"
+          },
+          {
+            "enabled": true,
+            "type": "branch",
+            "answer_draft_labels": [
+              "LOCATION_NEAREST_BRANCH_FOUND",
+              "LOCATION_NEAREST_BRANCH_FOUND_AFTER_DIAGNOSTICS",
+              "LOCATION_NEAREST_BRANCH_FOUND_DIRECT_BOOKING"
+            ],
+            "result_path": "branch"
+          }
+        ]
+      },
+      "implicit_confirmation": {
+        "enabled": true,
+        "affirmation_phrases": [
+          "تمام",
+          "ماشي",
+          "اه",
+          "أه",
+          "ايوه",
+          "أيوه",
+          "اوكي",
+          "أوكي",
+          "مظبوط",
+          "صح",
+          "ينفع",
+          "يلا",
+          "ok",
+          "okay",
+          "yes",
+          "sounds good",
+          "let's go"
+        ],
+        "affirmation_sources": [
+          {
+            "subagent_id": "booking",
+            "paths": [
+              "confirmation_phrases"
+            ]
+          }
+        ],
+        "type_to_subagent": {
+          "slots": "booking",
+          "branch": "booking",
+          "service": "booking"
+        },
+        "default_subagent_id": "booking",
+        "set_needs_tool": true,
+        "conversation_stage": "implicit_confirmation",
+        "workflow_stage": "implicit_confirmation_of_single_offered_option"
+      },
+      "funnel_awareness": {
+        "enabled": true,
+        "default_stage": "consideration",
+        "allowed_stages": [
+          "awareness",
+          "consideration",
+          "intent",
+          "confirmation",
+          "post_conversion"
+        ],
+        "stage_guidance": {
+          "awareness": {
+            "tone": "helpful and low-pressure",
+            "reply_length": "short",
+            "must_do": [
+              "answer clearly",
+              "avoid pushing the customer to book"
+            ],
+            "must_not_do": [
+              "do not ask for booking details unless the customer asks to book"
+            ]
+          },
+          "consideration": {
+            "tone": "specific and useful",
+            "reply_length": "medium",
+            "must_do": [
+              "help compare or choose",
+              "give the most useful next step"
+            ],
+            "must_not_do": [
+              "do not over-explain unrelated details"
+            ]
+          },
+          "intent": {
+            "tone": "efficient and helpful",
+            "reply_length": "short",
+            "must_do": [
+              "collect only the next missing field",
+              "use known variables"
+            ],
+            "must_not_do": [
+              "do not repeat already-known details"
+            ]
+          },
+          "confirmation": {
+            "tone": "clear and reassuring",
+            "reply_length": "short",
+            "must_do": [
+              "make confirmation easy",
+              "summarize only the essential selected details"
+            ],
+            "must_not_do": [
+              "do not imply completion before successful tool result"
+            ]
+          },
+          "post_conversion": {
+            "tone": "warm and concise",
+            "reply_length": "very_short",
+            "must_do": [
+              "close warmly",
+              "include visit id only if relevant and requested or newly created"
+            ],
+            "must_not_do": [
+              "do not upsell",
+              "do not repeat the full booking after a simple thanks"
+            ]
+          }
+        }
+      },
+      "contradiction_acknowledgment": {
+        "enabled": true,
+        "max_changes": 8,
+        "include_paths": [
+          "selected_branch",
+          "location_branch",
+          "nearest_branch",
+          "appointment_date",
+          "date_text",
+          "appointment_time",
+          "service_needed",
+          "booking.pending.branch",
+          "booking.pending.date",
+          "booking.pending.time",
+          "customer_profile.full_name",
+          "customer_profile.phone",
+          "customer_profile.plate_number",
+          "customer_profile.car_brand",
+          "customer_profile.car_class",
+          "customer_profile.car_model_year"
+        ],
+        "exclude_paths": [
+          "available_slots",
+          "available_slots_text",
+          "knowledge",
+          "tool_result",
+          "memories"
+        ],
+        "response_policy": {
+          "acknowledge_one_sentence": true,
+          "examples": [
+            "تمام، غيّرت المعاد للأحد.",
+            "ماشي، هنتعامل على فرع المعادي بدل مدينة نصر.",
+            "تمام، سجلت موديل السنة 2022."
+          ]
+        }
+      },
+      "opener_context": {
+        "enabled": true,
+        "new_user_label": "new_user",
+        "returning_known_user_label": "returning_known_user",
+        "returning_with_context_label": "returning_with_context",
+        "rules": [
+          {
+            "label": "returning_with_booking",
+            "any_variable_paths": [
+              "visit_id",
+              "booking_status",
+              "booking.confirmed.visit_id",
+              "booking.confirmed.status"
+            ]
+          },
+          {
+            "label": "returning_with_open_issue",
+            "summary_contains": "unresolved"
+          },
+          {
+            "label": "returning_known_user",
+            "requires_memory": true
+          }
+        ],
+        "guidance": {
+          "new_user": "Warm welcome, no assumptions.",
+          "returning_known_user": "Briefly recognize context if useful, without being creepy.",
+          "returning_with_booking": "Reference the booking only if relevant to the latest message.",
+          "returning_with_open_issue": "Address the unresolved issue first."
+        }
+      },
+      "proactive_surface": {
+        "enabled": true,
+        "min_score": 0.55,
+        "max_items": 3,
+        "item_max_chars": 220,
+        "trigger_keywords": [
+          {
+            "label": "branch_closed_warning",
+            "keywords": [
+              "مغلق",
+              "إجازة",
+              "اجازة",
+              "عطلة",
+              "closed",
+              "holiday",
+              "not available"
+            ]
+          },
+          {
+            "label": "moving_or_relocation",
+            "keywords": [
+              "انتقل",
+              "عنوان جديد",
+              "العنوان الجديد",
+              "relocated",
+              "new address",
+              "moved"
+            ]
+          },
+          {
+            "label": "important_service_note",
+            "keywords": [
+              "تنبيه",
+              "ملاحظة",
+              "مهم",
+              "يرجى العلم",
+              "important",
+              "please note",
+              "notice"
+            ]
+          },
+          {
+            "label": "required_document_note",
+            "keywords": [
+              "الرخصة",
+              "license",
+              "documents",
+              "الأوراق",
+              "الورق"
+            ]
+          }
+        ],
+        "response_policy": {
+          "weave_naturally": true,
+          "do_not_dump_as_section": true,
+          "mention_only_if_directly_relevant": true
+        }
+      },
+      "memory_to_variable_bridge": {
+        "enabled": true,
+        "rules": [
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "morning",
+            "set_variable": "preferred_time_of_day",
+            "set_value": "morning",
+            "only_if_missing": true,
+            "min_confidence": 0.7
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "الصبح",
+            "set_variable": "preferred_time_of_day",
+            "set_value": "morning",
+            "only_if_missing": true,
+            "min_confidence": 0.7
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "evening",
+            "set_variable": "preferred_time_of_day",
+            "set_value": "evening",
+            "only_if_missing": true,
+            "min_confidence": 0.7
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "مساء",
+            "set_variable": "preferred_time_of_day",
+            "set_value": "evening",
+            "only_if_missing": true,
+            "min_confidence": 0.7
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "nasr city",
+            "set_variable": "preferred_branch",
+            "set_value": "Nasr City",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "nasr city",
+            "set_variable": "preferred_branch",
+            "set_value": "Nasr City",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "مدينة نصر",
+            "set_variable": "preferred_branch",
+            "set_value": "Nasr City",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "مدينه نصر",
+            "set_variable": "preferred_branch",
+            "set_value": "Nasr City",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "maadi",
+            "set_variable": "preferred_branch",
+            "set_value": "Maadi",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "maadi",
+            "set_variable": "preferred_branch",
+            "set_value": "Maadi",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "المعادي",
+            "set_variable": "preferred_branch",
+            "set_value": "Maadi",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "معادي",
+            "set_variable": "preferred_branch",
+            "set_value": "Maadi",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "dokki",
+            "set_variable": "preferred_branch",
+            "set_value": "Dokki",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "dokki",
+            "set_variable": "preferred_branch",
+            "set_value": "Dokki",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "الدقي",
+            "set_variable": "preferred_branch",
+            "set_value": "Dokki",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "دقي",
+            "set_variable": "preferred_branch",
+            "set_value": "Dokki",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "6th october",
+            "set_variable": "preferred_branch",
+            "set_value": "6th October",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "6 october",
+            "set_variable": "preferred_branch",
+            "set_value": "6th October",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "october",
+            "set_variable": "preferred_branch",
+            "set_value": "6th October",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "اكتوبر",
+            "set_variable": "preferred_branch",
+            "set_value": "6th October",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "alexandria",
+            "set_variable": "preferred_branch",
+            "set_value": "Alexandria",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "alexandria",
+            "set_variable": "preferred_branch",
+            "set_value": "Alexandria",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "اسكندرية",
+            "set_variable": "preferred_branch",
+            "set_value": "Alexandria",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          },
+          {
+            "enabled": true,
+            "memory_type": "preference",
+            "memory_contains": "إسكندرية",
+            "set_variable": "preferred_branch",
+            "set_value": "Alexandria",
+            "only_if_missing": true,
+            "min_confidence": 0.75
+          }
+        ]
+      },
+      "smart_inference": {
+        "enabled": true,
+        "rules": [
+          {
+            "enabled": true,
+            "id": "single_branch_result_to_selected_branch",
+            "target_path": "selected_branch",
+            "from_tool_result_path": "branches",
+            "only_if_single_result": true,
+            "note": "Only one branch was returned, so selected_branch can be inferred safely."
+          },
+          {
+            "enabled": true,
+            "id": "single_available_slot_to_inferred_slot",
+            "target_path": "inferred_single_slot",
+            "from_tool_result_path": "available_slots",
+            "only_if_single_result": true,
+            "note": "Only one appointment slot was returned; response can ask for quick confirmation instead of making the user choose from a list."
+          },
+          {
+            "enabled": false,
+            "id": "preferred_branch_to_selected_branch_when_safe",
+            "source_path": "preferred_branch",
+            "target_path": "selected_branch",
+            "only_if_missing": true,
+            "note": "Disabled by default because selecting a remembered branch should be context-sensitive."
+          }
+        ]
+      },
+      "variable_schema_validation": {
+        "enabled": true,
+        "rules": {
+          "phone": {
+            "regex": "^\\+?\\d{10,15}$"
+          },
+          "date": {
+            "regex": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "full_name": {
+            "regex": "^(?!\\d+$).{2,80}$"
+          },
+          "plate_number": {
+            "regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
+          },
+          "car_model_year": {
+            "regex": "^(19|20)\\d{2}$"
+          },
+          "non_empty_string": {
+            "regex": ".{1,}"
+          }
+        }
+      },
+      "tool_failure_recovery": {
+        "enabled": true,
+        "rules": {
+          "list_available_slots": {
+            "suggest_action": "offer_different_date_or_branch",
+            "response_brief_must_do": [
+              "acknowledge briefly",
+              "offer to check another date or branch"
+            ],
+            "response_brief_must_not_do": [
+              "do not say the booking is confirmed",
+              "do not invent alternative slots"
+            ]
+          },
+          "create_booking": {
+            "suggest_action": "retry_or_collect_missing_detail",
+            "response_brief_must_do": [
+              "explain the next safe step",
+              "ask only for missing or corrected information"
+            ],
+            "response_brief_must_not_do": [
+              "do not claim the booking succeeded",
+              "do not apologize excessively"
+            ]
+          }
+        },
+        "default": {
+          "suggest_action": "recover_with_next_safe_step",
+          "response_brief_must_do": [
+            "give one clear next step"
+          ],
+          "response_brief_must_not_do": [
+            "do not expose internal errors",
+            "do not invent a successful result"
+          ]
+        }
+      },
+      "progressive_display": {
+        "enabled": true,
+        "source_paths": [
+          "available_slots",
+          "branches"
+        ],
+        "display_count": 3,
+        "response_policy": {
+          "show_first_items_only_when_many": true,
+          "mention_more_available": true,
+          "do_not_hide_critical_tool_result": true,
+          "wording_examples": [
+            "أول 3 مواعيد قدامنا هم كذا، ولو تحب أشوفلك باقي الاختيارات.",
+            "فيه اختيارات أكتر، بس دول أقرب 3 مناسبين."
+          ]
+        }
+      },
+      "stuck_pattern_detection": {
+        "enabled": true,
+        "threshold": 2,
+        "max_keys": 20,
+        "response_policy": {
+          "do_not_repeat_same_question": true,
+          "try_alternative_approach": true,
+          "examples": [
+            "بدل ما نسأل نفس السؤال تاني، ممكن نبدأ بأقرب فرع ليك؟",
+            "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
+          ]
+        }
+      }
+    },
+    "emotion_arc_guidance": {
+      "persistently_frustrated": "Start with genuine empathy for the repeated difficulty. Give the simplest next step or resolution path. Do not ask more than one question.",
+      "escalating": "Acknowledge the frustration first, then reduce friction and move directly to the next useful action.",
+      "de-escalating": "Briefly acknowledge progress and continue warmly without over-explaining.",
+      "positive_momentum": "Match the positive energy and move efficiently.",
+      "stable": "Keep the response natural, direct, and helpful."
+    },
+    "schema": {
+      "variables": {
+        "customer_profile.full_name": {
+          "type": "full_name",
+          "validator": "full_name",
+          "priority": "high",
+          "description": "Customer full name."
+        },
+        "customer_profile.phone": {
+          "type": "phone",
+          "validator": "phone",
+          "priority": "high",
+          "description": "Customer phone number."
+        },
+        "customer_profile.plate_number": {
+          "type": "plate_number",
+          "validator": "plate_number",
+          "priority": "high",
+          "description": "Customer vehicle plate number."
+        },
+        "customer_profile.car_brand": {
+          "type": "non_empty_string",
+          "validator": "non_empty_string",
+          "priority": "medium",
+          "description": "Customer vehicle brand/make."
+        },
+        "customer_profile.car_class": {
+          "type": "non_empty_string",
+          "validator": "non_empty_string",
+          "priority": "medium",
+          "description": "Customer vehicle class, trim, category, or version."
+        },
+        "customer_profile.car_model_year": {
+          "type": "car_model_year",
+          "validator": "car_model_year",
+          "priority": "medium",
+          "description": "Customer vehicle model year."
+        },
+        "appointment_date": {
+          "type": "date",
+          "validator": "date",
+          "priority": "high",
+          "description": "Normalized appointment date in YYYY-MM-DD format."
+        }
+      }
+    },
+    "proactive_surface": {
+      "enabled": true,
+      "min_score": 0.55,
+      "max_items": 3,
+      "item_max_chars": 220,
+      "trigger_keywords": [
+        {
+          "label": "branch_closed_warning",
+          "keywords": [
+            "مغلق",
+            "إجازة",
+            "اجازة",
+            "عطلة",
+            "closed",
+            "holiday",
+            "not available"
+          ]
+        },
+        {
+          "label": "moving_or_relocation",
+          "keywords": [
+            "انتقل",
+            "عنوان جديد",
+            "العنوان الجديد",
+            "relocated",
+            "new address",
+            "moved"
+          ]
+        },
+        {
+          "label": "important_service_note",
+          "keywords": [
+            "تنبيه",
+            "ملاحظة",
+            "مهم",
+            "يرجى العلم",
+            "important",
+            "please note",
+            "notice"
+          ]
+        },
+        {
+          "label": "required_document_note",
+          "keywords": [
+            "الرخصة",
+            "license",
+            "documents",
+            "الأوراق",
+            "الورق"
+          ]
+        }
+      ],
+      "response_policy": {
+        "weave_naturally": true,
+        "do_not_dump_as_section": true,
+        "mention_only_if_directly_relevant": true
+      }
+    },
+    "tool_failure_recovery": {
+      "enabled": true,
+      "rules": {
+        "list_available_slots": {
+          "suggest_action": "offer_different_date_or_branch",
+          "response_brief_must_do": [
+            "acknowledge briefly",
+            "offer to check another date or branch"
+          ],
+          "response_brief_must_not_do": [
+            "do not say the booking is confirmed",
+            "do not invent alternative slots"
+          ]
+        },
+        "create_booking": {
+          "suggest_action": "retry_or_collect_missing_detail",
+          "response_brief_must_do": [
+            "explain the next safe step",
+            "ask only for missing or corrected information"
+          ],
+          "response_brief_must_not_do": [
+            "do not claim the booking succeeded",
+            "do not apologize excessively"
+          ]
+        }
+      },
+      "default": {
+        "suggest_action": "recover_with_next_safe_step",
+        "response_brief_must_do": [
+          "give one clear next step"
+        ],
+        "response_brief_must_not_do": [
+          "do not expose internal errors",
+          "do not invent a successful result"
+        ]
+      }
+    },
+    "progressive_display": {
+      "enabled": true,
+      "source_paths": [
+        "available_slots",
+        "branches"
+      ],
+      "display_count": 3,
+      "response_policy": {
+        "show_first_items_only_when_many": true,
+        "mention_more_available": true,
+        "do_not_hide_critical_tool_result": true,
+        "wording_examples": [
+          "أول 3 مواعيد قدامنا هم كذا، ولو تحب أشوفلك باقي الاختيارات.",
+          "فيه اختيارات أكتر، بس دول أقرب 3 مناسبين."
+        ]
+      }
+    },
+    "emotion_arc_tracking": {
+      "enabled": true,
+      "window_size": 3,
+      "max_history": 8,
+      "negative_emotions": [
+        "frustrated",
+        "urgent",
+        "skeptical",
+        "angry",
+        "upset",
+        "confused"
+      ],
+      "positive_emotions": [
+        "excited",
+        "happy",
+        "satisfied",
+        "relieved"
+      ]
+    },
+    "smart_clarification": {
+      "enabled": true,
+      "confidence_threshold": 0.8,
+      "hypothesis_min_confidence": 0.55,
+      "ask_confirm_when_low_confidence": true,
+      "avoid_open_ended_confusion_questions": true,
+      "response_policy": {
+        "lead_with_hypothesis": true,
+        "ask_yes_no": true,
+        "style": "Natural, brief, same language as customer.",
+        "examples": [
+          "يعني عايز تحجز الخميس الجاي في فرع المعادي، صح؟",
+          "تقصد إنك عايز أقرب فرع وبعدها نشوف مواعيد بكرة؟",
+          "أفهم من كلامك إنك عايز تغيّر المعاد للأحد، مظبوط؟"
+        ]
+      }
+    },
+    "message_length_mirroring": {
+      "enabled": true,
+      "thresholds": {
+        "very_short_max_chars": 20,
+        "short_max_chars": 60,
+        "medium_max_chars": 180
+      },
+      "labels": {
+        "very_short": "very_short",
+        "short": "short",
+        "medium": "medium",
+        "detailed": "detailed"
+      },
+      "explicit_length_paths": [
+        "reply_length",
+        "response_brief.reply_length"
+      ],
+      "reply_length_guidance": {
+        "very_short": "One short sentence, two only if needed.",
+        "short": "Two or three concise sentences.",
+        "medium": "Three to five useful sentences.",
+        "detailed": "Structured answer allowed only when the user gave detail or asked for detail."
+      }
+    },
+    "hesitation_detection": {
+      "enabled": true,
+      "emotion_label": "undecided",
+      "tone": "advisor",
+      "should_offer_next_action": false,
+      "phrases": [
+        "مش عارف",
+        "مش عارفة",
+        "مش متأكد",
+        "مش متأكدة",
+        "محتار",
+        "محتارة",
+        "هفكر",
+        "خليني افكر",
+        "خليني أفكر",
+        "مش عارف اختار",
+        "مش عارف أختار",
+        "انهي احسن",
+        "أنهي أحسن",
+        "ايه الافضل",
+        "إيه الأفضل",
+        "hmm",
+        "not sure",
+        "i don't know",
+        "which one",
+        "hard to choose"
+      ],
+      "must_do": [
+        "switch to advisor mode",
+        "help the customer choose instead of pushing for completion",
+        "ask one targeted question only if needed"
+      ],
+      "must_not_do": [
+        "do not pressure the customer",
+        "do not treat hesitation as cancellation",
+        "do not move to final booking until the customer chooses"
+      ],
+      "next_move": "Help the customer decide with one useful comparison or question."
+    },
+    "implicit_confirmation": {
+      "enabled": true,
+      "affirmation_phrases": [
+        "تمام",
+        "ماشي",
+        "اه",
+        "أه",
+        "ايوه",
+        "أيوه",
+        "اوكي",
+        "أوكي",
+        "مظبوط",
+        "صح",
+        "ينفع",
+        "يلا",
+        "ok",
+        "okay",
+        "yes",
+        "sounds good",
+        "let's go"
+      ],
+      "affirmation_sources": [
+        {
+          "subagent_id": "booking",
+          "paths": [
+            "confirmation_phrases"
+          ]
+        }
+      ],
+      "type_to_subagent": {
+        "slots": "booking",
+        "branch": "booking",
+        "service": "booking"
+      },
+      "default_subagent_id": "booking",
+      "set_needs_tool": true,
+      "conversation_stage": "implicit_confirmation",
+      "workflow_stage": "implicit_confirmation_of_single_offered_option"
+    },
+    "last_offered_options": {
+      "enabled": true,
+      "result_rules": [
+        {
+          "enabled": true,
+          "type": "slots",
+          "answer_draft_labels": [
+            "BOOKING_SLOTS_FOUND"
+          ],
+          "result_path": "available_slots"
+        },
+        {
+          "enabled": true,
+          "type": "branch",
+          "answer_draft_labels": [
+            "LOCATION_NEAREST_BRANCH_FOUND",
+            "LOCATION_NEAREST_BRANCH_FOUND_AFTER_DIAGNOSTICS",
+            "LOCATION_NEAREST_BRANCH_FOUND_DIRECT_BOOKING"
+          ],
+          "result_path": "branch"
+        }
+      ]
+    },
+    "funnel_awareness": {
+      "enabled": true,
+      "default_stage": "consideration",
+      "allowed_stages": [
+        "awareness",
+        "consideration",
+        "intent",
+        "confirmation",
+        "post_conversion"
+      ],
+      "stage_guidance": {
+        "awareness": {
+          "tone": "helpful and low-pressure",
+          "reply_length": "short",
+          "must_do": [
+            "answer clearly",
+            "avoid pushing the customer to book"
+          ],
+          "must_not_do": [
+            "do not ask for booking details unless the customer asks to book"
+          ]
+        },
+        "consideration": {
+          "tone": "specific and useful",
+          "reply_length": "medium",
+          "must_do": [
+            "help compare or choose",
+            "give the most useful next step"
+          ],
+          "must_not_do": [
+            "do not over-explain unrelated details"
+          ]
+        },
+        "intent": {
+          "tone": "efficient and helpful",
+          "reply_length": "short",
+          "must_do": [
+            "collect only the next missing field",
+            "use known variables"
+          ],
+          "must_not_do": [
+            "do not repeat already-known details"
+          ]
+        },
+        "confirmation": {
+          "tone": "clear and reassuring",
+          "reply_length": "short",
+          "must_do": [
+            "make confirmation easy",
+            "summarize only the essential selected details"
+          ],
+          "must_not_do": [
+            "do not imply completion before successful tool result"
+          ]
+        },
+        "post_conversion": {
+          "tone": "warm and concise",
+          "reply_length": "very_short",
+          "must_do": [
+            "close warmly",
+            "include visit id only if relevant and requested or newly created"
+          ],
+          "must_not_do": [
+            "do not upsell",
+            "do not repeat the full booking after a simple thanks"
+          ]
+        }
+      }
+    },
+    "contradiction_acknowledgment": {
+      "enabled": true,
+      "max_changes": 8,
+      "include_paths": [
+        "selected_branch",
+        "location_branch",
+        "nearest_branch",
+        "appointment_date",
+        "date_text",
+        "appointment_time",
+        "service_needed",
+        "booking.pending.branch",
+        "booking.pending.date",
+        "booking.pending.time",
+        "customer_profile.full_name",
+        "customer_profile.phone",
+        "customer_profile.plate_number",
+        "customer_profile.car_brand",
+        "customer_profile.car_class",
+        "customer_profile.car_model_year"
+      ],
+      "exclude_paths": [
+        "available_slots",
+        "available_slots_text",
+        "knowledge",
+        "tool_result",
+        "memories"
+      ],
+      "response_policy": {
+        "acknowledge_one_sentence": true,
+        "examples": [
+          "تمام، غيّرت المعاد للأحد.",
+          "ماشي، هنتعامل على فرع المعادي بدل مدينة نصر.",
+          "تمام، سجلت موديل السنة 2022."
+        ]
+      }
+    },
+    "opener_context": {
+      "enabled": true,
+      "new_user_label": "new_user",
+      "returning_known_user_label": "returning_known_user",
+      "returning_with_context_label": "returning_with_context",
+      "rules": [
+        {
+          "label": "returning_with_booking",
+          "any_variable_paths": [
+            "visit_id",
+            "booking_status",
+            "booking.confirmed.visit_id",
+            "booking.confirmed.status"
+          ]
+        },
+        {
+          "label": "returning_with_open_issue",
+          "summary_contains": "unresolved"
+        },
+        {
+          "label": "returning_known_user",
+          "requires_memory": true
+        }
+      ],
+      "guidance": {
+        "new_user": "Warm welcome, no assumptions.",
+        "returning_known_user": "Briefly recognize context if useful, without being creepy.",
+        "returning_with_booking": "Reference the booking only if relevant to the latest message.",
+        "returning_with_open_issue": "Address the unresolved issue first."
+      }
+    },
+    "memory_to_variable_bridge": {
+      "enabled": true,
+      "rules": [
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "morning",
+          "set_variable": "preferred_time_of_day",
+          "set_value": "morning",
+          "only_if_missing": true,
+          "min_confidence": 0.7
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "الصبح",
+          "set_variable": "preferred_time_of_day",
+          "set_value": "morning",
+          "only_if_missing": true,
+          "min_confidence": 0.7
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "evening",
+          "set_variable": "preferred_time_of_day",
+          "set_value": "evening",
+          "only_if_missing": true,
+          "min_confidence": 0.7
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "مساء",
+          "set_variable": "preferred_time_of_day",
+          "set_value": "evening",
+          "only_if_missing": true,
+          "min_confidence": 0.7
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "nasr city",
+          "set_variable": "preferred_branch",
+          "set_value": "Nasr City",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "nasr city",
+          "set_variable": "preferred_branch",
+          "set_value": "Nasr City",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "مدينة نصر",
+          "set_variable": "preferred_branch",
+          "set_value": "Nasr City",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "مدينه نصر",
+          "set_variable": "preferred_branch",
+          "set_value": "Nasr City",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "maadi",
+          "set_variable": "preferred_branch",
+          "set_value": "Maadi",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "maadi",
+          "set_variable": "preferred_branch",
+          "set_value": "Maadi",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "المعادي",
+          "set_variable": "preferred_branch",
+          "set_value": "Maadi",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "معادي",
+          "set_variable": "preferred_branch",
+          "set_value": "Maadi",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "dokki",
+          "set_variable": "preferred_branch",
+          "set_value": "Dokki",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "dokki",
+          "set_variable": "preferred_branch",
+          "set_value": "Dokki",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "الدقي",
+          "set_variable": "preferred_branch",
+          "set_value": "Dokki",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "دقي",
+          "set_variable": "preferred_branch",
+          "set_value": "Dokki",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "6th october",
+          "set_variable": "preferred_branch",
+          "set_value": "6th October",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "6 october",
+          "set_variable": "preferred_branch",
+          "set_value": "6th October",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "october",
+          "set_variable": "preferred_branch",
+          "set_value": "6th October",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "اكتوبر",
+          "set_variable": "preferred_branch",
+          "set_value": "6th October",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "alexandria",
+          "set_variable": "preferred_branch",
+          "set_value": "Alexandria",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "alexandria",
+          "set_variable": "preferred_branch",
+          "set_value": "Alexandria",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "اسكندرية",
+          "set_variable": "preferred_branch",
+          "set_value": "Alexandria",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        },
+        {
+          "enabled": true,
+          "memory_type": "preference",
+          "memory_contains": "إسكندرية",
+          "set_variable": "preferred_branch",
+          "set_value": "Alexandria",
+          "only_if_missing": true,
+          "min_confidence": 0.75
+        }
+      ]
+    },
+    "smart_inference": {
+      "enabled": true,
+      "rules": [
+        {
+          "enabled": true,
+          "id": "single_branch_result_to_selected_branch",
+          "target_path": "selected_branch",
+          "from_tool_result_path": "branches",
+          "only_if_single_result": true,
+          "note": "Only one branch was returned, so selected_branch can be inferred safely."
+        },
+        {
+          "enabled": true,
+          "id": "single_available_slot_to_inferred_slot",
+          "target_path": "inferred_single_slot",
+          "from_tool_result_path": "available_slots",
+          "only_if_single_result": true,
+          "note": "Only one appointment slot was returned; response can ask for quick confirmation instead of making the user choose from a list."
+        },
+        {
+          "enabled": false,
+          "id": "preferred_branch_to_selected_branch_when_safe",
+          "source_path": "preferred_branch",
+          "target_path": "selected_branch",
+          "only_if_missing": true,
+          "note": "Disabled by default because selecting a remembered branch should be context-sensitive."
+        }
+      ]
+    },
+    "smart_inference_rules": [
+      {
+        "enabled": true,
+        "id": "single_branch_result_to_selected_branch",
+        "target_path": "selected_branch",
+        "from_tool_result_path": "branches",
+        "only_if_single_result": true,
+        "note": "Only one branch was returned, so selected_branch can be inferred safely."
+      },
+      {
+        "enabled": true,
+        "id": "single_available_slot_to_inferred_slot",
+        "target_path": "inferred_single_slot",
+        "from_tool_result_path": "available_slots",
+        "only_if_single_result": true,
+        "note": "Only one appointment slot was returned; response can ask for quick confirmation instead of making the user choose from a list."
+      },
+      {
+        "enabled": false,
+        "id": "preferred_branch_to_selected_branch_when_safe",
+        "source_path": "preferred_branch",
+        "target_path": "selected_branch",
+        "only_if_missing": true,
+        "note": "Disabled by default because selecting a remembered branch should be context-sensitive."
+      }
+    ],
+    "variable_schema_validation": {
+      "enabled": true,
+      "rules": {
+        "phone": {
+          "regex": "^\\+?\\d{10,15}$"
+        },
+        "date": {
+          "regex": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "full_name": {
+          "regex": "^(?!\\d+$).{2,80}$"
+        },
+        "plate_number": {
+          "regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
+        },
+        "car_model_year": {
+          "regex": "^(19|20)\\d{2}$"
+        },
+        "non_empty_string": {
+          "regex": ".{1,}"
+        }
+      }
+    },
+    "stuck_pattern_detection": {
+      "enabled": true,
+      "threshold": 2,
+      "max_keys": 20,
+      "response_policy": {
+        "do_not_repeat_same_question": true,
+        "try_alternative_approach": true,
+        "examples": [
+          "بدل ما نسأل نفس السؤال تاني، ممكن نبدأ بأقرب فرع ليك؟",
+          "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
+        ]
+      }
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
