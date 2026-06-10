@@ -2,6 +2,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
 # Architecture patch: 6.39-previous-manifest-summary-no-hardcoding-graph
+# Architecture patch: 6.42-breathtaking-smartness-runtime-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -75,6 +76,20 @@ class AgentState(TypedDict, total=False):
 
     manifest: Dict[str, Any]
     previous_manifest_summary: str
+    best_guess_clarification: Dict[str, Any]
+    emotion_history: List[str]
+    emotion_trajectory: str
+    last_offered_options: Dict[str, Any]
+    funnel_stage: str
+    opener_context: str
+    variable_changes_this_turn: List[Dict[str, Any]]
+    stuck_signals: Dict[str, int]
+    stuck_pattern: Dict[str, Any]
+    proactive_surface_items: List[Dict[str, Any]]
+    smart_inferences: List[str]
+    memories_raw: List[Dict[str, Any]]
+    failure_recovery_context: Dict[str, Any]
+    progressive_display_context: Dict[str, Any]
     multi_intents: List[Dict[str, Any]]
     parallel_tool_requests: List[Dict[str, Any]]
     knowledge_queries: List[str]
@@ -230,6 +245,13 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "conversation_stage": "",
         "workflow_stage": "",
         "customer_emotion": "",
+        "emotion_trajectory": "",
+        "funnel_stage": "",
+        "best_guess_clarification": {
+            "hypothesis": "",
+            "hypothesis_confidence": 0.0,
+            "ask_confirm": False,
+        },
         "user_expectation": "",
         "risk_level": "low",
         "confidence": 0.7,
@@ -330,6 +352,24 @@ def normalize_json_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         brief["must_not_do"] = []
 
     out["response_brief"] = brief
+
+    if not isinstance(out.get("best_guess_clarification"), dict):
+        out["best_guess_clarification"] = {
+            "hypothesis": "",
+            "hypothesis_confidence": 0.0,
+            "ask_confirm": False,
+        }
+    else:
+        clarification = dict(out.get("best_guess_clarification") or {})
+        try:
+            clarification["hypothesis_confidence"] = float(
+                clarification.get("hypothesis_confidence", 0.0) or 0.0
+            )
+        except Exception:
+            clarification["hypothesis_confidence"] = 0.0
+        clarification["hypothesis"] = str(clarification.get("hypothesis") or "").strip()
+        clarification["ask_confirm"] = bool(clarification.get("ask_confirm", False))
+        out["best_guess_clarification"] = clarification
 
     try:
         out["confidence"] = float(out.get("confidence", 0.7) or 0.7)
@@ -733,6 +773,9 @@ def compact_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
         "customer_emotion": manifest.get("customer_emotion", ""),
+        "emotion_trajectory": manifest.get("emotion_trajectory", ""),
+        "funnel_stage": manifest.get("funnel_stage", ""),
+        "best_guess_clarification": manifest.get("best_guess_clarification", {}),
         "user_expectation": manifest.get("user_expectation", ""),
         "risk_level": manifest.get("risk_level", "low"),
         "confidence": manifest.get("confidence", 0.0),
@@ -1044,6 +1087,10 @@ def build_planner_compat(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "multi_intent_execution_mode": manifest.get("multi_intent_execution_mode", ""),
         "conversation_stage": manifest.get("conversation_stage", ""),
         "workflow_stage": manifest.get("workflow_stage", ""),
+        "customer_emotion": manifest.get("customer_emotion", ""),
+        "emotion_trajectory": manifest.get("emotion_trajectory", ""),
+        "funnel_stage": manifest.get("funnel_stage", ""),
+        "best_guess_clarification": manifest.get("best_guess_clarification", {}),
         "needs_knowledge": manifest.get("needs_knowledge", False),
         "needs_memory": manifest.get("needs_memory", False),
         "needs_tool": manifest.get("needs_tool", False),
@@ -1805,6 +1852,22 @@ def semantic_extraction_node(state: AgentState):
     extracted_updates: Dict[str, Any] = {}
     missing_asks: List[str] = []
 
+    batch_values = run_batch_semantic_extraction(
+        required_fields=required_fields,
+        message=message,
+        variables=variables,
+        agent_config=agent_config,
+    )
+    if batch_values:
+        field_by_id = {str(field.get("id") or ""): field for field in required_fields if isinstance(field, dict)}
+        for field_id, value in batch_values.items():
+            field = field_by_id.get(str(field_id))
+            if not field:
+                continue
+            target = str(field.get("target_path") or "").strip()
+            if target and value:
+                extracted_updates[target] = value
+
     try:
         max_workers = int(cfg.get("max_parallel_extractions", 3) or 3)
     except Exception:
@@ -1817,6 +1880,9 @@ def semantic_extraction_node(state: AgentState):
 
         if not target:
             return field, target, None, ask
+
+        if target in extracted_updates:
+            return field, target, extracted_updates.get(target), ask
 
         value = run_single_field_extraction(
             field=field,
@@ -1860,12 +1926,15 @@ def semantic_extraction_node(state: AgentState):
         # manifest update. It must be allowed to write configured target paths
         # even when those paths are protected from the manifest by
         # source_of_truth_variables/source_of_truth_prefixes.
-        result["variables"] = apply_subagent_variable_patch(
+        extracted_variables = apply_subagent_variable_patch(
             variables,
             prepare_variable_updates_for_patch(extracted_updates),
             [],
             assistant_config=agent_config,
         )
+        extracted_variables = validate_and_heal_variables(extracted_variables, state.get("schema", {}) or {}, agent_config)
+        result["variables"] = extracted_variables
+        result["variable_changes_this_turn"] = compute_variable_changes(variables, extracted_variables, agent_config)
 
     if missing_asks and not extracted_updates:
         first_field = required_fields[0]
@@ -2753,6 +2822,725 @@ def apply_dependent_intent_chain_guardrails(
 
 
 
+
+# ── BREATHTAKING SMARTNESS RUNTIME HELPERS (CONFIG-DRIVEN) ──────────────────
+
+def get_smartness_config(agent_config: Dict[str, Any], key: str, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Read smartness-layer config without domain hardcoding.
+
+    Preferred locations:
+    - assistant.smartness.<key>
+    - assistant.<key>
+
+    Python owns generic mechanics only. Phrases, thresholds, answer variants,
+    field names, and policies belong in domain_bundle.json.
+    """
+    default = default or {}
+    smartness = agent_config.get("smartness", {}) if isinstance(agent_config.get("smartness"), dict) else {}
+    value = smartness.get(key)
+    if isinstance(value, dict):
+        return value
+    value = agent_config.get(key)
+    if isinstance(value, dict):
+        return value
+    return dict(default)
+
+
+def smartness_enabled(agent_config: Dict[str, Any], key: str, default: bool = True) -> bool:
+    cfg = get_smartness_config(agent_config, key)
+    if "enabled" not in cfg:
+        return default
+    value = cfg.get("enabled")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def normalize_label_value(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def get_nested_config(agent_config: Dict[str, Any], key: str) -> Any:
+    smartness = agent_config.get("smartness", {}) if isinstance(agent_config.get("smartness"), dict) else {}
+    if key in smartness:
+        return smartness.get(key)
+    return agent_config.get(key)
+
+
+def compute_reply_length_from_message(message: str, agent_config: Dict[str, Any]) -> str:
+    cfg = get_smartness_config(agent_config, "message_length_mirroring")
+    thresholds = cfg.get("thresholds", {}) if isinstance(cfg.get("thresholds"), dict) else {}
+    labels = cfg.get("labels", {}) if isinstance(cfg.get("labels"), dict) else {}
+
+    try:
+        very_short_max = int(thresholds.get("very_short_max_chars", 20) or 20)
+        short_max = int(thresholds.get("short_max_chars", 60) or 60)
+        medium_max = int(thresholds.get("medium_max_chars", 180) or 180)
+    except Exception:
+        very_short_max, short_max, medium_max = 20, 60, 180
+
+    char_count = len(str(message or "").strip())
+
+    if char_count < very_short_max:
+        return str(labels.get("very_short") or "very_short")
+    if char_count < short_max:
+        return str(labels.get("short") or "short")
+    if char_count < medium_max:
+        return str(labels.get("medium") or "medium")
+    return str(labels.get("detailed") or "detailed")
+
+
+def apply_length_mirroring(manifest: Dict[str, Any], message: str, agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not smartness_enabled(agent_config, "message_length_mirroring", default=True):
+        return manifest
+
+    patched = dict(manifest or {})
+    brief = dict(patched.get("response_brief", {}) or {})
+
+    explicit_paths = get_smartness_config(agent_config, "message_length_mirroring").get("explicit_length_paths", [])
+    explicit_values = []
+    if isinstance(explicit_paths, list):
+        for path in explicit_paths:
+            value = graph_dotted_get(patched, str(path), None)
+            if value not in [None, "", [], {}]:
+                explicit_values.append(value)
+
+    if not str(brief.get("reply_length") or "").strip() and not explicit_values:
+        mirrored = compute_reply_length_from_message(message, agent_config)
+        brief["reply_length"] = mirrored
+        patched["reply_length"] = mirrored
+
+    patched["response_brief"] = brief
+    return patched
+
+
+def normalize_emotion_history(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    output: List[str] = []
+    for item in value:
+        text = normalize_label_value(item)
+        if text:
+            output.append(text)
+    return output
+
+
+def compute_emotion_trajectory(current_emotion: str, prior_history: List[str], agent_config: Dict[str, Any]) -> str:
+    cfg = get_smartness_config(agent_config, "emotion_arc_tracking")
+    negative = {normalize_label_value(item) for item in cfg.get("negative_emotions", []) if normalize_label_value(item)}
+    positive = {normalize_label_value(item) for item in cfg.get("positive_emotions", []) if normalize_label_value(item)}
+
+    if not negative:
+        negative = {"frustrated", "urgent", "skeptical", "angry", "upset", "confused"}
+    if not positive:
+        positive = {"excited", "happy", "satisfied"}
+
+    current = normalize_label_value(current_emotion) or "neutral"
+    window_size = graph_config_int({"emotion_arc_tracking": cfg}, "emotion_arc_tracking.window_size", 3, 2, 12)
+    recent = prior_history[-window_size:]
+
+    if not recent:
+        if current in negative:
+            return "escalating"
+        if current in positive:
+            return "positive_momentum"
+        return "stable"
+
+    was_negative = any(item in negative for item in recent)
+    last_was_negative = bool(recent and recent[-1] in negative)
+    is_negative = current in negative
+    is_positive = current in positive
+
+    if was_negative and not is_negative:
+        return "de-escalating"
+    if not was_negative and is_negative:
+        return "escalating"
+    if last_was_negative and is_negative:
+        return "persistently_frustrated"
+    if is_positive:
+        return "positive_momentum"
+    return "stable"
+
+
+def update_emotion_history(current_emotion: str, prior_history: List[str], agent_config: Dict[str, Any]) -> List[str]:
+    cfg = get_smartness_config(agent_config, "emotion_arc_tracking")
+    max_items = graph_config_int({"emotion_arc_tracking": cfg}, "emotion_arc_tracking.max_history", 8, 2, 50)
+    emotion = normalize_label_value(current_emotion) or "neutral"
+    return (prior_history + [emotion])[-max_items:]
+
+
+def apply_emotion_arc_to_manifest(manifest: Dict[str, Any], prior_history: List[str], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not smartness_enabled(agent_config, "emotion_arc_tracking", default=True):
+        return manifest
+
+    patched = dict(manifest or {})
+    trajectory = compute_emotion_trajectory(
+        current_emotion=str(patched.get("customer_emotion") or "neutral"),
+        prior_history=prior_history,
+        agent_config=agent_config,
+    )
+    patched["emotion_trajectory"] = trajectory
+
+    guidance = agent_config.get("emotion_arc_guidance", {})
+    if not isinstance(guidance, dict):
+        guidance = {}
+    instruction = str(guidance.get(trajectory) or "").strip()
+    if instruction:
+        brief = dict(patched.get("response_brief", {}) or {})
+        brief["must_do"] = append_unique(brief.get("must_do", []), [instruction])
+        patched["response_brief"] = brief
+
+    return patched
+
+
+def message_matches_configured_sources(message: str, agent_config: Dict[str, Any], sources: Any) -> bool:
+    if isinstance(sources, dict):
+        sources = [sources]
+    if not isinstance(sources, list):
+        return False
+    return any(
+        isinstance(source, dict) and message_matches_phrase_source(message, agent_config, source)
+        for source in sources
+    )
+
+
+def apply_hesitation_detection(manifest: Dict[str, Any], message: str, agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "hesitation_detection")
+    if not cfg.get("enabled", False):
+        return manifest
+
+    sources = cfg.get("signal_sources") or cfg.get("signals") or []
+    direct_phrases = cfg.get("phrases", [])
+    if isinstance(direct_phrases, list) and direct_phrases:
+        sources = list(sources if isinstance(sources, list) else []) + [{"phrases": direct_phrases}]
+
+    if not message_matches_configured_sources(message, agent_config, sources):
+        return manifest
+
+    patched = dict(manifest or {})
+    patched["customer_emotion"] = str(cfg.get("emotion_label") or "undecided")
+    patched["should_offer_next_action"] = bool(cfg.get("should_offer_next_action", False))
+
+    brief = dict(patched.get("response_brief", {}) or {})
+    if cfg.get("tone"):
+        brief["tone"] = str(cfg.get("tone"))
+    brief["must_do"] = append_unique(
+        brief.get("must_do", []),
+        [str(item) for item in cfg.get("must_do", []) or [] if str(item or "").strip()],
+    )
+    brief["must_not_do"] = append_unique(
+        brief.get("must_not_do", []),
+        [str(item) for item in cfg.get("must_not_do", []) or [] if str(item or "").strip()],
+    )
+    next_move = str(cfg.get("next_move") or "").strip()
+    if next_move:
+        brief["next_move"] = next_move
+    patched["response_brief"] = brief
+    return patched
+
+
+def apply_smart_clarification_policy(manifest: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "smart_clarification")
+    if not cfg.get("enabled", True):
+        return manifest
+
+    patched = dict(manifest or {})
+    clarification = patched.get("best_guess_clarification")
+    if not isinstance(clarification, dict):
+        clarification = {}
+
+    threshold = float(cfg.get("confidence_threshold", 0.80) or 0.80)
+    try:
+        confidence = float(patched.get("confidence", 0.0) or 0.0)
+    except Exception:
+        confidence = 0.0
+
+    hypothesis = str(clarification.get("hypothesis") or "").strip()
+    ask_confirm = bool(clarification.get("ask_confirm", False))
+
+    if hypothesis and confidence < threshold and not bool(patched.get("needs_tool", False)):
+        ask_confirm = True
+
+    clarification["hypothesis"] = hypothesis
+    clarification["ask_confirm"] = ask_confirm
+    if not clarification.get("hypothesis_confidence"):
+        clarification["hypothesis_confidence"] = confidence
+    patched["best_guess_clarification"] = clarification
+    return patched
+
+
+def build_last_offered_options_from_tool_result(tool_result: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "last_offered_options")
+    if not cfg.get("enabled", False) or not isinstance(tool_result, dict):
+        return {}
+
+    rules = cfg.get("result_rules", [])
+    if not isinstance(rules, list):
+        return {}
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+            continue
+        labels = rule.get("answer_draft_labels", [])
+        if isinstance(labels, list) and labels:
+            if str(tool_result.get("answer_draft") or "") not in {str(item) for item in labels}:
+                continue
+        result_path = str(rule.get("result_path") or "").strip()
+        if not result_path:
+            continue
+        value = graph_dotted_get(tool_result, result_path, None)
+        if value in [None, "", [], {}]:
+            continue
+        if isinstance(value, list):
+            count = len(value)
+            first_value = value[0] if count == 1 else None
+        else:
+            count = 1
+            first_value = value
+        return {
+            "type": str(rule.get("type") or result_path),
+            "count": count,
+            "value": first_value,
+            "source_path": result_path,
+            "answer_draft": tool_result.get("answer_draft", ""),
+        }
+    return {}
+
+
+def apply_implicit_confirmation_guardrail(manifest: Dict[str, Any], message: str, state: AgentState) -> Dict[str, Any]:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "implicit_confirmation")
+    if not cfg.get("enabled", False):
+        return manifest
+
+    offered = state.get("last_offered_options", {}) or {}
+    if not isinstance(offered, dict) or int(offered.get("count") or 0) != 1:
+        return manifest
+
+    sources = cfg.get("affirmation_sources") or []
+    direct_phrases = cfg.get("affirmation_phrases", [])
+    if isinstance(direct_phrases, list) and direct_phrases:
+        sources = list(sources if isinstance(sources, list) else []) + [{"phrases": direct_phrases}]
+    if not message_matches_configured_sources(message, agent_config, sources):
+        return manifest
+
+    patched = dict(manifest or {})
+    type_map = cfg.get("type_to_subagent", {}) if isinstance(cfg.get("type_to_subagent"), dict) else {}
+    target = str(type_map.get(str(offered.get("type") or "")) or cfg.get("default_subagent_id") or "").strip()
+    if target:
+        patched["selected_subagent_id"] = unify_subagent_id(target)
+    patched["simple_response_mode"] = False
+    patched["needs_tool"] = bool(cfg.get("set_needs_tool", True))
+    patched["conversation_stage"] = str(cfg.get("conversation_stage") or "implicit_confirmation")
+    patched["workflow_stage"] = str(cfg.get("workflow_stage") or patched.get("workflow_stage") or "implicit_confirmation")
+    response_synthesis = patched.get("response_synthesis") if isinstance(patched.get("response_synthesis"), dict) else {}
+    response_synthesis["implicit_confirmation"] = offered
+    patched["response_synthesis"] = response_synthesis
+    return patched
+
+
+def apply_funnel_stage_policy(manifest: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "funnel_awareness")
+    if not cfg.get("enabled", True):
+        return manifest
+    patched = dict(manifest or {})
+    if not str(patched.get("funnel_stage") or "").strip():
+        default_stage = str(cfg.get("default_stage") or "").strip()
+        if default_stage:
+            patched["funnel_stage"] = default_stage
+    guidance = cfg.get("stage_guidance", {}) if isinstance(cfg.get("stage_guidance"), dict) else {}
+    stage = str(patched.get("funnel_stage") or "").strip()
+    stage_guidance = guidance.get(stage) if stage else None
+    if isinstance(stage_guidance, dict):
+        brief = dict(patched.get("response_brief", {}) or {})
+        for key in ["tone", "reply_length", "next_move"]:
+            value = str(stage_guidance.get(key) or "").strip()
+            if value and not str(brief.get(key) or "").strip():
+                brief[key] = value
+        brief["must_do"] = append_unique(brief.get("must_do", []), [str(item) for item in stage_guidance.get("must_do", []) or []])
+        brief["must_not_do"] = append_unique(brief.get("must_not_do", []), [str(item) for item in stage_guidance.get("must_not_do", []) or []])
+        patched["response_brief"] = brief
+    return patched
+
+
+def deep_flatten_values(value: Any, prefix: str = "") -> Dict[str, Any]:
+    output: Dict[str, Any] = {}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            output.update(deep_flatten_values(child, path))
+    else:
+        output[prefix] = value
+    return output
+
+
+def compute_variable_changes(existing: Dict[str, Any], updated: Dict[str, Any], agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    cfg = get_smartness_config(agent_config, "contradiction_acknowledgment")
+    if cfg.get("enabled", True) is False:
+        return []
+    max_changes = graph_config_int({"contradiction_acknowledgment": cfg}, "contradiction_acknowledgment.max_changes", 8, 1, 50)
+    old_flat = deep_flatten_values(existing or {})
+    new_flat = deep_flatten_values(updated or {})
+    include_paths = set(as_string_list(cfg.get("include_paths", [])))
+    exclude_paths = set(as_string_list(cfg.get("exclude_paths", [])))
+    changes: List[Dict[str, Any]] = []
+    for path, new_value in new_flat.items():
+        if not path or path in exclude_paths:
+            continue
+        if include_paths and path not in include_paths:
+            continue
+        old_value = old_flat.get(path)
+        if old_value in [None, "", [], {}]:
+            continue
+        if new_value in [None, "", [], {}]:
+            continue
+        if old_value == new_value:
+            continue
+        changes.append({"path": path, "from": clip_text(old_value, 80), "to": clip_text(new_value, 80)})
+        if len(changes) >= max_changes:
+            break
+    return changes
+
+
+def build_opener_context(state: AgentState) -> str:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "opener_context")
+    if cfg.get("enabled", True) is False:
+        return ""
+    variables = state.get("variables", {}) or {}
+    memories = state.get("memories", "") or ""
+    summary = state.get("summary", "") or ""
+    rules = cfg.get("rules", [])
+    if isinstance(rules, list):
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            label = str(rule.get("label") or "").strip()
+            if not label:
+                continue
+            any_paths = rule.get("any_variable_paths", [])
+            if isinstance(any_paths, list) and any(deep_get(variables, str(path), None) not in [None, "", [], {}] for path in any_paths):
+                return label
+            contains = str(rule.get("summary_contains") or "").strip().lower()
+            if contains and contains in str(summary).lower():
+                return label
+            if rule.get("requires_memory") and str(memories).strip():
+                return label
+    if str(memories).strip():
+        return str(cfg.get("returning_known_user_label") or "returning_known_user")
+    if str(summary).strip():
+        return str(cfg.get("returning_with_context_label") or "returning_with_context")
+    return str(cfg.get("new_user_label") or "new_user")
+
+
+def detect_stuck_pattern(state: AgentState, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
+    if cfg.get("enabled", False) is False:
+        return {}
+    stuck_signals = state.get("stuck_signals", {}) or {}
+    if not isinstance(stuck_signals, dict):
+        stuck_signals = {}
+    intent = str(manifest.get("user_intent") or manifest.get("conversation_stage") or "").strip()
+    if not intent:
+        return {}
+    try:
+        count = int(stuck_signals.get(intent, 0) or 0)
+    except Exception:
+        count = 0
+    threshold = graph_config_int({"stuck_pattern_detection": cfg}, "stuck_pattern_detection.threshold", 2, 1, 20)
+    if count >= threshold:
+        return {"pattern": "repeated_intent_without_progress", "intent": intent, "count": count}
+    return {}
+
+
+def update_stuck_signals(state: AgentState, manifest: Dict[str, Any], variables_before: Dict[str, Any], variables_after: Dict[str, Any]) -> Dict[str, int]:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
+    if cfg.get("enabled", False) is False:
+        return state.get("stuck_signals", {}) or {}
+    existing = state.get("stuck_signals", {}) or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    result = {str(k): int(v or 0) for k, v in existing.items() if str(k).strip()}
+    intent = str(manifest.get("user_intent") or manifest.get("conversation_stage") or "").strip()
+    if not intent:
+        return result
+    if compute_variable_changes(variables_before, variables_after, agent_config):
+        result[intent] = 0
+    else:
+        result[intent] = int(result.get(intent, 0) or 0) + 1
+    max_keys = graph_config_int({"stuck_pattern_detection": cfg}, "stuck_pattern_detection.max_keys", 20, 1, 100)
+    return dict(list(result.items())[-max_keys:])
+
+
+def build_proactive_surface_items(knowledge_items: List[Dict[str, Any]], agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    cfg = get_smartness_config(agent_config, "proactive_surface")
+    if not cfg.get("enabled", False) or not isinstance(knowledge_items, list):
+        return []
+    triggers = cfg.get("trigger_keywords", [])
+    if not isinstance(triggers, list) or not triggers:
+        return []
+    normalization = agent_config.get("normalization", {}) or {}
+    min_score = float(cfg.get("min_score", 0.55) or 0.55)
+    max_items = graph_config_int({"proactive_surface": cfg}, "proactive_surface.max_items", 3, 1, 12)
+    items: List[Dict[str, Any]] = []
+    for item in knowledge_items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "")
+        try:
+            score = float(item.get("score", 0.0) or 0.0)
+        except Exception:
+            score = 0.0
+        if score < min_score:
+            continue
+        for trigger in triggers:
+            if not isinstance(trigger, dict):
+                continue
+            keywords = trigger.get("keywords", [])
+            if isinstance(keywords, list) and matches_any(text, keywords, normalization):
+                items.append({
+                    "label": str(trigger.get("label") or ""),
+                    "text": clip_text(text, int(cfg.get("item_max_chars", 220) or 220)),
+                    "source": item.get("title", ""),
+                    "score": score,
+                })
+                break
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def build_failure_recovery_context(tool_result: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "tool_failure_recovery")
+    if not cfg.get("enabled", False) or not isinstance(tool_result, dict):
+        return {}
+    if tool_result.get("ok") is not False:
+        return {}
+    operation = str(tool_result.get("operation") or tool_result.get("answer_draft") or tool_result.get("subagent") or "").strip()
+    rules = cfg.get("rules", {}) if isinstance(cfg.get("rules"), dict) else {}
+    rule = rules.get(operation) if operation else None
+    if not isinstance(rule, dict):
+        rule = cfg.get("default", {}) if isinstance(cfg.get("default"), dict) else {}
+    if not rule:
+        return {}
+    return {
+        "operation": operation,
+        "suggest_action": rule.get("suggest_action", ""),
+        "must_do": rule.get("response_brief_must_do", []),
+        "must_not_do": rule.get("response_brief_must_not_do", []),
+        "error_summary": clip_text(tool_result.get("error", ""), 180),
+    }
+
+
+def build_progressive_display_context(state: AgentState) -> Dict[str, Any]:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "progressive_display")
+    if not cfg.get("enabled", False):
+        return {}
+    variables = state.get("variables", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+    source_paths = cfg.get("source_paths", [])
+    if not isinstance(source_paths, list):
+        source_paths = []
+    items = []
+    for path in source_paths:
+        value = graph_dotted_get(tool_result, str(path), None)
+        if value in [None, "", [], {}]:
+            value = deep_get(variables, str(path), None)
+        if isinstance(value, list) and value:
+            items = value
+            break
+    if not items:
+        return {}
+    display_count = graph_config_int({"progressive_display": cfg}, "progressive_display.display_count", 3, 1, 20)
+    return {
+        "total_count": len(items),
+        "display_items": items[:display_count],
+        "has_more": len(items) > display_count,
+        "policy": cfg.get("response_policy", {}),
+    }
+
+
+def validate_and_heal_variables(variables: Dict[str, Any], schema: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "variable_schema_validation")
+    if not cfg.get("enabled", False):
+        return variables
+    fields = get_schema_fields(schema or {})
+    if not isinstance(fields, dict):
+        return variables
+    healed = dict(variables or {})
+    rules = cfg.get("rules", {}) if isinstance(cfg.get("rules"), dict) else {}
+    for path, meta in fields.items():
+        path_text = str(path or "").strip()
+        if not path_text or not isinstance(meta, dict):
+            continue
+        value = deep_get(healed, path_text, None)
+        if value in [None, "", [], {}]:
+            continue
+        validator = str(meta.get("validator") or meta.get("type") or "").strip()
+        rule = rules.get(validator) if validator else None
+        if not isinstance(rule, dict):
+            continue
+        pattern = str(rule.get("regex") or "").strip()
+        if pattern:
+            try:
+                if not re.search(pattern, str(value)):
+                    healed = apply_subagent_variable_patch(healed, {path_text: None}, [], assistant_config=agent_config)
+            except re.error:
+                continue
+    return healed
+
+
+def apply_memory_to_variable_bridge(memories: List[Dict[str, Any]], variables: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "memory_to_variable_bridge")
+    rules = cfg.get("rules") if isinstance(cfg, dict) else None
+    if rules is None and isinstance(get_nested_config(agent_config, "memory_to_variable_bridge"), list):
+        rules = get_nested_config(agent_config, "memory_to_variable_bridge")
+    if not isinstance(rules, list) or not isinstance(memories, list):
+        return variables
+    updates: Dict[str, Any] = {}
+    for memory in memories:
+        if not isinstance(memory, dict):
+            continue
+        text = str(memory.get("text") or "").lower()
+        memory_type = str(memory.get("type") or "")
+        try:
+            confidence = float(memory.get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        for rule in rules:
+            if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+                continue
+            min_conf = float(rule.get("min_confidence", 0.7) or 0.7)
+            if confidence < min_conf:
+                continue
+            required_type = str(rule.get("memory_type") or "").strip()
+            if required_type and memory_type != required_type:
+                continue
+            contains = str(rule.get("memory_contains") or "").strip().lower()
+            if contains and contains not in text:
+                continue
+            target = str(rule.get("set_variable") or rule.get("target_path") or "").strip()
+            if not target:
+                continue
+            if bool(rule.get("only_if_missing", True)) and deep_get(variables, target, None) not in [None, "", [], {}]:
+                continue
+            if "set_value" in rule:
+                updates[target] = rule.get("set_value")
+            else:
+                source_path = str(rule.get("memory_value_path") or "").strip()
+                if source_path:
+                    value = graph_dotted_get(memory, source_path, None)
+                    if value not in [None, "", [], {}]:
+                        updates[target] = value
+    if not updates:
+        return variables
+    return apply_subagent_variable_patch(variables, updates, [], assistant_config=agent_config)
+
+
+def run_batch_semantic_extraction(required_fields: List[Dict[str, Any]], message: str, variables: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, str]:
+    cfg = get_semantic_extraction_config(agent_config)
+    batch_cfg = cfg.get("batch_extraction", {}) if isinstance(cfg.get("batch_extraction"), dict) else {}
+    if not batch_cfg.get("enabled", False) or len(required_fields) <= 1:
+        return {}
+    max_fields = graph_config_int({"batch_extraction": batch_cfg}, "batch_extraction.max_fields", 6, 2, 20)
+    selected = required_fields[:max_fields]
+    lines = []
+    for field in selected:
+        field_id = str(field.get("id") or field.get("target_path") or "").strip()
+        if not field_id:
+            continue
+        lines.append(f"- {field_id}: {field.get('description', '')} | format: {field.get('output_format', '')}")
+    if not lines:
+        return {}
+    prompt_text = (
+        "Extract all configured fields from the user message in one pass.\n"
+        "Return JSON only. Keys must be field ids. Use empty string for missing fields.\n\n"
+        f"Fields:\n{chr(10).join(lines)}\n\n"
+        f"User message: {message}\n\n"
+        f"Known variables: {safe_json(compact_variables(variables, max_items=12), max_chars=1400)}"
+    )
+    system_msg = str(batch_cfg.get("system_prompt") or "You are a precise multi-field extractor. Return JSON only.")
+    try:
+        response = semantic_extraction_llm.invoke([
+            SystemMessage(content=system_msg),
+            HumanMessage(content=prompt_text),
+        ])
+        raw = response.content if hasattr(response, "content") else str(response)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): str(v or "").strip() for k, v in parsed.items() if str(v or "").strip()}
+    except Exception:
+        return {}
+
+
+def smart_inference_node(state: AgentState):
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "smart_inference")
+    rules = cfg.get("rules") if isinstance(cfg, dict) else None
+    if rules is None:
+        raw = get_nested_config(agent_config, "smart_inference_rules")
+        rules = raw if isinstance(raw, list) else []
+    if not isinstance(rules, list) or not rules:
+        return {}
+    variables = state.get("variables", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+    updates: Dict[str, Any] = {}
+    notes: List[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+            continue
+        target = str(rule.get("target_path") or rule.get("set_variable") or "").strip()
+        if not target or deep_get(variables, target, None) not in [None, "", [], {}]:
+            continue
+        value = None
+        source_path = str(rule.get("source_path") or "").strip()
+        if source_path:
+            value = deep_get(variables, source_path, None)
+        result_path = str(rule.get("from_tool_result_path") or "").strip()
+        if result_path:
+            value = graph_dotted_get(tool_result, result_path, None)
+        if value in [None, "", [], {}]:
+            continue
+        if rule.get("only_if_single_result") and isinstance(value, list):
+            if len(value) != 1:
+                continue
+            value = value[0]
+        updates[target] = value
+        note = str(rule.get("note") or f"Inferred {target} from configured rule").strip()
+        if note:
+            notes.append(note)
+    if not updates:
+        return {}
+    updated_variables = apply_subagent_variable_patch(variables, updates, [], assistant_config=agent_config)
+    return {"variables": updated_variables, "smart_inferences": notes}
+
+
+def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(result, dict):
+        return result
+    updated = dict(result)
+    variables_after = updated.get("variables") if isinstance(updated.get("variables"), dict) else previous_variables
+    changes = compute_variable_changes(previous_variables, variables_after, agent_config)
+    if changes:
+        updated["variable_changes_this_turn"] = changes
+    tool_result = updated.get("tool_result")
+    if isinstance(tool_result, dict):
+        offered = build_last_offered_options_from_tool_result(tool_result, agent_config)
+        if offered:
+            updated["last_offered_options"] = offered
+        recovery = build_failure_recovery_context(tool_result, agent_config)
+        if recovery:
+            updated["failure_recovery_context"] = recovery
+    return updated
+
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
@@ -2760,6 +3548,10 @@ def unified_manifest_node(state: AgentState):
     schema = state.get("schema", {}) or {}
     tool_result = state.get("tool_result", {}) or {}
     previous_manifest_summary = previous_manifest_summary_from_state(state)
+    prior_emotion_history = normalize_emotion_history(state.get("emotion_history", []))
+    opener_context = build_opener_context(state)
+    last_offered_options = state.get("last_offered_options", {}) or {}
+    stuck_pattern = state.get("stuck_pattern", {}) or {}
 
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -2820,13 +3612,12 @@ def unified_manifest_node(state: AgentState):
             "Set should_offer_next_action=true and response_brief.next_move accordingly when useful.\n"
             "\n\n"
             # EMOTION AND TONE
-            "CUSTOMER EMOTION:\n"
-            "Detect tone as frustrated|excited|confused|urgent|skeptical|happy|neutral.\n"
-            "Set customer_emotion and let response_brief.tone reflect it:\n"
-            "- frustrated → empathetic + solution-first, no questions first unless needed.\n"
-            "- confused → clear, step-by-step, reassuring.\n"
-            "- urgent → answer first, efficient.\n"
-            "- excited → warm, match energy.\n"
+            "CUSTOMER EMOTION AND SMARTNESS SIGNALS:\n"
+            "Detect tone using the assistant config guidance, then set customer_emotion. Use emotion_history and emotion_trajectory from context when present; do not reset the user's mood every turn.\n"
+            "If configured hesitation signals match, switch into advisor mode: help the user decide instead of pushing completion.\n"
+            "If the user seems to confirm one previously offered option and last_offered_options shows exactly one option, treat it as implicit confirmation according to config.\n"
+            "If confidence is below the configured smart_clarification threshold but you have a plausible hypothesis, set best_guess_clarification.ask_confirm=true with a concise hypothesis instead of asking an open-ended clarification.\n"
+            "Set funnel_stage when the config or context supports it: awareness, consideration, intent, confirmation, or post_conversion.\n"
             "\n\n"
             # GROUNDING
             "GROUNDING:\n"
@@ -2837,7 +3628,7 @@ def unified_manifest_node(state: AgentState):
             # OUTPUT
             "OUTPUT: Valid JSON with exactly these top-level keys:\n"
             "user_intent, selected_subagent_id, chained_subagent_id, chained_subagent_reason, detected_intents, multi_intents, parallel_tool_requests, knowledge_queries, response_synthesis, "
-            "multi_intent_execution_mode, conversation_stage, workflow_stage, customer_emotion, user_expectation, risk_level, confidence, simple_response_mode, simple_response_reason, "
+            "multi_intent_execution_mode, conversation_stage, workflow_stage, customer_emotion, emotion_trajectory, funnel_stage, best_guess_clarification, user_expectation, risk_level, confidence, simple_response_mode, simple_response_reason, "
             "needs_knowledge, needs_memory, needs_tool, requested_tool_name, tool_request_payload, missing_tool_inputs, needs_subagent_reasoning, needs_quality_guard, needs_style_repair, "
             "needs_full_manifest, extracted_updates, extracted_deletions, response_style, reply_length, should_ask_question, question_goal, should_offer_next_action, response_brief, "
             "response_strategy, reasoning_summary.\n"
@@ -2848,6 +3639,11 @@ def unified_manifest_node(state: AgentState):
             "=== ASSISTANT MANIFEST CARD ===\n{manifest_card}\n\n"
             "=== PREVIOUS TURN MANIFEST SUMMARY — WHAT YOU DECIDED LAST TURN ===\n"
             "{previous_manifest_summary}\n\n"
+            "=== SMARTNESS CONTEXT ===\n"
+            "Emotion history: {emotion_history}\n"
+            "Opener context: {opener_context}\n"
+            "Last offered options: {last_offered_options}\n"
+            "Stuck pattern: {stuck_pattern}\n\n"
             "=== CONVERSATION SUMMARY (what happened before) ===\n{summary}\n\n"
             "=== WHAT IS ALREADY KNOWN — DO NOT ASK FOR THESE AGAIN ===\n"
             "{variables}\n\n"
@@ -2874,6 +3670,10 @@ def unified_manifest_node(state: AgentState):
                 max_chars=manifest_card_max,
             ),
             "previous_manifest_summary": clip_text(previous_manifest_summary, 1200) or "No previous manifest summary.",
+            "emotion_history": safe_json(prior_emotion_history[-8:], max_chars=500),
+            "opener_context": opener_context or "",
+            "last_offered_options": safe_json(last_offered_options, max_chars=900),
+            "stuck_pattern": safe_json(stuck_pattern, max_chars=700),
             "summary": clip_text(state.get("summary", ""), 650),
             "variables": safe_json(compact_variables(variables, schema), max_chars=2200),
             "tool_result": safe_json(tool_result, max_chars=2600),
@@ -2901,6 +3701,12 @@ def unified_manifest_node(state: AgentState):
             agent_config=agent_config,
             variables=variables,
         )
+        parsed = apply_hesitation_detection(parsed, message, agent_config)
+        parsed = apply_implicit_confirmation_guardrail(parsed, message, state)
+        parsed = apply_smart_clarification_policy(parsed, agent_config)
+        parsed = apply_funnel_stage_policy(parsed, agent_config)
+        parsed = apply_length_mirroring(parsed, message, agent_config)
+        parsed = apply_emotion_arc_to_manifest(parsed, prior_emotion_history, agent_config)
         parsed["selected_subagent_id"] = unify_subagent_id(parsed.get("selected_subagent_id", ""))
         parsed["chained_subagent_id"] = unify_subagent_id(parsed.get("chained_subagent_id", ""))
         if parsed.get("chained_subagent_id") == parsed.get("selected_subagent_id"):
@@ -3065,12 +3871,29 @@ def unified_manifest_node(state: AgentState):
         deletions=safe_manifest_deletions,
         agent_config=agent_config,
     )
+    updated_variables = validate_and_heal_variables(updated_variables, schema, agent_config)
+    variable_changes = compute_variable_changes(variables, updated_variables, agent_config)
+    new_emotion_history = update_emotion_history(
+        current_emotion=str(manifest.get("customer_emotion") or "neutral"),
+        prior_history=prior_emotion_history,
+        agent_config=agent_config,
+    )
+    new_stuck_signals = update_stuck_signals(state, manifest, variables, updated_variables)
+    new_stuck_pattern = detect_stuck_pattern(state, manifest)
 
     return {
         "manifest": manifest,
         "planner": build_planner_compat(manifest),
         "selected_subagent": selected_subagent,
         "variables": updated_variables,
+        "emotion_history": new_emotion_history,
+        "emotion_trajectory": manifest.get("emotion_trajectory", ""),
+        "funnel_stage": manifest.get("funnel_stage", ""),
+        "best_guess_clarification": manifest.get("best_guess_clarification", {}),
+        "opener_context": opener_context,
+        "variable_changes_this_turn": variable_changes,
+        "stuck_signals": new_stuck_signals,
+        "stuck_pattern": new_stuck_pattern,
         "multi_intents": manifest.get("multi_intents", []),
         "parallel_tool_requests": manifest.get("parallel_tool_requests", []),
         "knowledge_queries": manifest.get("knowledge_queries", []),
@@ -3129,7 +3952,13 @@ def retrieve_memory_node(state: AgentState):
         memories = []
 
     if not memories:
-        return {"memories": ""}
+        return {"memories": "", "memories_raw": []}
+
+    bridged_variables = apply_memory_to_variable_bridge(
+        memories=memories,
+        variables=state.get("variables", {}) or {},
+        agent_config=state.get("agent_config", {}) or {},
+    )
 
     text = "\n".join([
         f"- {m.get('text', '')} (type={m.get('type', 'other')}, confidence={m.get('confidence', '')})"
@@ -3137,7 +3966,15 @@ def retrieve_memory_node(state: AgentState):
         if m.get("text")
     ])
 
-    return {"memories": text}
+    result = {"memories": text, "memories_raw": memories}
+    if bridged_variables != (state.get("variables", {}) or {}):
+        result["variables"] = bridged_variables
+        result["variable_changes_this_turn"] = compute_variable_changes(
+            state.get("variables", {}) or {},
+            bridged_variables,
+            state.get("agent_config", {}) or {},
+        )
+    return result
 
 
 def decide_after_memory(state: AgentState) -> str:
@@ -3298,6 +4135,7 @@ def retrieve_knowledge_node(state: AgentState):
                         "items": compressed_items,
                         "cache_hit": True,
                     }],
+                    "proactive_surface_items": build_proactive_surface_items(compressed_items, agent_config),
                 }
         except Exception:
             pass
@@ -3383,6 +4221,7 @@ def retrieve_knowledge_node(state: AgentState):
         "knowledge_items": combined_items,
         "knowledge_queries": queries,
         "multi_knowledge": multi_knowledge,
+        "proactive_surface_items": build_proactive_surface_items(combined_items, agent_config),
     }
 
 
@@ -4336,11 +5175,15 @@ def tool_execution_node(state: AgentState):
         selected_id=selected_id,
         agent_config=agent_config,
     ):
-        return run_parallel_direct_tool_requests(
-            requests=parallel_requests,
-            variables=variables,
+        return attach_smartness_to_tool_update(
+            run_parallel_direct_tool_requests(
+                requests=parallel_requests,
+                variables=variables,
+                agent_config=agent_config,
+                tool_runner=tool_runner,
+            ),
+            previous_variables=variables,
             agent_config=agent_config,
-            tool_runner=tool_runner,
         )
 
     def run_executor(exec_id: str, vars_in: Dict[str, Any]):
@@ -4541,13 +5384,13 @@ def tool_execution_node(state: AgentState):
                 "notes": f"Executed chained subagents plus {max(len(executed_results) - 2, 0)} extra multi_intents.",
             })
 
-        return {
+        return attach_smartness_to_tool_update({
             "variables": variables,
             "tool_result": tool_result,
             "multi_tool_results": executed_results,
             "manifest": manifest,
             "response_synthesis": manifest.get("response_synthesis", {}),
-        }
+        }, previous_variables=state.get("variables", {}) or {}, agent_config=agent_config)
 
     if selected_id and all_observations:
         return {
@@ -4584,10 +5427,10 @@ def tool_execution_node(state: AgentState):
                 assistant_config=agent_config,
             )
 
-            return {
+            return attach_smartness_to_tool_update({
                 "variables": updated_variables,
                 "tool_result": validation.get("tool_result", {}),
-            }
+            }, previous_variables=variables, agent_config=agent_config)
 
         try:
             raw_result = tool_runner.call(
@@ -4616,11 +5459,11 @@ def tool_execution_node(state: AgentState):
             "arguments": arguments,
         }
 
-        return {
+        return attach_smartness_to_tool_update({
             "variables": updated_variables,
             "tool_result": enriched_result,
             "multi_tool_results": [enriched_result],
-        }
+        }, previous_variables=variables, agent_config=agent_config)
 
     return {
         "tool_result": {
@@ -4997,6 +5840,12 @@ def simple_response_node(state: AgentState):
         "response_brief": manifest.get("response_brief", {}),
         "proactive_guidance": build_proactive_guidance(agent_config, manifest, {}),
         "tone_guidance": get_response_energy_instruction(agent_config, manifest),
+        "best_guess_clarification": manifest.get("best_guess_clarification", {}) or {},
+        "emotion_trajectory": state.get("emotion_trajectory", "") or manifest.get("emotion_trajectory", ""),
+        "funnel_stage": state.get("funnel_stage", "") or manifest.get("funnel_stage", ""),
+        "opener_context": state.get("opener_context", ""),
+        "variable_changes_this_turn": state.get("variable_changes_this_turn", []) or [],
+        "proactive_surface_items": state.get("proactive_surface_items", []) or [],
         "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=18),
         "answer_safety": agent_config.get("answer_safety", {}) or {},
     }
@@ -5016,6 +5865,11 @@ How to reply — follow in this priority order:
 
 Tone guidance for this message:
 {get_response_energy_instruction(agent_config, manifest)}
+
+Smartness instructions:
+- Match the configured reply_length; very_short means 1-2 short sentences maximum.
+- If a best-guess clarification exists, confirm the hypothesis naturally instead of asking an open question.
+- If a change was detected, acknowledge it briefly.
 
 {state.get('language_instruction', '')}
 """
@@ -5093,6 +5947,18 @@ def response_node(state: AgentState):
         "template_response_policy": compact_template_response_policy(agent_config, tool_result),
         "proactive_guidance": build_proactive_guidance(agent_config, manifest, tool_result),
         "tone_guidance": get_response_energy_instruction(agent_config, manifest),
+        "best_guess_clarification": manifest.get("best_guess_clarification", {}) or {},
+        "emotion_trajectory": state.get("emotion_trajectory", "") or manifest.get("emotion_trajectory", ""),
+        "emotion_history": state.get("emotion_history", []) or [],
+        "funnel_stage": state.get("funnel_stage", "") or manifest.get("funnel_stage", ""),
+        "opener_context": state.get("opener_context", ""),
+        "last_offered_options": state.get("last_offered_options", {}) or {},
+        "variable_changes_this_turn": state.get("variable_changes_this_turn", []) or [],
+        "stuck_pattern": state.get("stuck_pattern", {}) or {},
+        "proactive_surface_items": state.get("proactive_surface_items", []) or [],
+        "smart_inferences": state.get("smart_inferences", []) or [],
+        "failure_recovery_context": build_failure_recovery_context(tool_result, agent_config) or state.get("failure_recovery_context", {}) or {},
+        "progressive_display_context": build_progressive_display_context(state),
     }
 
     response_rules = build_layered_response_rules(agent_config)
@@ -5166,7 +6032,15 @@ Style: {clip_text(agent_config.get('conversation_style', ''), 300)}
 {user_need_summary}
 
 Emotion detected: {manifest.get('customer_emotion', 'neutral')}
+Emotion trajectory: {state.get('emotion_trajectory', '') or manifest.get('emotion_trajectory', '')}
+Funnel stage: {state.get('funnel_stage', '') or manifest.get('funnel_stage', '')}
 Tone guidance: {get_response_energy_instruction(agent_config, manifest)}
+
+Smart clarification: {safe_json(manifest.get('best_guess_clarification', {}) or {}, max_chars=500)}
+Variable changes this turn: {safe_json(state.get('variable_changes_this_turn', []) or [], max_chars=700)}
+Proactive info to weave in naturally if relevant: {safe_json(state.get('proactive_surface_items', []) or [], max_chars=700)}
+Failure recovery context: {safe_json(build_failure_recovery_context(tool_result, agent_config) or state.get('failure_recovery_context', {}) or {}, max_chars=700)}
+Progressive display context: {safe_json(build_progressive_display_context(state), max_chars=900)}
 
 === WHAT YOU KNOW AS FACTS ===
 Variables (user's known state):
@@ -5190,6 +6064,10 @@ Variables (user's known state):
 5. GUARDRAILS: Never mention internal routing, agents, RAG, variables, or tools.
    Never invent slots, branches, prices, IDs, or confirmations.
    Ask at most ONE question per reply.
+   If best_guess_clarification.ask_confirm=true, lead with the configured hypothesis as a natural yes/no confirmation, not an open-ended question.
+   If variable_changes_this_turn is present, acknowledge the change briefly before moving forward.
+   If proactive_surface_items are present, mention only items that are directly helpful and do it naturally, not as a separate dump.
+   Respect the reply_length target from response_brief, especially very_short for brief user messages.
 
 Must do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_do', []))}
 Must not do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_not_do', []))}
@@ -5917,6 +6795,7 @@ workflow.add_node("retrieve_memory_node", retrieve_memory_node)
 workflow.add_node("retrieve_knowledge_node", retrieve_knowledge_node)
 workflow.add_node("tool_execution_node", tool_execution_node)
 workflow.add_node("semantic_extraction_node", semantic_extraction_node)
+workflow.add_node("smart_inference_node", smart_inference_node)
 workflow.add_node("subagent_reasoning_node", subagent_reasoning_node)
 workflow.add_node("simple_response_node", simple_response_node)
 workflow.add_node("response_node", response_node)
@@ -5963,7 +6842,8 @@ workflow.add_conditional_edges(
     },
 )
 
-workflow.add_edge("semantic_extraction_node", "tool_execution_node")
+workflow.add_edge("semantic_extraction_node", "smart_inference_node")
+workflow.add_edge("smart_inference_node", "tool_execution_node")
 
 workflow.add_conditional_edges(
     "tool_execution_node",
