@@ -23,6 +23,7 @@ from app.subagents.base import (
 
 
 # Architecture batch: 6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding
+# Architecture patch: 6.43-deterministic-vehicle-detail-correction-no-hardcoding
 
 class BookingSubagent:
     """
@@ -158,6 +159,28 @@ class BookingSubagent:
             "awaiting_customer_details",
             "awaiting_customer_details"
         )
+
+        hold_or_delay_result = self.handle_hold_or_delay_if_needed(
+            context=context,
+            config=config,
+            variables=variables,
+            observations=observations,
+            tool_calls_used=tool_calls_used
+        )
+
+        if hold_or_delay_result:
+            return hold_or_delay_result
+
+        field_help_result = self.handle_field_help_if_needed(
+            context=context,
+            config=config,
+            variables=variables,
+            observations=observations,
+            tool_calls_used=tool_calls_used
+        )
+
+        if field_help_result:
+            return field_help_result
 
         # Critical universal slot-selection guard:
         # A user can choose a slot even if booking.stage was not persisted as
@@ -345,6 +368,11 @@ class BookingSubagent:
             config=config,
             normalization=normalization,
             message=context.user_message
+        )
+        variables = self.apply_customer_detail_cross_field_corrections(
+            variables=variables,
+            config=config,
+            normalization=normalization
         )
         variables = self.mirror_canonical_customer_profile_to_booking_profile(
             variables=variables,
@@ -1115,6 +1143,11 @@ class BookingSubagent:
             config=config,
             normalization=normalization,
             message=context.user_message
+        )
+        variables = self.apply_customer_detail_cross_field_corrections(
+            variables=variables,
+            config=config,
+            normalization=normalization
         )
         variables = self.mirror_canonical_customer_profile_to_booking_profile(
             variables=variables,
@@ -4545,6 +4578,401 @@ class BookingSubagent:
         return False
 
 
+
+    def is_hold_or_delay_message(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        """
+        Detect configured wait/hold messages, such as a customer pausing to
+        check documents. All phrases live in domain_bundle.json; this method is
+        intentionally domain-neutral and does not embed phrase literals.
+        """
+        text = str(message or "").strip()
+        if not text:
+            return False
+
+        phrases: List[str] = []
+
+        direct = config.get("hold_or_delay_phrases", [])
+        if isinstance(direct, list):
+            phrases.extend([str(item or "") for item in direct])
+
+        policy = config.get("hold_or_delay_response_policy", {})
+        if isinstance(policy, dict):
+            policy_phrases = policy.get("phrases", []) or policy.get("markers", [])
+            if isinstance(policy_phrases, list):
+                phrases.extend([str(item or "") for item in policy_phrases])
+
+        markers = config.get("customer_detail_markers", {})
+        if isinstance(markers, dict):
+            hold_markers = markers.get("hold_or_delay_markers", [])
+            if isinstance(hold_markers, list):
+                phrases.extend([str(item or "") for item in hold_markers])
+
+        phrases = [phrase for phrase in phrases if str(phrase or "").strip()]
+
+        if not phrases:
+            return False
+
+        return matches_any(text, phrases, normalization)
+
+
+    def deterministic_variant_from_config(
+        self,
+        variants: Any,
+        message: str = ""
+    ) -> str:
+        """
+        Pick a stable configured response variant without randomness.
+        The wording itself is configured; Python only selects an item.
+        """
+        if not isinstance(variants, list):
+            return ""
+
+        clean = [str(item or "").strip() for item in variants if str(item or "").strip()]
+        if not clean:
+            return ""
+
+        seed = sum(ord(ch) for ch in str(message or ""))
+        return clean[seed % len(clean)]
+
+
+    def handle_hold_or_delay_if_needed(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        observations: List[Dict[str, Any]],
+        tool_calls_used: int
+    ) -> Optional[SubagentResult]:
+        """
+        If the customer pauses to check documents/details, do not continue
+        extraction or booking. Return a configured holding response and preserve
+        state. This prevents phrases like "wait while I get the license" from
+        being misread as customer or vehicle data.
+        """
+        policy = config.get("hold_or_delay_response_policy", {})
+        if not isinstance(policy, dict):
+            policy = {}
+
+        if policy.get("enabled") is False:
+            return None
+
+        normalization = context.assistant_config.get("normalization", {})
+        if not self.is_hold_or_delay_message(context.user_message, config, normalization):
+            return None
+
+        stage_path = config.get("stage_path", "booking.stage")
+        current_stage = str(deep_get(variables, stage_path, "") or "")
+        active_stages = policy.get("active_stages", [])
+
+        if isinstance(active_stages, list) and active_stages:
+            normalized_active = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
+            if current_stage not in normalized_active:
+                return None
+
+        updates = policy.get("set_updates", {})
+        if not isinstance(updates, dict):
+            updates = {}
+
+        patched = apply_variable_patch(variables, updates, []) if updates else variables
+
+        answer = self.deterministic_variant_from_config(
+            policy.get("response_variants", []),
+            context.user_message
+        )
+
+        if not answer:
+            templates = config.get("templates", {}) if isinstance(config.get("templates", {}), dict) else {}
+            template_key = str(policy.get("template_key") or "").strip()
+            answer = render_template(
+                templates.get(template_key, templates.get("missing_fields", "")),
+                {
+                    "variables": patched,
+                    "message": context.user_message,
+                }
+            )
+
+        observations.append({
+            "subagent": self.name,
+            "ok": True,
+            "event": "hold_or_delay_detected",
+            "stage": current_stage,
+        })
+
+        return SubagentResult(
+            handled=True,
+            action="ask_user",
+            answer=answer,
+            variable_updates=patched,
+            selected_subagent=self.name,
+            observations=observations,
+            tool_calls_used=tool_calls_used,
+            notes="configured hold/delay message detected; booking/extraction paused"
+        )
+
+
+    def get_field_help_match(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Match configured field-help questions. The assistant-specific questions
+        and answers live in config.field_help.
+        """
+        field_help = config.get("field_help", {})
+        if not isinstance(field_help, dict):
+            return {}
+
+        for field_path, help_config in field_help.items():
+            if not isinstance(help_config, dict):
+                continue
+
+            phrases = help_config.get("when_user_asks", [])
+            if not isinstance(phrases, list) or not phrases:
+                continue
+
+            if matches_any(message, phrases, normalization):
+                matched = dict(help_config)
+                matched["field_path"] = str(field_path or "")
+                return matched
+
+        return {}
+
+
+    def handle_field_help_if_needed(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        observations: List[Dict[str, Any]],
+        tool_calls_used: int
+    ) -> Optional[SubagentResult]:
+        """
+        Answer configured meaning/clarification questions, such as asking what a
+        required field means, without treating the question as the field value.
+        """
+        routing = config.get("field_clarification_routing", {})
+        if not isinstance(routing, dict):
+            routing = {}
+
+        if routing.get("enabled") is False:
+            return None
+
+        normalization = context.assistant_config.get("normalization", {})
+        match = self.get_field_help_match(context.user_message, config, normalization)
+        if not match:
+            return None
+
+        stage_path = config.get("stage_path", "booking.stage")
+        current_stage = str(deep_get(variables, stage_path, "") or "")
+        active_stages = routing.get("during_stages", [])
+        if isinstance(active_stages, list) and active_stages:
+            normalized_active = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
+            if current_stage and current_stage not in normalized_active:
+                return None
+
+        answer = self.deterministic_variant_from_config(
+            match.get("answer_variants", []),
+            context.user_message
+        )
+        follow_up = self.deterministic_variant_from_config(
+            match.get("follow_up_variants", []),
+            context.user_message + "follow_up"
+        )
+
+        if answer and follow_up:
+            answer = f"{answer} {follow_up}".strip()
+
+        if not answer:
+            templates = config.get("templates", {}) if isinstance(config.get("templates", {}), dict) else {}
+            template_by_field = routing.get("template_by_field", {})
+            if not isinstance(template_by_field, dict):
+                template_by_field = {}
+            template_key = str(
+                match.get("template_key")
+                or template_by_field.get(str(match.get("field_path") or ""))
+                or routing.get("default_template_key")
+                or ""
+            ).strip()
+            answer = render_template(
+                templates.get(template_key, templates.get("missing_fields", "")),
+                {
+                    "variables": variables,
+                    "message": context.user_message,
+                    "field_help": match,
+                }
+            )
+
+        observations.append({
+            "subagent": self.name,
+            "ok": True,
+            "event": "field_help_answered",
+            "field_path": match.get("field_path", ""),
+            "stage": current_stage,
+        })
+
+        return SubagentResult(
+            handled=True,
+            action="ask_user",
+            answer=answer,
+            variable_updates=variables,
+            selected_subagent=self.name,
+            observations=observations,
+            tool_calls_used=tool_calls_used,
+            notes=f"configured field-help answered for {match.get('field_path', '')}"
+        )
+
+
+    def cross_field_rule_matches_value(
+        self,
+        value: Any,
+        rule: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        text = normalize_digits(str(value or "").strip(), normalization.get("digit_map", {}))
+        if not text:
+            return False
+
+        regex = str(
+            rule.get("when_value_regex")
+            or rule.get("value_regex")
+            or rule.get("if_value_regex")
+            or ""
+        ).strip()
+        if regex:
+            try:
+                if not re.search(regex, text):
+                    return False
+            except re.error:
+                return False
+
+        not_regex = str(
+            rule.get("when_value_not_regex")
+            or rule.get("not_value_regex")
+            or rule.get("if_value_not_regex")
+            or ""
+        ).strip()
+        if not_regex:
+            try:
+                if re.search(not_regex, text):
+                    return False
+            except re.error:
+                return False
+
+        contains_any = rule.get("when_value_contains_any", [])
+        if isinstance(contains_any, list) and contains_any:
+            normalized_text = normalize_text(text, normalization)
+            if not any(
+                normalize_text(str(item or ""), normalization) in normalized_text
+                for item in contains_any
+                if str(item or "").strip()
+            ):
+                return False
+
+        return True
+
+
+    def apply_customer_detail_cross_field_corrections(
+        self,
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Move or clear configured customer-detail values when the value clearly
+        belongs to a different configured field.
+
+        Example behavior is entirely config-driven:
+        - a year-shaped value captured under class can be moved to model year
+        - a class-shaped value captured under model year can be moved to class
+        """
+        if not isinstance(variables, dict):
+            return variables
+
+        rules: List[Dict[str, Any]] = []
+
+        direct_rules = config.get("customer_detail_cross_field_corrections", [])
+        if isinstance(direct_rules, list):
+            rules.extend([item for item in direct_rules if isinstance(item, dict)])
+
+        vehicle_config = config.get("vehicle_detail_correction", {})
+        if isinstance(vehicle_config, dict):
+            vehicle_rules = vehicle_config.get("cross_field_corrections", [])
+            if isinstance(vehicle_rules, list):
+                rules.extend([item for item in vehicle_rules if isinstance(item, dict)])
+
+        if not rules:
+            return variables
+
+        updates: Dict[str, Any] = {}
+        clear_paths: List[str] = []
+
+        for rule in rules:
+            source_path = self.strip_variables_prefix(
+                str(rule.get("source_path") or rule.get("from_path") or rule.get("source") or "").strip()
+            )
+            target_path = self.strip_variables_prefix(
+                str(rule.get("target_path") or rule.get("to_path") or rule.get("target") or "").strip()
+            )
+
+            if not source_path or not target_path or source_path == target_path:
+                continue
+
+            value = deep_get(variables, source_path)
+            if value in [None, "", [], {}]:
+                continue
+
+            if not self.cross_field_rule_matches_value(value, rule, normalization):
+                continue
+
+            target_value = deep_get(variables, target_path)
+            overwrite_target = bool(rule.get("overwrite_target", False))
+            only_if_target_missing = rule.get("only_if_target_missing", True) is not False
+
+            if overwrite_target or not only_if_target_missing or target_value in [None, "", [], {}]:
+                updates[target_path] = self.normalize_cross_field_value(
+                    value=value,
+                    rule=rule,
+                    normalization=normalization
+                )
+
+            if rule.get("clear_source", True) is not False:
+                clear_paths.append(source_path)
+
+        if not updates and not clear_paths:
+            return variables
+
+        return apply_variable_patch(variables, updates, clear_paths)
+
+
+    def normalize_cross_field_value(
+        self,
+        value: Any,
+        rule: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        text = normalize_digits(str(value or "").strip(), normalization.get("digit_map", {}))
+
+        cleanup_patterns = rule.get("cleanup_patterns", [])
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    text = re.sub(pattern_text, " ", text).strip()
+                except re.error:
+                    continue
+
+        return re.sub(r"\s+", " ", text).strip()
+
+
     def render_missing_question(
         self,
         config: Dict[str, Any],
@@ -4673,6 +5101,12 @@ class BookingSubagent:
         """
         output: Dict[str, Any] = {}
         text = str(message or "").strip()
+
+        if self.is_hold_or_delay_message(text, config, normalization):
+            return {}
+
+        if self.get_field_help_match(text, config, normalization):
+            return {}
 
         # Generic phone reuse/extraction remains because "phone" is a common
         # contact field, not an assistant-specific booking object.
@@ -6067,6 +6501,28 @@ class BookingSubagent:
         if not isinstance(extraction_config, dict):
             extraction_config = {}
 
+        reject_regexes = extraction_config.get("reject_if_regex", [])
+        if isinstance(reject_regexes, str):
+            reject_regexes = [reject_regexes]
+        if isinstance(reject_regexes, list):
+            for reject_regex in reject_regexes:
+                reject_regex_text = str(reject_regex or "").strip()
+                if not reject_regex_text:
+                    continue
+                try:
+                    if re.search(reject_regex_text, text):
+                        return False
+                except re.error:
+                    return False
+
+        reject_contains_any = extraction_config.get("reject_if_contains_any", [])
+        if isinstance(reject_contains_any, list) and reject_contains_any:
+            normalized_text_for_reject = normalize_text(text, normalization)
+            for item in reject_contains_any:
+                normalized_item = normalize_text(str(item or ""), normalization)
+                if normalized_item and normalized_item in normalized_text_for_reject:
+                    return False
+
         validation_regex = str(
             extraction_config.get("validation_regex")
             or extraction_config.get("regex_validation")
@@ -6349,10 +6805,14 @@ class BookingSubagent:
                 if backup_value in [None, ""]:
                     updates[backup_path_text] = value
 
-        if not updates:
-            return variables
+        if updates:
+            variables = apply_variable_patch(variables, updates, [])
 
-        return apply_variable_patch(variables, updates, [])
+        return self.apply_customer_detail_cross_field_corrections(
+            variables=variables,
+            config=config,
+            normalization=normalization
+        )
 
     def first_valid_customer_profile_value(
         self,
