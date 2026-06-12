@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 
 # Architecture batch: 6.34-runtime-controls-no-hardcoding
+# Architecture patch: 6.45-code-expert-runtime-controls-no-hardcoding
 
 
 def env_str(name: str, default: str = "") -> str:
@@ -101,6 +102,9 @@ OPENAI_API_KEY = env_str("OPENAI_API_KEY", "")
 MODEL_PLANNER = env_str("MODEL_PLANNER", "gpt-4o")
 MODEL_SUBAGENT = env_str("MODEL_SUBAGENT", "gpt-4o-mini")
 MODEL_RESPONSE = env_str("MODEL_RESPONSE", "gpt-4o")
+# Optional deployment-wide default for low-risk/simple response routing.
+# Per-assistant routing decisions still belong in domain_bundle.json.
+MODEL_RESPONSE_SIMPLE = env_str("MODEL_RESPONSE_SIMPLE", "gpt-4o-mini")
 MODEL_EXTRACTION = env_str("MODEL_EXTRACTION", "gpt-4o-mini")
 MODEL_MEMORY = env_str("MODEL_MEMORY", "gpt-4o-mini")
 MODEL_QUALITY = env_str("MODEL_QUALITY", "gpt-4o-mini")
@@ -152,6 +156,13 @@ MAX_RESPONSE_TOKENS = clamp_int(
 )
 MAX_PLANNER_TOKENS = clamp_int(env_int("MAX_PLANNER_TOKENS", 1600), 256, 8000)
 MAX_SUBAGENT_TOKENS = clamp_int(env_int("MAX_SUBAGENT_TOKENS", 1200), 256, 8000)
+# Private raw subagent reasoning cap. This is separate from MAX_SUBAGENT_TOKENS
+# because the raw JSON/analysis path should stay compact by default.
+MAX_SUBAGENT_REASONING_TOKENS = clamp_int(
+    env_int("MAX_SUBAGENT_REASONING_TOKENS", 500),
+    128,
+    2000
+)
 MAX_EXTRACTION_TOKENS = clamp_int(env_int("MAX_EXTRACTION_TOKENS", 700), 128, 4000)
 MAX_MEMORY_TOKENS = clamp_int(env_int("MAX_MEMORY_TOKENS", 800), 128, 4000)
 MAX_QUALITY_TOKENS = clamp_int(env_int("MAX_QUALITY_TOKENS", 600), 128, 4000)
@@ -198,6 +209,13 @@ MANIFEST_HISTORY_LIMIT = clamp_int(
 
 # Estimation helper for compression/token budgeting.
 ESTIMATE_CHARS_PER_TOKEN = clamp_int(env_int("ESTIMATE_CHARS_PER_TOKEN", 4), 1, 12)
+
+# Deployment-wide safety bounds for code-expert optimization features.
+# Assistant/domain-specific behavior and phrases still belong in domain_bundle.json.
+RESPONSE_MODEL_ROUTING_GLOBAL_ENABLED = env_bool(
+    "RESPONSE_MODEL_ROUTING_GLOBAL_ENABLED",
+    default=True
+)
 
 
 def is_production() -> bool:
@@ -248,6 +266,7 @@ def validate_runtime_config() -> None:
         "MODEL_PLANNER": MODEL_PLANNER,
         "MODEL_SUBAGENT": MODEL_SUBAGENT,
         "MODEL_RESPONSE": MODEL_RESPONSE,
+        "MODEL_RESPONSE_SIMPLE": MODEL_RESPONSE_SIMPLE,
         "MODEL_EXTRACTION": MODEL_EXTRACTION,
         "MODEL_MEMORY": MODEL_MEMORY,
         "MODEL_QUALITY": MODEL_QUALITY,
@@ -263,6 +282,7 @@ def validate_runtime_config() -> None:
         "MAX_RESPONSE_TOKENS": MAX_RESPONSE_TOKENS,
         "MAX_PLANNER_TOKENS": MAX_PLANNER_TOKENS,
         "MAX_SUBAGENT_TOKENS": MAX_SUBAGENT_TOKENS,
+        "MAX_SUBAGENT_REASONING_TOKENS": MAX_SUBAGENT_REASONING_TOKENS,
         "MAX_EXTRACTION_TOKENS": MAX_EXTRACTION_TOKENS,
         "MAX_MEMORY_TOKENS": MAX_MEMORY_TOKENS,
         "MAX_QUALITY_TOKENS": MAX_QUALITY_TOKENS,
@@ -310,6 +330,7 @@ def runtime_config_summary() -> dict:
         "model_planner": MODEL_PLANNER,
         "model_subagent": MODEL_SUBAGENT,
         "model_response": MODEL_RESPONSE,
+        "model_response_simple": MODEL_RESPONSE_SIMPLE,
         "model_extraction": MODEL_EXTRACTION,
         "model_memory": MODEL_MEMORY,
         "model_quality": MODEL_QUALITY,
@@ -327,6 +348,7 @@ def runtime_config_summary() -> dict:
         "max_response_tokens": MAX_RESPONSE_TOKENS,
         "max_planner_tokens": MAX_PLANNER_TOKENS,
         "max_subagent_tokens": MAX_SUBAGENT_TOKENS,
+        "max_subagent_reasoning_tokens": MAX_SUBAGENT_REASONING_TOKENS,
         "max_extraction_tokens": MAX_EXTRACTION_TOKENS,
         "max_memory_tokens": MAX_MEMORY_TOKENS,
         "max_quality_tokens": MAX_QUALITY_TOKENS,
@@ -337,6 +359,7 @@ def runtime_config_summary() -> dict:
         "simple_response_history_limit": SIMPLE_RESPONSE_HISTORY_LIMIT,
         "manifest_history_limit": MANIFEST_HISTORY_LIMIT,
         "estimate_chars_per_token": ESTIMATE_CHARS_PER_TOKEN,
+        "response_model_routing_global_enabled": RESPONSE_MODEL_ROUTING_GLOBAL_ENABLED,
         "has_app_secret": bool(APP_SECRET),
         "has_openai_api_key": bool(OPENAI_API_KEY),
         "has_qdrant_api_key": bool(QDRANT_API_KEY),
