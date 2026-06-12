@@ -172,6 +172,7 @@ python3 -m json.tool /app/configs/service_center_agentic_rag/domain_bundle.json 
 grep -q "6.36-manifest-history-limit-no-hardcoding-graph" app/graph.py
 grep -q "6.39-previous-manifest-summary-no-hardcoding-graph" app/graph.py
 grep -q "6.42-breathtaking-smartness-runtime-no-hardcoding-graph" app/graph.py
+grep -q "6.44-semantic-detail-safety-no-hardcoding-graph" app/graph.py
 
 # v6.42 runtime surfaces.
 grep -q "best_guess_clarification" app/graph.py
@@ -192,6 +193,7 @@ grep -q "apply_memory_to_variable_bridge" app/graph.py
 grep -q "smart_inference_node" app/graph.py
 grep -q "validate_and_heal_variables" app/graph.py
 grep -q "run_batch_semantic_extraction" app/graph.py
+grep -q "sanitize_semantic_extracted_value" app/graph.py
 grep -q "build_failure_recovery_context" app/graph.py
 grep -q "build_progressive_display_context" app/graph.py
 grep -q "stuck_pattern" app/graph.py
@@ -208,6 +210,7 @@ grep -q "MANIFEST_HISTORY_LIMIT" app/graph.py
 # Booking/main/config markers.
 grep -q "6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding" app/subagents/booking_subagent.py
 grep -q "6.43-deterministic-vehicle-detail-correction-no-hardcoding" app/subagents/booking_subagent.py
+grep -q "6.44-semantic-detail-safety-no-hardcoding" app/subagents/booking_subagent.py
 grep -q "is_hold_or_delay_message" app/subagents/booking_subagent.py
 grep -q "handle_field_help_if_needed" app/subagents/booking_subagent.py
 grep -q "apply_customer_detail_cross_field_corrections" app/subagents/booking_subagent.py
@@ -221,7 +224,9 @@ grep -q "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding" /app/conf
 grep -q "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.42-breathtaking-smartness-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.43-deterministic-vehicle-detail-correction-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "6.44-semantic-detail-safety-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "vehicle_detail_correction" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "value_must_appear_in_message" /app/configs/service_center_agentic_rag/domain_bundle.json
 
 grep -q "\"smartness\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"smart_clarification\"" /app/configs/service_center_agentic_rag/domain_bundle.json
