@@ -1618,6 +1618,23 @@
         ],
         "extraction_patterns": [
           {
+            "variable": "customer_profile.full_name",
+            "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الاسم|الإسم|name is|my name is)\\s*[:：\\-]?\\s*([^\\d\\n،,.!?؟]+?)(?=\\s+(?:و\\s*)?(?:رقم\\s+(?:العربية|العربيه)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه)|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|نوع\\s+(?:العربية|العربيه)|فئة|فئه|الفئة|الفئه|موديل|سنة)|[\\n،,.!?؟]|$)",
+            "group": 1
+          },
+          {
+            "variable": "customer_profile.plate_number",
+            "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})(?=\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model)|[\\n،,.!?؟]|$)",
+            "group": 1,
+            "when_missing": "customer_profile.plate_number"
+          },
+          {
+            "variable": "customer_profile.car_model_year",
+            "regex": "(?<!\\d)(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)?\\s*[:：\\-–—ـ]?\\s*((?:19|20)[\\d٠-٩۰-۹]{2})(?![\\d٠-٩۰-۹])",
+            "group": 1,
+            "when_missing": "customer_profile.car_model_year"
+          },
+          {
             "variable": "customer_profile.plate_number",
             "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
             "group": 1,
@@ -3687,11 +3704,17 @@
             "extraction": {
               "capture_patterns": [
                 {
+                  "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^\\d\\n،,.!?؟]+?)(?=\\s+(?:و\\s*)?(?:رقم\\s+(?:العربية|العربيه)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه)|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|نوع\\s+(?:العربية|العربيه)|فئة|فئه|الفئة|الفئه|موديل|سنة)|[\\n،,.!?؟]|$)",
+                  "group": 1
+                },
+                {
                   "regex": "(?:اسمي|اسمى|انا اسمي|انا اسمى|أنا اسمي|أنا اسمى|الإسم|الاسم|name is|my name is)\\s*[:：\\-]?\\s*([^،,.!?؟\\n]+)",
                   "group": 1
                 }
               ],
-              "cleanup_patterns": [],
+              "cleanup_patterns": [
+                "\\s+(?:و\\s*)?(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|نوع\\s+(?:العربية|العربيه)|فئة|فئه|الفئة|الفئه|class|trim|موديل|سنة|model\\s+year|year\\s+model).*$"
+              ],
               "blocklist": [
                 "العربية",
                 "العربيه",
@@ -3913,6 +3936,10 @@
               ],
               "capture_patterns": [
                 {
+                  "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([\\u0600-\\u06FFa-zA-Z]{1,4}(?:\\s+[\\u0600-\\u06FFa-zA-Z]{1,4}){0,5}\\s*[\\d٠-٩۰-۹]{1,8})(?=\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model)|[\\n،,.!?؟]|$)",
+                  "group": 1
+                },
+                {
                   "regex": "(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
                   "group": 1
                 },
@@ -3998,12 +4025,14 @@
               "max_length": 40,
               "separator_pattern": "[،,.!?؟:;]+",
               "cleanup_patterns": [
-                "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
+                "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*",
+                "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model).*$"
               ],
               "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
               "marker_capture_max_chars": 40,
               "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
-              "prefer_marker_remainder": true
+              "prefer_marker_remainder": true,
+              "require_letter": true
             },
             "required": true
           },
@@ -4189,7 +4218,10 @@
               "cleanup_patterns": [],
               "validation_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
               "min_length": 4,
-              "max_length": 4
+              "max_length": 4,
+              "reject_if_regex": [
+                "^\\s*(?:19|20)\\d{3,}\\s*$"
+              ]
             },
             "required": true,
             "label": "car model year",
@@ -5427,6 +5459,13 @@
               "clear_source": true
             }
           ]
+        },
+        "name_cleanup": {
+          "cut_patterns": [
+            "\\s+(?:و\\s*)?(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|نوع\\s+(?:العربية|العربيه)|فئة|فئه|الفئة|الفئه|class|trim|موديل|سنة|model\\s+year|year\\s+model).*$",
+            "^[\\s:：\\-–—ـ]+",
+            "[\\s،,.!?؟:;]+$"
+          ]
         }
       },
       "troubleshooting": {
@@ -6305,7 +6344,10 @@
       "record_id_label": "رقم الحجز",
       "visit_id_label": "رقم الحجز",
       "record_id_format": "{label}: {id}",
-      "visit_id_format": "{label}: {id}"
+      "visit_id_format": "{label}: {id}",
+      "do_not_append_visit_id_for_answer_drafts": [
+        "BOOKING_COMPLETED_CLOSING"
+      ]
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -6636,7 +6678,10 @@
           "do not repeat رقم الحجز",
           "do not repeat visit_id",
           "do not repeat branch/date/time"
-        ]
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "deterministic_template": "العفو، تحت أمرك."
       },
       "BOOKING_ALREADY_CONFIRMED": {
         "state": "already_confirmed_non_closing",
@@ -7627,7 +7672,8 @@
       "BOOKING_MISSING_BRANCH",
       "BOOKING_DATE_RESOLVED",
       "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
-      "BOOKING_REQUESTED_TIME_AMBIGUOUS"
+      "BOOKING_REQUESTED_TIME_AMBIGUOUS",
+      "BOOKING_COMPLETED_CLOSING"
     ],
     "request_handling": {
       "max_stored_messages": 80,
@@ -7897,6 +7943,16 @@
               "user_message": "تمام",
               "value": ""
             }
+          ],
+          "value_must_appear_in_message": true,
+          "cleanup_patterns": [
+            "\\s+(?:و\\s*)?(?:رقم\\s+(?:العربية|العربيه|عربيتي|عربيتى)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه|عربيتي|عربيتى)|رقم\\s+اللوح(?:ة|ه)|اللوح(?:ة|ه)|لوحتي|لوحتى|plate(?:\\s+number)?|car\\s+plate|vehicle\\s+number|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|نوع\\s+(?:العربية|العربيه)|فئة|فئه|الفئة|الفئه|class|trim|موديل|سنة|model\\s+year|year\\s+model).*$"
+          ],
+          "min_length": 3,
+          "max_length": 80,
+          "reject_if_regex": [
+            "\\d",
+            "(?:رقم\\s+(?:العربية|العربيه)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه)|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|فئة|فئه|موديل|سنة)"
           ]
         },
         {
@@ -7934,7 +7990,8 @@
               "user_message": "نفس الرقم",
               "value": ""
             }
-          ]
+          ],
+          "value_must_appear_in_message": true
         },
         {
           "id": "customer_plate_number",
@@ -7975,7 +8032,12 @@
               "user_message": "اسمي عبدالرحمن باسم",
               "value": ""
             }
-          ]
+          ],
+          "value_must_appear_in_message": true,
+          "cleanup_patterns": [
+            "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model).*$"
+          ],
+          "accept_if_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
         },
         {
           "id": "customer_car_brand",
@@ -8020,7 +8082,13 @@
           "clarification_policy": {
             "if_user_asks_meaning": "Explain that the brand is the manufacturer/make, like هيونداي، كيا، تويوتا, then ask for it again only if still missing.",
             "do_not_extract_hold_phrases": true
-          }
+          },
+          "value_must_appear_in_message": true,
+          "reject_if_regex": [
+            "^\\s*(?:19|20)\\d{2}\\s*$"
+          ],
+          "min_length": 2,
+          "max_length": 80
         },
         {
           "id": "customer_car_class",
@@ -8074,7 +8142,13 @@
             "if_user_asks_meaning": "Explain that class means trim/version/category, like الفئة الأولى، الفئة التانية، High Line، C-Class, then ask for it again only if still missing.",
             "if_user_gives_year_instead": "Do not store the year as car_class. Let customer_car_model_year capture it and keep car_class missing.",
             "do_not_extract_hold_phrases": true
-          }
+          },
+          "value_must_appear_in_message": true,
+          "reject_if_regex": [
+            "^\\s*(?:19|20)\\d{2}\\s*$"
+          ],
+          "min_length": 2,
+          "max_length": 80
         },
         {
           "id": "customer_car_model_year",
@@ -8133,7 +8207,14 @@
             "if_user_gives_class_instead": "Do not store trim/class as car_model_year. Let customer_car_class capture it and keep car_model_year missing.",
             "do_not_extract_appointment_dates": true,
             "do_not_extract_hold_phrases": true
-          }
+          },
+          "value_must_appear_in_message": true,
+          "accept_if_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "reject_if_regex": [
+            "^\\s*(?:19|20)\\d{3,}\\s*$"
+          ],
+          "min_length": 4,
+          "max_length": 4
         }
       ],
       "batch_extraction": {
@@ -8147,7 +8228,8 @@
       "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding",
       "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding",
       "6.42-breathtaking-smartness-config-no-hardcoding",
-      "6.43-deterministic-vehicle-detail-correction-no-hardcoding"
+      "6.43-deterministic-vehicle-detail-correction-no-hardcoding",
+      "6.44-semantic-detail-safety-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
