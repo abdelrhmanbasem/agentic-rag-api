@@ -3356,6 +3356,9 @@
                   "معاد",
                   "موعد",
                   "فرع"
+                ],
+                "reject_if_regex": [
+                  "^\\s*(?:19|20)\\d{2}\\s*$"
                 ]
               },
               "required": true,
@@ -3405,6 +3408,10 @@
                   {
                     "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
                     "group": 1
+                  },
+                  {
+                    "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                    "group": 1
                   }
                 ],
                 "cleanup_patterns": [],
@@ -3418,7 +3425,12 @@
                   "معاد",
                   "موعد",
                   "فرع"
-                ]
+                ],
+                "reject_if_regex": [
+                  "^\\s*(?:19|20)\\d{2}\\s*$"
+                ],
+                "min_length": 2,
+                "max_length": 80
               },
               "required": true,
               "label": "car class"
@@ -3469,7 +3481,10 @@
                     "group": 1
                   }
                 ],
-                "cleanup_patterns": []
+                "cleanup_patterns": [],
+                "validation_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+                "min_length": 4,
+                "max_length": 4
               },
               "required": true,
               "label": "car model year"
@@ -4044,6 +4059,9 @@
                 "معاد",
                 "موعد",
                 "فرع"
+              ],
+              "reject_if_regex": [
+                "^\\s*(?:19|20)\\d{2}\\s*$"
               ]
             },
             "required": true,
@@ -4094,6 +4112,10 @@
                 {
                   "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
                   "group": 1
+                },
+                {
+                  "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                  "group": 1
                 }
               ],
               "cleanup_patterns": [],
@@ -4107,7 +4129,12 @@
                 "معاد",
                 "موعد",
                 "فرع"
-              ]
+              ],
+              "reject_if_regex": [
+                "^\\s*(?:19|20)\\d{2}\\s*$"
+              ],
+              "min_length": 2,
+              "max_length": 80
             },
             "required": true,
             "label": "car class",
@@ -4159,7 +4186,10 @@
                   "group": 1
                 }
               ],
-              "cleanup_patterns": []
+              "cleanup_patterns": [],
+              "validation_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "min_length": 4,
+              "max_length": 4
             },
             "required": true,
             "label": "car model year",
@@ -5193,7 +5223,16 @@
             "تمام، راجع الرخصة براحتك، ولما تجهز نكمّل من آخر نقطة وقفنا عندها.",
             "خد وقتك، أول ما تكون جاهز قولي بيانات العربية ونثبتها صح."
           ],
-          "response_style": "Natural Egyptian Arabic, short, calm, not robotic, no repeated fixed template."
+          "response_style": "Natural Egyptian Arabic, short, calm, not robotic, no repeated fixed template.",
+          "template_key": "hold_for_license",
+          "active_stages": [
+            "awaiting_customer_details",
+            "awaiting_confirmation",
+            "slot_selection"
+          ],
+          "set_updates": {
+            "booking.hold_or_delay_detected": true
+          }
         },
         "field_help": {
           "customer_profile.car_brand": {
@@ -5343,6 +5382,50 @@
             "Do not store the clarification question as the missing value.",
             "After explaining, ask only for the same missing field or group of missing fields still needed.",
             "Use answer_variants and follow_up_variants to avoid repetitive phrasing."
+          ],
+          "default_template_key": "",
+          "template_by_field": {
+            "customer_profile.car_brand": "field_help_car_brand",
+            "customer_profile.car_class": "field_help_car_class",
+            "customer_profile.car_model_year": "field_help_car_model_year"
+          }
+        },
+        "vehicle_detail_correction": {
+          "enabled": true,
+          "description": "Config-driven correction of customer vehicle detail values captured under the wrong configured field.",
+          "cross_field_corrections": [
+            {
+              "id": "year_captured_as_class_goes_to_model_year",
+              "source_path": "customer_profile.car_class",
+              "target_path": "customer_profile.car_model_year",
+              "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "only_if_target_missing": true,
+              "clear_source": true
+            },
+            {
+              "id": "non_year_captured_as_model_year_goes_to_class",
+              "source_path": "customer_profile.car_model_year",
+              "target_path": "customer_profile.car_class",
+              "when_value_not_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "only_if_target_missing": true,
+              "clear_source": true
+            },
+            {
+              "id": "year_in_booking_profile_class_goes_to_model_year",
+              "source_path": "booking.customer_profile.car_class",
+              "target_path": "customer_profile.car_model_year",
+              "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "only_if_target_missing": true,
+              "clear_source": true
+            },
+            {
+              "id": "non_year_in_booking_profile_model_year_goes_to_class",
+              "source_path": "booking.customer_profile.car_model_year",
+              "target_path": "customer_profile.car_class",
+              "when_value_not_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "only_if_target_missing": true,
+              "clear_source": true
+            }
           ]
         }
       },
@@ -7944,7 +8027,7 @@
           "target_path": "customer_profile.car_class",
           "description": "The customer's car class, trim, category, or version. Extract only when the user clearly gives class/trim/version/category.",
           "output_format": "Clean class/trim/category exactly as the customer said it, without labels.",
-          "validation_description": "Must describe a car class, trim, version, or category. Do not extract brand alone, model year, plate number, phone, branch, appointment time, or confirmation words.",
+          "validation_description": "Must describe a car class, trim, version, or category. If the value is a pure 4-digit year, do not store it as class; it belongs to car_model_year.",
           "required_when_stage_path": "booking.stage",
           "required_when_stages": [
             "awaiting_customer_details"
@@ -7998,7 +8081,7 @@
           "target_path": "customer_profile.car_model_year",
           "description": "The customer's car model year. Extract only when the user clearly gives the car model year.",
           "output_format": "A 4-digit Western year only. Normalize Arabic/Persian digits to Western digits.",
-          "validation_description": "Must be a plausible 4-digit car model year, usually between 1980 and 2035. Do not extract appointment dates, booking dates, phone numbers, plate numbers, or service dates.",
+          "validation_description": "Must be a plausible 4-digit car model year, usually between 1900 and 2099. If the value is trim/class text such as هاي لاين, do not store it as model year; it belongs to car_class.",
           "required_when_stage_path": "booking.stage",
           "required_when_stages": [
             "awaiting_customer_details"
@@ -8063,7 +8146,8 @@
       "6.38-config-driven-memory-policy-no-hardcoding",
       "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding",
       "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding",
-      "6.42-breathtaking-smartness-config-no-hardcoding"
+      "6.42-breathtaking-smartness-config-no-hardcoding",
+      "6.43-deterministic-vehicle-detail-correction-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -9537,6 +9621,44 @@
           "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
         ]
       }
+    },
+    "vehicle_detail_correction": {
+      "enabled": true,
+      "description": "Config-driven correction of customer vehicle detail values captured under the wrong configured field.",
+      "cross_field_corrections": [
+        {
+          "id": "year_captured_as_class_goes_to_model_year",
+          "source_path": "customer_profile.car_class",
+          "target_path": "customer_profile.car_model_year",
+          "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "only_if_target_missing": true,
+          "clear_source": true
+        },
+        {
+          "id": "non_year_captured_as_model_year_goes_to_class",
+          "source_path": "customer_profile.car_model_year",
+          "target_path": "customer_profile.car_class",
+          "when_value_not_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "only_if_target_missing": true,
+          "clear_source": true
+        },
+        {
+          "id": "year_in_booking_profile_class_goes_to_model_year",
+          "source_path": "booking.customer_profile.car_class",
+          "target_path": "customer_profile.car_model_year",
+          "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "only_if_target_missing": true,
+          "clear_source": true
+        },
+        {
+          "id": "non_year_in_booking_profile_model_year_goes_to_class",
+          "source_path": "booking.customer_profile.car_model_year",
+          "target_path": "customer_profile.car_class",
+          "when_value_not_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "only_if_target_missing": true,
+          "clear_source": true
+        }
+      ]
     }
   },
   "schema": {
