@@ -3,6 +3,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
 # Architecture patch: 6.39-previous-manifest-summary-no-hardcoding-graph
 # Architecture patch: 6.42-breathtaking-smartness-runtime-no-hardcoding-graph
+# Architecture patch: 6.44-semantic-detail-safety-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1813,6 +1814,157 @@ def run_single_field_extraction(
     return None
 
 
+def semantic_value_present_in_latest_message(value: Any, message: str, agent_config: Dict[str, Any]) -> bool:
+    normalization = agent_config.get("normalization", {}) or {}
+    digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
+    value_text = graph_normalize_digits(str(value or "").strip(), digit_map)
+    message_text = graph_normalize_digits(str(message or "").strip(), digit_map)
+
+    if not value_text:
+        return False
+
+    normalized_value = normalize_label_value(value_text)
+    normalized_message = normalize_label_value(message_text)
+    if normalized_value and normalized_value in normalized_message:
+        return True
+
+    value_digits = re.sub(r"\D+", "", value_text)
+    if value_digits and value_digits in re.sub(r"\D+", "", message_text):
+        return True
+
+    return False
+
+
+def sanitize_semantic_extracted_value(
+    field: Dict[str, Any],
+    value: Any,
+    message: str,
+    agent_config: Dict[str, Any],
+) -> str:
+    """
+    Validate and clean semantic extraction output using field-level config.
+
+    This prevents the extractor from copying values from known variables/context
+    instead of the latest user message. It is generic: every regex, cleanup
+    pattern, and presence requirement is configured per field in domain_bundle.
+    """
+    if not isinstance(field, dict):
+        return ""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    normalization = agent_config.get("normalization", {}) or {}
+    digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
+    text = graph_normalize_digits(text, digit_map)
+
+    cleanup_patterns = field.get("cleanup_patterns", [])
+    if isinstance(cleanup_patterns, list):
+        for pattern in cleanup_patterns:
+            pattern_text = str(pattern or "").strip()
+            if not pattern_text:
+                continue
+            try:
+                text = re.sub(pattern_text, " ", text, flags=re.IGNORECASE).strip()
+            except re.error:
+                continue
+
+    text = re.sub(r"[\s،,.!?؟:;]+$", "", text)
+    text = re.sub(r"^[\s:：\-–—ـ]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return ""
+
+    if field.get("value_must_appear_in_message") is True:
+        if not semantic_value_present_in_latest_message(text, message, agent_config):
+            return ""
+
+    reject_regexes = field.get("reject_if_regex", [])
+    if isinstance(reject_regexes, str):
+        reject_regexes = [reject_regexes]
+    if isinstance(reject_regexes, list):
+        for pattern in reject_regexes:
+            pattern_text = str(pattern or "").strip()
+            if not pattern_text:
+                continue
+            try:
+                if re.search(pattern_text, text):
+                    return ""
+            except re.error:
+                return ""
+
+    accept_regex = str(field.get("accept_if_regex") or "").strip()
+    if accept_regex:
+        try:
+            if not re.search(accept_regex, text):
+                return ""
+        except re.error:
+            return ""
+
+    try:
+        min_length = int(field.get("min_length", 1) or 1)
+    except Exception:
+        min_length = 1
+    try:
+        max_length = int(field.get("max_length", 500) or 500)
+    except Exception:
+        max_length = 500
+
+    if len(text) < min_length or len(text) > max_length:
+        return ""
+
+    return text
+
+
+def build_last_offered_options_from_variables(
+    variables: Dict[str, Any],
+    tool_result: Dict[str, Any],
+    agent_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    cfg = get_smartness_config(agent_config, "last_offered_options")
+    if not cfg.get("enabled", False) or not isinstance(variables, dict):
+        return {}
+
+    rules = cfg.get("result_rules", [])
+    if not isinstance(rules, list):
+        return {}
+
+    answer_draft = ""
+    if isinstance(tool_result, dict):
+        answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+            continue
+
+        result_path = str(rule.get("result_path") or "").strip()
+        if not result_path:
+            continue
+
+        value = deep_get(variables, result_path, None)
+        if value in [None, "", [], {}]:
+            continue
+
+        if isinstance(value, list):
+            count = len(value)
+            first_value = value[0] if count == 1 else None
+        else:
+            count = 1
+            first_value = value
+
+        return {
+            "type": str(rule.get("type") or result_path),
+            "count": count,
+            "value": first_value,
+            "source_path": result_path,
+            "answer_draft": answer_draft,
+        }
+
+    return {}
+
+
 def semantic_extraction_node(state: AgentState):
     """
     Config-driven semantic variable extraction.
@@ -1866,7 +2018,9 @@ def semantic_extraction_node(state: AgentState):
                 continue
             target = str(field.get("target_path") or "").strip()
             if target and value:
-                extracted_updates[target] = value
+                clean_value = sanitize_semantic_extracted_value(field, value, message, agent_config)
+                if clean_value:
+                    extracted_updates[target] = clean_value
 
     try:
         max_workers = int(cfg.get("max_parallel_extractions", 3) or 3)
@@ -1901,18 +2055,26 @@ def semantic_extraction_node(state: AgentState):
             }
             for future in as_completed(future_map):
                 try:
-                    _, target, value, ask = future.result(timeout=20)
+                    field, target, value, ask = future.result(timeout=20)
                     if value and target:
-                        extracted_updates[target] = value
+                        clean_value = sanitize_semantic_extracted_value(field, value, message, agent_config)
+                        if clean_value:
+                            extracted_updates[target] = clean_value
+                        elif ask:
+                            missing_asks.append(ask)
                     elif ask:
                         missing_asks.append(ask)
                 except Exception:
                     continue
     else:
         for field in required_fields:
-            _, target, value, ask = extract_one(field)
+            field, target, value, ask = extract_one(field)
             if value and target:
-                extracted_updates[target] = value
+                clean_value = sanitize_semantic_extracted_value(field, value, message, agent_config)
+                if clean_value:
+                    extracted_updates[target] = clean_value
+                elif ask:
+                    missing_asks.append(ask)
             elif ask:
                 missing_asks.append(ask)
 
@@ -3534,6 +3696,8 @@ def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: 
     tool_result = updated.get("tool_result")
     if isinstance(tool_result, dict):
         offered = build_last_offered_options_from_tool_result(tool_result, agent_config)
+        if not offered:
+            offered = build_last_offered_options_from_variables(variables_after, tool_result, agent_config)
         if offered:
             updated["last_offered_options"] = offered
         recovery = build_failure_recovery_context(tool_result, agent_config)
@@ -3847,6 +4011,7 @@ def unified_manifest_node(state: AgentState):
         if manifest.get("chained_subagent_id") == manifest.get("selected_subagent_id"):
             manifest["chained_subagent_id"] = ""
 
+    manifest = apply_funnel_stage_policy(manifest, agent_config)
     selected_subagent = get_subagent_by_id(agent_config, manifest.get("selected_subagent_id", ""))
 
     prepared_manifest_updates = prepare_manifest_extracted_updates(
@@ -5655,6 +5820,15 @@ def render_policy_template_answer(state: AgentState) -> str:
         or policy.get("safe_template")
         or ""
     ).strip()
+
+    if not template:
+        safe_examples = policy.get("safe_examples", []) if isinstance(policy, dict) else []
+        if isinstance(safe_examples, list):
+            for example in safe_examples:
+                example_text = str(example or "").strip()
+                if example_text:
+                    template = example_text
+                    break
 
     if not template:
         return ""
