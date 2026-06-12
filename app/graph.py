@@ -4,9 +4,11 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.39-previous-manifest-summary-no-hardcoding-graph
 # Architecture patch: 6.42-breathtaking-smartness-runtime-no-hardcoding-graph
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding-graph
+# Architecture patch: 6.45-code-expert-cost-smartness-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
+import os
 import re
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -143,11 +145,34 @@ class QualityDecision(BaseModel):
     energy_issue: str = ""
 
 
+def graph_env_int(name: str, default: int, minimum: int = 1, maximum: int = 20000) -> int:
+    """
+    Read a generic integer runtime control from the environment.
+
+    This keeps graph-level token controls configurable before config.py has been
+    updated to export them, while avoiding tenant/domain behavior in Python.
+    """
+    try:
+        value = int(os.getenv(name, str(default)))
+    except Exception:
+        value = default
+
+    return max(minimum, min(maximum, value))
+
+
+SUBAGENT_REASONING_MAX_TOKENS = graph_env_int(
+    "MAX_SUBAGENT_REASONING_TOKENS",
+    default=500,
+    minimum=128,
+    maximum=2000,
+)
+
+
 manifest_llm = llm(MODEL_PLANNER, temperature=0, max_tokens=MAX_PLANNER_TOKENS).bind(
     response_format={"type": "json_object"}
 )
 subagent_llm = llm(MODEL_SUBAGENT, temperature=0.15).with_structured_output(SubagentAnalysis)
-subagent_llm_raw = llm(MODEL_SUBAGENT, temperature=0.15, max_tokens=700)
+subagent_llm_raw = llm(MODEL_SUBAGENT, temperature=0.15, max_tokens=SUBAGENT_REASONING_MAX_TOKENS)
 response_llm = llm(MODEL_RESPONSE, temperature=0.3, max_tokens=MAX_RESPONSE_TOKENS)
 quality_llm = llm(MODEL_QUALITY, temperature=0, max_tokens=MAX_QUALITY_TOKENS).with_structured_output(QualityDecision)
 semantic_extraction_llm = llm(MODEL_EXTRACTION, temperature=0, max_tokens=MAX_EXTRACTION_TOKENS).bind(
@@ -841,6 +866,321 @@ def graph_dotted_get(obj: Dict[str, Any], path: str, default: Any = None) -> Any
     return current
 
 
+def delete_dotted_path(data: Dict[str, Any], path: str) -> Dict[str, Any]:
+    """
+    Delete a dotted path from a dict copy.
+
+    Generic prompt-compaction utility. It does not know any domain variable
+    names; paths are supplied by assistant configuration.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    path_text = str(path or "").strip()
+    if not path_text:
+        return data
+
+    parts = [part for part in path_text.split(".") if part]
+    if not parts:
+        return data
+
+    current: Any = data
+
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            return data
+        if part not in current:
+            return data
+        current = current.get(part)
+
+    if isinstance(current, dict):
+        current.pop(parts[-1], None)
+
+    return data
+
+
+def configured_response_compaction(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Read response prompt compaction config.
+
+    Supported locations:
+    - assistant.response_compaction
+    - assistant.response_context_compaction
+    - assistant.smartness.response_compaction
+
+    Behavior remains tenant-configured; Python only applies generic path rules.
+    """
+    if not isinstance(agent_config, dict):
+        return {}
+
+    for key in ["response_compaction", "response_context_compaction"]:
+        value = agent_config.get(key)
+        if isinstance(value, dict):
+            return value
+
+    smartness = agent_config.get("smartness", {})
+    if isinstance(smartness, dict):
+        value = smartness.get("response_compaction")
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def compact_variables_for_response(
+    variables: Dict[str, Any],
+    schema: Optional[Dict[str, Any]],
+    tool_result: Optional[Dict[str, Any]],
+    agent_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Compact variables for response prompts and remove paths duplicated by the
+    current tool_result.
+
+    This implements the code-expert token fix without embedding any domain
+    fields. The assistant config declares which variable paths are redundant
+    when specific tool_result paths are present.
+    """
+    cfg = configured_response_compaction(agent_config)
+    max_items = graph_config_int(
+        {"response_compaction": cfg},
+        "response_compaction.max_variable_items",
+        default=50,
+        minimum=1,
+        maximum=200,
+    )
+
+    compact = compact_variables(variables or {}, schema or {}, max_items=max_items)
+
+    if not isinstance(compact, dict) or not compact:
+        return {}
+
+    if not isinstance(tool_result, dict):
+        tool_result = {}
+
+    explicit_excludes = cfg.get("exclude_variable_paths", [])
+    if isinstance(explicit_excludes, list):
+        for path in explicit_excludes:
+            delete_dotted_path(compact, str(path or ""))
+
+    duplicate_rules = cfg.get("exclude_variable_paths_when_tool_result_has", [])
+    if not isinstance(duplicate_rules, list):
+        duplicate_rules = []
+
+    for rule in duplicate_rules:
+        if not isinstance(rule, dict):
+            continue
+
+        result_path = str(
+            rule.get("tool_result_path")
+            or rule.get("result_path")
+            or ""
+        ).strip()
+
+        if not result_path:
+            continue
+
+        result_value = graph_dotted_get(tool_result, result_path, None)
+
+        if result_value in [None, "", [], {}]:
+            continue
+
+        variable_paths = rule.get("variable_paths", [])
+        if isinstance(variable_paths, str):
+            variable_paths = [variable_paths]
+
+        if not isinstance(variable_paths, list):
+            continue
+
+        for variable_path in variable_paths:
+            delete_dotted_path(compact, str(variable_path or ""))
+
+    return compact
+
+
+def configured_response_model_routing(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Read generic response model routing config.
+
+    Supported locations:
+    - assistant.response_model_routing
+    - assistant.model_routing.response
+    - assistant.smartness.response_model_routing
+    """
+    if not isinstance(agent_config, dict):
+        return {}
+
+    value = agent_config.get("response_model_routing")
+    if isinstance(value, dict):
+        return value
+
+    model_routing = agent_config.get("model_routing")
+    if isinstance(model_routing, dict):
+        response_value = model_routing.get("response")
+        if isinstance(response_value, dict):
+            return response_value
+
+    smartness = agent_config.get("smartness")
+    if isinstance(smartness, dict):
+        value = smartness.get("response_model_routing")
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def get_response_model(
+    state: AgentState,
+    tool_result: Optional[Dict[str, Any]] = None,
+    *,
+    simple_response: bool = False,
+) -> str:
+    """
+    Route low-risk/simple responses to a configured cheaper model while keeping
+    grounded, risky, tool, memory, and knowledge responses on the default model.
+
+    The routing policy is config-driven and disabled by default until the bundle
+    opts in.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = configured_response_model_routing(agent_config)
+
+    if not cfg.get("enabled", False):
+        return MODEL_RESPONSE
+
+    manifest = state.get("manifest", {}) or {}
+    tool_result = tool_result if isinstance(tool_result, dict) else (state.get("tool_result", {}) or {})
+
+    default_model = str(cfg.get("default_model") or cfg.get("fallback_model") or MODEL_RESPONSE).strip() or MODEL_RESPONSE
+    simple_model = str(cfg.get("simple_model") or cfg.get("low_risk_model") or default_model).strip() or default_model
+
+    never = cfg.get("never_use_simple_model_when", {})
+    if not isinstance(never, dict):
+        never = {}
+
+    if never.get("tool_result", True) and tool_result:
+        return default_model
+
+    if never.get("knowledge", True):
+        knowledge = str(state.get("knowledge") or "")
+        if knowledge.strip() and "NO_CONFIDENT_KNOWLEDGE_FOUND" not in knowledge:
+            return default_model
+
+    if never.get("memory", True):
+        memories = str(state.get("memories") or "")
+        if memories.strip() and "No relevant memories" not in memories:
+            return default_model
+
+    if never.get("needs_tool", True) and manifest.get("needs_tool"):
+        return default_model
+
+    if never.get("needs_knowledge", True) and manifest.get("needs_knowledge"):
+        return default_model
+
+    if never.get("needs_memory", True) and manifest.get("needs_memory"):
+        return default_model
+
+    blocked_risks = never.get("risk_levels", ["medium", "high"])
+    if isinstance(blocked_risks, list):
+        risk = str(manifest.get("risk_level") or "low").strip().lower()
+        if risk in {str(item or "").strip().lower() for item in blocked_risks}:
+            return default_model
+
+    try:
+        min_confidence = float(cfg.get("simple_min_confidence", 0.8) or 0.8)
+    except Exception:
+        min_confidence = 0.8
+
+    if (simple_response or manifest.get("simple_response_mode")) and manifest_confidence(manifest) >= min_confidence:
+        return simple_model
+
+    return default_model
+
+
+def get_manifest_retry_policy(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Configurable retry policy for short -> full manifest escalation.
+    """
+    if not isinstance(agent_config, dict):
+        return {}
+
+    for key in ["manifest_retry_policy", "planner_retry_policy"]:
+        value = agent_config.get(key)
+        if isinstance(value, dict):
+            return value
+
+    context = get_manifest_context_config(agent_config)
+    value = context.get("retry_policy") if isinstance(context, dict) else None
+    if isinstance(value, dict):
+        return value
+
+    return {}
+
+
+def should_retry_full_manifest_for_stripped_updates(
+    prepared_updates: Dict[str, Any],
+    filtered_updates: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> bool:
+    """
+    Retry the full manifest only when the short planner tried to write a
+    meaningful amount of protected/source-of-truth state.
+
+    Thresholds are config-driven to prevent an aggressive token-cost regression.
+    """
+    if not prepared_updates:
+        return False
+
+    retry_policy = get_manifest_retry_policy(agent_config)
+
+    try:
+        ratio_threshold = float(
+            retry_policy.get("source_of_truth_strip_ratio_threshold", 0.6)
+            or 0.6
+        )
+    except Exception:
+        ratio_threshold = 0.6
+
+    min_stripped_updates = graph_config_int(
+        {"manifest_retry_policy": retry_policy},
+        "manifest_retry_policy.min_stripped_updates_for_retry",
+        default=3,
+        minimum=1,
+        maximum=100,
+    )
+
+    stripped_count = max(len(prepared_updates) - len(filtered_updates), 0)
+    strip_ratio = stripped_count / max(len(prepared_updates), 1)
+
+    return strip_ratio > ratio_threshold and stripped_count >= min_stripped_updates
+
+
+def build_response_guidance_block(
+    agent_config: Dict[str, Any],
+    tool_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Return exactly one response-guidance block for the response prompt.
+
+    Code-expert token fix: do not send both the full layered rules and the full
+    template policy when only one is relevant.
+    """
+    template_policy = compact_template_response_policy(agent_config, tool_result)
+    cfg = configured_response_compaction(agent_config)
+    prefer_template_when_available = bool(cfg.get("prefer_template_policy_when_available", True))
+
+    if template_policy and prefer_template_when_available and isinstance(tool_result, dict) and tool_result:
+        return {
+            "mode": "template_response_policy",
+            "policy": template_policy,
+        }
+
+    return {
+        "mode": "layered_response_rules",
+        "policy": build_layered_response_rules(agent_config),
+    }
+
+
 def get_manifest_context_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Return config for planner continuity.
@@ -899,7 +1239,7 @@ def summarize_manifest_for_next_turn(
     max_chars = graph_config_int(
         {"manifest_context": config},
         "manifest_context.previous_manifest_summary_max_chars",
-        default=1200,
+        default=600,
         minimum=200,
         maximum=6000,
     )
@@ -947,7 +1287,7 @@ def previous_manifest_summary_from_state(state: AgentState) -> str:
     max_chars = graph_config_int(
         {"manifest_context": config},
         "manifest_context.previous_manifest_summary_max_chars",
-        default=1200,
+        default=600,
         minimum=200,
         maximum=6000,
     )
@@ -1053,22 +1393,52 @@ def should_run_quality_guard(state: AgentState) -> bool:
     tool_result = state.get("tool_result", {}) or {}
     knowledge = state.get("knowledge", "") or ""
     answer = state.get("final_answer", "") or ""
+    agent_config = state.get("agent_config", {}) or {}
+
+    policy = {}
+    if isinstance(agent_config, dict):
+        raw_policy = agent_config.get("quality_guard_policy")
+        if isinstance(raw_policy, dict):
+            policy = raw_policy
+        else:
+            smartness = agent_config.get("smartness", {})
+            if isinstance(smartness, dict) and isinstance(smartness.get("quality_guard_policy"), dict):
+                policy = smartness.get("quality_guard_policy")
+
+    def policy_bool(key: str, default: bool = True) -> bool:
+        value = policy.get(key, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    long_answer_chars = graph_config_int(
+        {"quality_guard_policy": policy},
+        "quality_guard_policy.long_answer_chars",
+        default=700,
+        minimum=120,
+        maximum=8000,
+    )
 
     if manifest.get("needs_quality_guard"):
         return True
-    if manifest.get("needs_style_repair"):
+    if policy_bool("run_on_style_repair", True) and manifest.get("needs_style_repair"):
         return True
-    if tool_result:
+    if policy_bool("run_on_tool_result", True) and tool_result:
         return True
-    if state.get("multi_tool_results") or state.get("multi_knowledge"):
+    if policy_bool("run_on_multi_tool_results", True) and (state.get("multi_tool_results") or state.get("multi_knowledge")):
         return True
-    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
+    if policy_bool("run_on_tool_intent", True) and (manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest)):
         return True
-    if manifest.get("risk_level") in ["high", "medium"]:
+
+    risk_levels = policy.get("risk_levels", ["medium", "high"])
+    if isinstance(risk_levels, list):
+        risk = str(manifest.get("risk_level") or "low").strip().lower()
+        if risk in {str(item or "").strip().lower() for item in risk_levels}:
+            return True
+
+    if policy_bool("run_on_knowledge", True) and "NO_CONFIDENT_KNOWLEDGE_FOUND" not in knowledge and knowledge.strip():
         return True
-    if "NO_CONFIDENT_KNOWLEDGE_FOUND" not in knowledge and knowledge.strip():
-        return True
-    if len(answer) > 700:
+    if policy_bool("run_on_long_answer", True) and len(answer) > long_answer_chars:
         return True
 
     return False
@@ -3833,7 +4203,16 @@ def unified_manifest_node(state: AgentState):
                 unified_manifest_card(agent_config, schema, profile=profile),
                 max_chars=manifest_card_max,
             ),
-            "previous_manifest_summary": clip_text(previous_manifest_summary, 1200) or "No previous manifest summary.",
+            "previous_manifest_summary": clip_text(
+                previous_manifest_summary,
+                graph_config_int(
+                    {"manifest_context": get_manifest_context_config(agent_config)},
+                    "manifest_context.previous_manifest_summary_max_chars",
+                    default=600,
+                    minimum=200,
+                    maximum=6000,
+                ),
+            ) or "No previous manifest summary.",
             "emotion_history": safe_json(prior_emotion_history[-8:], max_chars=500),
             "opener_context": opener_context or "",
             "last_offered_options": safe_json(last_offered_options, max_chars=900),
@@ -3924,7 +4303,7 @@ def unified_manifest_node(state: AgentState):
             or (manifest.get("chained_subagent_id") and not manifest.get("selected_subagent_id"))
             or _parallel_declared_but_broken
             or (manifest_has_multi_intents(manifest) and not manifest.get("selected_subagent_id") and not _raw_parallel)
-            or _update_strip_ratio > 0.4
+            or should_retry_full_manifest_for_stripped_updates(_prepared_retry_updates, _filtered_retry_updates, agent_config)
         )
 
         if should_retry_full:
@@ -5642,10 +6021,68 @@ def tool_execution_node(state: AgentState):
     }
 
 
+def should_skip_subagent_reasoning_after_tool(state: AgentState) -> bool:
+    """
+    Skip the private subagent reasoning LLM when a deterministic executor already
+    produced a clean, high-confidence result.
+
+    Config-driven cost fix:
+    assistant.subagent_reasoning_policy.skip_on_clean_executor_result
+    assistant.subagent_reasoning_policy.min_manifest_confidence
+    assistant.subagent_reasoning_policy.clean_actions
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    policy = agent_config.get("subagent_reasoning_policy", {})
+    if not isinstance(policy, dict):
+        policy = {}
+
+    if policy.get("skip_on_clean_executor_result", True) is False:
+        return False
+
+    manifest = state.get("manifest", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+
+    if not isinstance(tool_result, dict) or not tool_result:
+        return False
+
+    if state.get("multi_tool_results"):
+        return False
+
+    if tool_result.get("ok") is False:
+        return False
+
+    if tool_result.get("error"):
+        return False
+
+    answer_draft = str(tool_result.get("answer_draft") or "").strip()
+    if not answer_draft:
+        return False
+
+    try:
+        min_confidence = float(policy.get("min_manifest_confidence", 0.85) or 0.85)
+    except Exception:
+        min_confidence = 0.85
+
+    if manifest_confidence(manifest) < min_confidence:
+        return False
+
+    clean_actions = policy.get("clean_actions", ["reply", "ask_user"])
+    if isinstance(clean_actions, str):
+        clean_actions = [clean_actions]
+    if not isinstance(clean_actions, list):
+        clean_actions = ["reply", "ask_user"]
+
+    action = str(tool_result.get("action") or "").strip()
+    if action and action not in {str(item or "").strip() for item in clean_actions}:
+        return False
+
+    return True
+
+
 def decide_after_tool(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
-    if manifest.get("needs_subagent_reasoning"):
+    if manifest.get("needs_subagent_reasoning") and not should_skip_subagent_reasoning_after_tool(state):
         return "subagent_reasoning"
 
     return "response"
@@ -6020,7 +6457,7 @@ def simple_response_node(state: AgentState):
         "opener_context": state.get("opener_context", ""),
         "variable_changes_this_turn": state.get("variable_changes_this_turn", []) or [],
         "proactive_surface_items": state.get("proactive_surface_items", []) or [],
-        "variables": compact_variables(state.get("variables", {}) or {}, schema, max_items=18),
+        "variables": compact_variables_for_response(state.get("variables", {}) or {}, schema, {}, agent_config),
         "answer_safety": agent_config.get("answer_safety", {}) or {},
     }
 
@@ -6050,7 +6487,7 @@ Smartness instructions:
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-SIMPLE_RESPONSE_HISTORY_LIMIT:])
     dynamic_response_llm = llm(
-        MODEL_RESPONSE,
+        get_response_model(state, {}, simple_response=True),
         temperature=get_response_temperature(manifest, {}),
         max_tokens=MAX_OUTPUT_TOKENS,
     )
@@ -6100,42 +6537,13 @@ def response_node(state: AgentState):
     if isinstance(tool_response_brief, dict) and tool_response_brief:
         effective_manifest["response_brief"] = tool_response_brief
 
-    response_context = {
-        "assistant_context": compact_agent_context(agent_config, subagent),
-        "manifest": effective_manifest,
-        "private_analysis": compact_analysis(analysis),
-        "summary": clip_text(state.get("summary", ""), 700),
-        "variables": compact_variables(variables, schema),
-        "memory": compact_memories_for_final(memories),
-        "knowledge": compact_knowledge_for_final(knowledge),
-        "multi_knowledge": state.get("multi_knowledge", []) or [],
-        "knowledge_queries": state.get("knowledge_queries", []) or [],
-        "tool_result": tool_result,
-        "multi_tool_results": (
-            state.get("multi_tool_results", [])
-            or (tool_result.get("multi_tool_results", []) if isinstance(tool_result, dict) else [])
-        ),
-        "response_synthesis": state.get("response_synthesis", {}) or manifest.get("response_synthesis", {}),
-        "multi_intents": state.get("multi_intents", []) or manifest.get("multi_intents", []),
-        "answer_safety": agent_config.get("answer_safety", {}) or {},
-        "template_response_policy": compact_template_response_policy(agent_config, tool_result),
-        "proactive_guidance": build_proactive_guidance(agent_config, manifest, tool_result),
-        "tone_guidance": get_response_energy_instruction(agent_config, manifest),
-        "best_guess_clarification": manifest.get("best_guess_clarification", {}) or {},
-        "emotion_trajectory": state.get("emotion_trajectory", "") or manifest.get("emotion_trajectory", ""),
-        "emotion_history": state.get("emotion_history", []) or [],
-        "funnel_stage": state.get("funnel_stage", "") or manifest.get("funnel_stage", ""),
-        "opener_context": state.get("opener_context", ""),
-        "last_offered_options": state.get("last_offered_options", {}) or {},
-        "variable_changes_this_turn": state.get("variable_changes_this_turn", []) or [],
-        "stuck_pattern": state.get("stuck_pattern", {}) or {},
-        "proactive_surface_items": state.get("proactive_surface_items", []) or [],
-        "smart_inferences": state.get("smart_inferences", []) or [],
-        "failure_recovery_context": build_failure_recovery_context(tool_result, agent_config) or state.get("failure_recovery_context", {}) or {},
-        "progressive_display_context": build_progressive_display_context(state),
-    }
-
-    response_rules = build_layered_response_rules(agent_config)
+    compact_response_variables = compact_variables_for_response(
+        variables=variables,
+        schema=schema,
+        tool_result=tool_result,
+        agent_config=agent_config,
+    )
+    response_guidance = build_response_guidance_block(agent_config, tool_result)
 
     persona = agent_config.get("persona", {}) or {}
     persona_desc = ""
@@ -6170,7 +6578,7 @@ def response_node(state: AgentState):
     if memories and "No relevant memories" not in str(memories):
         facts_available.append("User memory available")
 
-    multi_results = response_context.get("multi_tool_results", []) or []
+    multi_results = (state.get("multi_tool_results", []) or (tool_result.get("multi_tool_results", []) if isinstance(tool_result, dict) else [])) or []
     synthesis_instruction = ""
 
     if len(multi_results) > 1:
@@ -6218,7 +6626,7 @@ Progressive display context: {safe_json(build_progressive_display_context(state)
 
 === WHAT YOU KNOW AS FACTS ===
 Variables (user's known state):
-{safe_json(compact_variables(variables, schema), max_chars=1800)}
+{safe_json(compact_response_variables, max_chars=1800)}
 
 {f"Tool result: {safe_json(tool_result, max_chars=1400)}" if tool_result else "No tool result this turn."}
 
@@ -6246,17 +6654,15 @@ Variables (user's known state):
 Must do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_do', []))}
 Must not do: {safe_json((manifest.get('response_brief', {}) or {}).get('must_not_do', []))}
 
-Layered response rules:
-{safe_json(response_rules, max_chars=1800)}
-
-Template policy (if any): {safe_json(compact_template_response_policy(agent_config, tool_result), max_chars=1200)}
+Response guidance mode: {response_guidance.get('mode', 'layered_response_rules')}
+{safe_json(response_guidance.get('policy', {}), max_chars=1800)}
 
 {state.get('language_instruction', '')}
 """
 
     messages = [SystemMessage(content=system_instruction)] + list(state["messages"][-SIMPLE_RESPONSE_HISTORY_LIMIT:])
     dynamic_response_llm = llm(
-        MODEL_RESPONSE,
+        get_response_model(state, tool_result, simple_response=False),
         temperature=get_response_temperature(manifest, tool_result),
         max_tokens=MAX_OUTPUT_TOKENS,
     )
