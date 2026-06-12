@@ -7,6 +7,7 @@ set -Eeuo pipefail
 # booking_subagent.py v6.30
 # main.py v6.33
 # config.py v6.34
+# graph/config/domain_bundle v6.45 code-expert cost/runtime controls
 #
 # Usage:
 #   export API_URL="http://localhost:8010"
@@ -98,12 +99,20 @@ python3 -m py_compile app/config.py
 python3 -m json.tool /app/configs/service_center_agentic_rag/domain_bundle.json >/dev/null
 
 grep -q "6.36-manifest-history-limit-no-hardcoding-graph" app/graph.py
+grep -q "6.45-code-expert-cost-smartness-no-hardcoding-graph" app/graph.py
 grep -q "graph_extract_pending_required_details_from_patterns" app/graph.py
 grep -q "semantic_extraction_node" app/graph.py
 grep -q "pre_response_guardrail_node" app/graph.py
 grep -q "WHAT IS ALREADY KNOWN" app/graph.py
 grep -q "ONE QUESTION" app/graph.py
 grep -q "MANIFEST_HISTORY_LIMIT" app/graph.py
+grep -q "compact_variables_for_response" app/graph.py
+grep -q "get_response_model" app/graph.py
+grep -q "should_retry_full_manifest_for_stripped_updates" app/graph.py
+grep -q "should_skip_subagent_reasoning_after_tool" app/graph.py
+grep -q "build_response_guidance_block" app/graph.py
+grep -q "SUBAGENT_REASONING_MAX_TOKENS" app/graph.py
+! grep -q "max_tokens=700" app/graph.py
 ! grep -q "messages\[-12:\]" app/graph.py
 
 grep -q "6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding" app/subagents/booking_subagent.py
@@ -115,14 +124,24 @@ grep -q "api_error_messages" app/main.py
 ! grep -q "حصلت مشكلة، ممكن تحاول تاني" app/main.py
 
 grep -q "6.34-runtime-controls-no-hardcoding" app/config.py
+grep -q "6.45-code-expert-runtime-controls-no-hardcoding" app/config.py
+grep -q "MODEL_RESPONSE_SIMPLE" app/config.py
+grep -q "MAX_SUBAGENT_REASONING_TOKENS" app/config.py
+grep -q "RESPONSE_MODEL_ROUTING_GLOBAL_ENABLED" app/config.py
 grep -q "MAX_EXTRACTION_TOKENS" app/config.py
 grep -q "SEMANTIC_EXTRACTION_GLOBAL_ENABLED" app/config.py
 grep -q "SIMPLE_RESPONSE_HISTORY_LIMIT" app/config.py
 
 grep -q "6.31-semantic-variable-extraction-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "6.45-code-expert-cost-smartness-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"semantic_variable_extraction\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"customer_plate_number\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"record_id_label\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"manifest_retry_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"response_model_routing\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"response_compaction\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"quality_guard_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"subagent_reasoning_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 ' > "$OUT_DIR/deployed_validation.txt" 2>&1 \
     && pass "deployed files match expected architecture markers" \
     || {
@@ -450,7 +469,21 @@ for field in fields:
         assert field.get("output_format"), field
         assert field.get("validation_description"), field
 
-print("semantic config ok")
+manifest_ctx=assistant.get("manifest_context") or {}
+assert int(manifest_ctx.get("previous_manifest_summary_max_chars") or 0) <= 600, manifest_ctx
+retry=assistant.get("manifest_retry_policy") or {}
+assert float(retry.get("source_of_truth_strip_ratio_threshold") or 0) >= 0.6, retry
+assert int(retry.get("min_stripped_updates_for_retry") or 0) >= 3, retry
+routing=assistant.get("response_model_routing") or {}
+assert routing.get("enabled") is True and routing.get("simple_model") and routing.get("default_model"), routing
+compaction=assistant.get("response_compaction") or {}
+assert compaction.get("enabled") is True and compaction.get("exclude_variable_paths_when_tool_result_has"), compaction
+quality=assistant.get("quality_guard_policy") or {}
+assert quality.get("enabled", True) is not False and int(quality.get("long_answer_chars") or 0) >= 200, quality
+subagent_reasoning=assistant.get("subagent_reasoning_policy") or {}
+assert subagent_reasoning.get("enabled", True) is not False and subagent_reasoning.get("skip_on_clean_executor_result") is True, subagent_reasoning
+
+print("semantic and v6.45 code-expert config ok")
 PY
 
   if [ $? -eq 0 ]; then pass "semantic extraction config sane"; else fail "semantic extraction config sane"; fi
