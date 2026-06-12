@@ -8229,7 +8229,8 @@
       "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding",
       "6.42-breathtaking-smartness-config-no-hardcoding",
       "6.43-deterministic-vehicle-detail-correction-no-hardcoding",
-      "6.44-semantic-detail-safety-no-hardcoding"
+      "6.44-semantic-detail-safety-no-hardcoding",
+      "6.45-code-expert-cost-smartness-config-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -8927,6 +8928,81 @@
             "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
           ]
         }
+      },
+      "response_compaction": {
+        "max_variable_items": 42,
+        "prefer_template_policy_when_available": true,
+        "exclude_variable_paths": [],
+        "exclude_variable_paths_when_tool_result_has": [
+          {
+            "tool_result_path": "available_slots",
+            "variable_paths": [
+              "available_slots"
+            ]
+          },
+          {
+            "tool_result_path": "available_slots_text",
+            "variable_paths": [
+              "available_slots_text"
+            ]
+          },
+          {
+            "tool_result_path": "branches",
+            "variable_paths": [
+              "available_branches",
+              "available_branches_text"
+            ]
+          },
+          {
+            "tool_result_path": "branches_text",
+            "variable_paths": [
+              "available_branches_text"
+            ]
+          },
+          {
+            "tool_result_path": "visit_id",
+            "variable_paths": [
+              "visit_id"
+            ]
+          },
+          {
+            "tool_result_path": "booking_status",
+            "variable_paths": [
+              "booking_status"
+            ]
+          }
+        ]
+      },
+      "response_model_routing": {
+        "enabled": true,
+        "default_model": "gpt-4o",
+        "simple_model": "gpt-4o-mini",
+        "simple_min_confidence": 0.82,
+        "never_use_simple_model_when": {
+          "tool_result": true,
+          "knowledge": true,
+          "memory": true,
+          "needs_tool": true,
+          "needs_knowledge": true,
+          "needs_memory": true,
+          "risk_levels": [
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "quality_guard_policy": {
+        "run_on_style_repair": true,
+        "run_on_tool_result": true,
+        "run_on_multi_tool_results": true,
+        "run_on_tool_intent": true,
+        "run_on_knowledge": true,
+        "run_on_long_answer": true,
+        "risk_levels": [
+          "medium",
+          "high"
+        ],
+        "long_answer_chars": 700
       }
     },
     "emotion_arc_guidance": {
@@ -9741,6 +9817,116 @@
           "clear_source": true
         }
       ]
+    },
+    "manifest_context": {
+      "previous_manifest_summary_enabled": true,
+      "previous_manifest_summary_max_chars": 600,
+      "previous_manifest_summary_fields": [
+        "user_intent",
+        "selected_subagent_id",
+        "chained_subagent_id",
+        "conversation_stage",
+        "workflow_stage",
+        "customer_emotion",
+        "emotion_trajectory",
+        "funnel_stage",
+        "risk_level",
+        "confidence",
+        "response_brief.next_move",
+        "response_brief.reply_length"
+      ],
+      "force_short_manifest_card": false,
+      "retry_policy": {
+        "source_of_truth_strip_ratio_threshold": 0.6,
+        "min_stripped_updates_for_retry": 3
+      }
+    },
+    "manifest_retry_policy": {
+      "source_of_truth_strip_ratio_threshold": 0.6,
+      "min_stripped_updates_for_retry": 3
+    },
+    "response_model_routing": {
+      "enabled": true,
+      "default_model": "gpt-4o",
+      "simple_model": "gpt-4o-mini",
+      "simple_min_confidence": 0.82,
+      "never_use_simple_model_when": {
+        "tool_result": true,
+        "knowledge": true,
+        "memory": true,
+        "needs_tool": true,
+        "needs_knowledge": true,
+        "needs_memory": true,
+        "risk_levels": [
+          "medium",
+          "high"
+        ]
+      }
+    },
+    "response_compaction": {
+      "max_variable_items": 42,
+      "prefer_template_policy_when_available": true,
+      "exclude_variable_paths": [],
+      "exclude_variable_paths_when_tool_result_has": [
+        {
+          "tool_result_path": "available_slots",
+          "variable_paths": [
+            "available_slots"
+          ]
+        },
+        {
+          "tool_result_path": "available_slots_text",
+          "variable_paths": [
+            "available_slots_text"
+          ]
+        },
+        {
+          "tool_result_path": "branches",
+          "variable_paths": [
+            "available_branches",
+            "available_branches_text"
+          ]
+        },
+        {
+          "tool_result_path": "branches_text",
+          "variable_paths": [
+            "available_branches_text"
+          ]
+        },
+        {
+          "tool_result_path": "visit_id",
+          "variable_paths": [
+            "visit_id"
+          ]
+        },
+        {
+          "tool_result_path": "booking_status",
+          "variable_paths": [
+            "booking_status"
+          ]
+        }
+      ]
+    },
+    "quality_guard_policy": {
+      "run_on_style_repair": true,
+      "run_on_tool_result": true,
+      "run_on_multi_tool_results": true,
+      "run_on_tool_intent": true,
+      "run_on_knowledge": true,
+      "run_on_long_answer": true,
+      "risk_levels": [
+        "medium",
+        "high"
+      ],
+      "long_answer_chars": 700
+    },
+    "subagent_reasoning_policy": {
+      "skip_on_clean_executor_result": true,
+      "min_manifest_confidence": 0.85,
+      "clean_actions": [
+        "reply",
+        "ask_user"
+      ]
     }
   },
   "schema": {
@@ -9751,13 +9937,16 @@
         "properties": {
           "full_name": {
             "type": "string",
-            "primary": true
+            "primary": true,
+            "validator": "full_name"
           },
           "phone": {
-            "type": "string"
+            "type": "string",
+            "validator": "phone"
           },
           "plate_number": {
-            "type": "string"
+            "type": "string",
+            "validator": "plate_number"
           },
           "phone_confirmed_from_context": {
             "type": "boolean"
@@ -9821,12 +10010,14 @@
         "type": "string"
       },
       "date": {
-        "type": "string"
+        "type": "string",
+        "validator": "date"
       },
       "appointment_date": {
         "type": "string",
         "source_of_truth": true,
-        "operational_state": true
+        "operational_state": true,
+        "validator": "date"
       },
       "appointment_time": {
         "type": "string",
@@ -9901,6 +10092,62 @@
       "trace_id": {
         "type": "string",
         "description": "Debug trace identifier for the current turn."
+      },
+      "customer_profile.full_name": {
+        "type": "string",
+        "validator": "full_name",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Customer full name captured for booking workflows."
+      },
+      "customer_profile.phone": {
+        "type": "string",
+        "validator": "phone",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Customer phone number captured from message or configured channel context."
+      },
+      "customer_profile.plate_number": {
+        "type": "string",
+        "validator": "plate_number",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Vehicle plate number captured from customer."
+      },
+      "customer_profile.car_brand": {
+        "type": "string",
+        "validator": "non_empty_string",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Vehicle brand/make captured for booking."
+      },
+      "customer_profile.car_class": {
+        "type": "string",
+        "validator": "non_empty_string",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Vehicle class/trim captured for booking."
+      },
+      "customer_profile.car_model_year": {
+        "type": "string",
+        "validator": "car_model_year",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Vehicle model year captured for booking."
+      },
+      "booking.pending.date": {
+        "type": "string",
+        "validator": "date",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Pending booking ISO date."
+      },
+      "booking.pending.time": {
+        "type": "string",
+        "validator": "non_empty_string",
+        "source_of_truth": true,
+        "operational_state": true,
+        "description": "Pending booking time selected from available slots."
       }
     }
   },
