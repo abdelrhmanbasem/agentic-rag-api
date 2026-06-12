@@ -330,6 +330,36 @@
         "without_branch": {
           "next_move": "Ask for the user's area/location to find the nearest suitable branch."
         }
+      },
+      "completed_flow_closing": {
+        "enabled": true,
+        "description": "Config-driven guardrail for short thanks/closing messages after a workflow is already completed. Routes to the deterministic executor so final wording stays short and does not repeat IDs/details.",
+        "target_subagent_id": "booking",
+        "completion_id_paths": [
+          "visit_id",
+          "booking.confirmed.visit_id",
+          "booking.confirmed.id"
+        ],
+        "completion_status_paths": [
+          "booking_status",
+          "booking.stage",
+          "booking.confirmed.status",
+          "booking.confirmed.booking_status"
+        ],
+        "completed_statuses": [
+          "confirmed",
+          "booking_confirmed",
+          "booked"
+        ],
+        "message_sources": [
+          {
+            "subagent_id": "booking",
+            "paths": [
+              "closing_phrases",
+              "closing_detection.closing_tokens"
+            ]
+          }
+        ]
       }
     },
     "response_rules": [
@@ -7660,7 +7690,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -7952,8 +7982,38 @@
           "max_length": 80,
           "reject_if_regex": [
             "\\d",
-            "(?:رقم\\s+(?:العربية|العربيه)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه)|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|فئة|فئه|موديل|سنة)"
-          ]
+            "(?:رقم\\s+(?:العربية|العربيه)|نمر(?:ة|ه)?\\s+(?:العربية|العربيه)|تليفون|تلفون|موبايل|phone|mobile|ماركة|ماركه|فئة|فئه|موديل|سنة)",
+            "^\\s*(?:اه|أه|ايوه|أيوه|تمام|اوكي|أوكي|ok|okay|yes|confirm|confirmed)\\s*$"
+          ],
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.name_markers",
+                "name_extraction.capture_patterns"
+              ]
+            }
+          ],
+          "reject_value_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_guards.fake_name_phrases",
+                "confirmation_phrases",
+                "duplicate_confirmation_phrases"
+              ]
+            }
+          ],
+          "accept_if_regex": "^\\s*[^\\d\\s،,.!?؟:;]{2,}(?:\\s+[^\\d\\s،,.!?؟:;]{2,})+\\s*$"
         },
         {
           "id": "customer_phone",
@@ -7991,13 +8051,27 @@
               "value": ""
             }
           ],
-          "value_must_appear_in_message": true
+          "value_must_appear_in_message": true,
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_any_message_regex": [
+            "(?:01\\d{9}|\\+?20\\d{10,11}|\\d{10,15})"
+          ],
+          "min_digit_count": 10,
+          "min_letter_count": 0
         },
         {
           "id": "customer_plate_number",
           "target_path": "customer_profile.plate_number",
           "description": "The customer's vehicle plate number for the booking. The user may provide Arabic letters, English letters, Arabic digits, or English digits. Common forms include Arabic car plate text like رقم العربيه ب ج د ٥٥٥.",
-          "output_format": "Arabic/English plate letters separated by spaces followed by English digits. Normalize Arabic/Persian digits to English digits. Example: ب ج د 555",
+          "output_format": "Keep the full plate letters and digits from the latest message; never return digits only if letters are present. Normalize Arabic/Persian digits to English digits. Example: ب ج د 555",
           "validation_description": "Must contain at least three digits and at least 3 plate letters and keep spacing between the letters. Do not include the label phrase such as رقم العربية. Do not treat phone numbers as plate numbers when a plate marker is absent.",
           "required_when_stage_path": "booking.stage",
           "required_when_stages": [
@@ -8037,7 +8111,27 @@
           "cleanup_patterns": [
             "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model).*$"
           ],
-          "accept_if_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
+          "accept_if_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_any_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.plate_markers",
+                "plate_extraction.capture_patterns"
+              ]
+            }
+          ],
+          "min_digit_count": 1,
+          "min_letter_count": 1
         },
         {
           "id": "customer_car_brand",
@@ -8088,7 +8182,25 @@
             "^\\s*(?:19|20)\\d{2}\\s*$"
           ],
           "min_length": 2,
-          "max_length": 80
+          "max_length": 80,
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_any_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.brand_markers"
+              ]
+            }
+          ],
+          "min_letter_count": 1
         },
         {
           "id": "customer_car_class",
@@ -8148,7 +8260,25 @@
             "^\\s*(?:19|20)\\d{2}\\s*$"
           ],
           "min_length": 2,
-          "max_length": 80
+          "max_length": 80,
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_any_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.class_markers"
+              ]
+            }
+          ],
+          "min_letter_count": 1
         },
         {
           "id": "customer_car_model_year",
@@ -8214,14 +8344,49 @@
             "^\\s*(?:19|20)\\d{3,}\\s*$"
           ],
           "min_length": 4,
-          "max_length": 4
+          "max_length": 4,
+          "allow_update_from_latest_message": true,
+          "blocked_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.hold_or_delay_markers"
+              ]
+            }
+          ],
+          "required_any_message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "customer_detail_markers.model_year_markers"
+              ]
+            }
+          ],
+          "required_any_message_regex": [
+            "(?<!\\d)(?:19|20)[\\d٠-٩۰-۹]{2}(?!\\d)"
+          ],
+          "min_digit_count": 4,
+          "blocked_message_regex": [
+            "\\b(?:19|20)\\d{2}-\\d{1,2}-\\d{1,2}\\b"
+          ]
         }
       ],
       "batch_extraction": {
         "enabled": true,
         "max_fields": 6,
         "system_prompt": "You are a precise multi-field extractor for a service-center assistant. Return JSON only. Never invent absent values. Normalize Arabic/Persian digits when the field format asks for Western digits."
-      }
+      },
+      "blocked_message_sources": [
+        {
+          "subagent_id": "booking",
+          "paths": [
+            "customer_detail_markers.hold_or_delay_markers"
+          ]
+        }
+      ],
+      "blocked_message_regex": [
+        "(?:يعني\\s+ايه|يعني\\s+إيه|what\\s+does|what\\s+is).{0,40}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+      ]
     },
     "architecture_patches": [
       "6.38-config-driven-memory-policy-no-hardcoding",
@@ -8335,6 +8500,12 @@
       "last_offered_options": {
         "enabled": true,
         "result_rules": [
+          {
+            "id": "available_slots_state_fallback",
+            "enabled": true,
+            "type": "slots",
+            "result_path": "available_slots"
+          },
           {
             "enabled": true,
             "type": "slots",
