@@ -24,6 +24,7 @@ from app.subagents.base import (
 
 # Architecture batch: 6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding
 # Architecture patch: 6.43-deterministic-vehicle-detail-correction-no-hardcoding
+# Architecture patch: 6.44-semantic-detail-safety-no-hardcoding
 
 class BookingSubagent:
     """
@@ -6477,6 +6478,20 @@ class BookingSubagent:
 
         text = re.sub(r"\s+", " ", text).strip()
 
+        # Some cleanup rules intentionally cut at configured boundary markers.
+        # Run them once more after separator normalization so marker boundaries
+        # still work when punctuation has been converted into spaces.
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    text = re.sub(pattern_text, " ", text, flags=re.IGNORECASE).strip()
+                except re.error:
+                    continue
+            text = re.sub(r"\s+", " ", text).strip()
+
         if not self.configured_customer_detail_value_is_valid(
             value=text,
             field_config=field_config,
@@ -7034,6 +7049,42 @@ class BookingSubagent:
         return False
 
 
+    def extract_current_message_value_for_target_path(
+        self,
+        target_path: str,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> str:
+        """
+        Re-extract a configured customer detail from the latest message only.
+
+        This is used as a safety repair when an upstream extractor produced an
+        invalid value. The method is field-agnostic: it finds the configured
+        customer_detail_fields item by target_path and reuses that field's
+        configured markers/patterns/validator.
+        """
+        clean_target = self.strip_variables_prefix(str(target_path or "").strip())
+        if not clean_target:
+            return ""
+
+        for field_config in self.get_customer_detail_field_configs(config):
+            configured_target = self.strip_variables_prefix(
+                str(field_config.get("target_path") or "").strip()
+            )
+            if configured_target != clean_target:
+                continue
+
+            return self.extract_configured_customer_detail_field(
+                message=message,
+                field_config=field_config,
+                config=config,
+                normalization=normalization,
+            )
+
+        return ""
+
+
     def ensure_valid_customer_profile(
         self,
         variables: Dict[str, Any],
@@ -7058,6 +7109,29 @@ class BookingSubagent:
             )
 
         if self.looks_like_person_name(full_name, config, normalization):
+            return self.ensure_customer_profile_context(
+                variables=variables,
+                config=config,
+                normalization=normalization,
+                message=message
+            )
+
+        # If a semantic extractor wrote an invalid customer detail, try to repair
+        # it from the current user message using configured field definitions
+        # before falling back to older backup values. This remains generic: the
+        # target field and patterns are loaded from customer_detail_fields.
+        repaired_current = self.extract_current_message_value_for_target_path(
+            target_path="customer_profile.full_name",
+            message=message,
+            config=config,
+            normalization=normalization,
+        )
+        if repaired_current:
+            variables = apply_variable_patch(
+                variables,
+                {"customer_profile.full_name": repaired_current},
+                []
+            )
             return self.ensure_customer_profile_context(
                 variables=variables,
                 config=config,
@@ -7297,10 +7371,13 @@ class BookingSubagent:
                     continue
 
                 try:
-                    text = re.sub(pattern_text, "", text).strip()
+                    text = re.sub(pattern_text, "", text, flags=re.IGNORECASE).strip()
                 except re.error:
                     continue
 
+        text = re.sub(r"^[\s:：\-–—ـ]+", "", text)
+        text = re.sub(r"[\s،,.!?؟:;]+$", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
         return text
 
 
