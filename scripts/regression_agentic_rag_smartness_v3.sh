@@ -207,6 +207,10 @@ grep -q "MANIFEST_HISTORY_LIMIT" app/graph.py
 
 # Booking/main/config markers.
 grep -q "6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding" app/subagents/booking_subagent.py
+grep -q "6.43-deterministic-vehicle-detail-correction-no-hardcoding" app/subagents/booking_subagent.py
+grep -q "is_hold_or_delay_message" app/subagents/booking_subagent.py
+grep -q "handle_field_help_if_needed" app/subagents/booking_subagent.py
+grep -q "apply_customer_detail_cross_field_corrections" app/subagents/booking_subagent.py
 grep -q "mirror_canonical_customer_profile_to_booking_profile" app/subagents/booking_subagent.py
 grep -q "6.33-config-driven-main-error-handling-no-hardcoding" app/main.py
 grep -q "6.34-runtime-controls-no-hardcoding" app/config.py
@@ -216,6 +220,8 @@ grep -q "6.31-semantic-variable-extraction-config-no-hardcoding" /app/configs/se
 grep -q "6.40-vehicle-details-and-varied-detail-prompts-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.42-breathtaking-smartness-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "6.43-deterministic-vehicle-detail-correction-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "vehicle_detail_correction" /app/configs/service_center_agentic_rag/domain_bundle.json
 
 grep -q "\"smartness\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"smart_clarification\"" /app/configs/service_center_agentic_rag/domain_bundle.json
