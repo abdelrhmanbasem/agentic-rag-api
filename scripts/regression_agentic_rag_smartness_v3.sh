@@ -13,6 +13,7 @@ set -Eeuo pipefail
 # - wrong-label vehicle detail extraction: year as class, class as model year
 # - date change stale-slot clearing
 # - semantic/bundle integrity
+# - v6.45 code-expert cost/runtime controls and config-driven prompt compaction
 #
 # Usage:
 #   export API_URL="http://localhost:8010"
@@ -169,6 +170,7 @@ python3 -m py_compile app/config.py
 python3 -m json.tool /app/configs/service_center_agentic_rag/domain_bundle.json >/dev/null
 
 # Core graph/runtime markers.
+grep -q "6.45-code-expert-cost-smartness-no-hardcoding-graph" app/graph.py
 grep -q "6.36-manifest-history-limit-no-hardcoding-graph" app/graph.py
 grep -q "6.39-previous-manifest-summary-no-hardcoding-graph" app/graph.py
 grep -q "6.42-breathtaking-smartness-runtime-no-hardcoding-graph" app/graph.py
@@ -199,6 +201,20 @@ grep -q "build_progressive_display_context" app/graph.py
 grep -q "stuck_pattern" app/graph.py
 grep -q "detect_stuck_pattern" app/graph.py
 
+# v6.45 code-expert cost/runtime surfaces.
+grep -q "graph_env_int" app/graph.py
+grep -q "SUBAGENT_REASONING_MAX_TOKENS" app/graph.py
+grep -q "compact_variables_for_response" app/graph.py
+grep -q "configured_response_compaction" app/graph.py
+grep -q "get_response_model" app/graph.py
+grep -q "configured_response_model_routing" app/graph.py
+grep -q "should_retry_full_manifest_for_stripped_updates" app/graph.py
+grep -q "get_manifest_retry_policy" app/graph.py
+grep -q "should_skip_subagent_reasoning_after_tool" app/graph.py
+grep -q "build_response_guidance_block" app/graph.py
+grep -q "quality_guard_policy" app/graph.py
+! grep -q "max_tokens=700" app/graph.py
+
 # Prior robust runtime markers.
 grep -q "semantic_extraction_node" app/graph.py
 grep -q "graph_extract_pending_required_details_from_patterns" app/graph.py
@@ -217,6 +233,10 @@ grep -q "apply_customer_detail_cross_field_corrections" app/subagents/booking_su
 grep -q "mirror_canonical_customer_profile_to_booking_profile" app/subagents/booking_subagent.py
 grep -q "6.33-config-driven-main-error-handling-no-hardcoding" app/main.py
 grep -q "6.34-runtime-controls-no-hardcoding" app/config.py
+grep -q "6.45-code-expert-runtime-controls-no-hardcoding" app/config.py
+grep -q "MODEL_RESPONSE_SIMPLE" app/config.py
+grep -q "MAX_SUBAGENT_REASONING_TOKENS" app/config.py
+grep -q "RESPONSE_MODEL_ROUTING_GLOBAL_ENABLED" app/config.py
 
 # Bundle markers/config surfaces.
 grep -q "6.31-semantic-variable-extraction-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
@@ -225,6 +245,7 @@ grep -q "6.41-field-help-hold-and-natural-vehicle-prompts-no-hardcoding" /app/co
 grep -q "6.42-breathtaking-smartness-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.43-deterministic-vehicle-detail-correction-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "6.44-semantic-detail-safety-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "6.45-code-expert-cost-smartness-config-no-hardcoding" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "vehicle_detail_correction" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "value_must_appear_in_message" /app/configs/service_center_agentic_rag/domain_bundle.json
 
@@ -246,6 +267,12 @@ grep -q "\"tool_failure_recovery\"" /app/configs/service_center_agentic_rag/doma
 grep -q "\"progressive_display\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"stuck_pattern_detection\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 grep -q "\"batch_extraction\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"manifest_context\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"manifest_retry_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"response_model_routing\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"response_compaction\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"quality_guard_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
+grep -q "\"subagent_reasoning_policy\"" /app/configs/service_center_agentic_rag/domain_bundle.json
 
 # Vehicle required fields.
 grep -q "\"car_brand\"" /app/configs/service_center_agentic_rag/domain_bundle.json
@@ -732,6 +759,38 @@ for p in [
     "appointment_date",
 ]:
     assert p in schema, p
+
+manifest_ctx=assistant.get("manifest_context") or {}
+assert manifest_ctx.get("previous_manifest_summary_enabled") is True, manifest_ctx
+assert int(manifest_ctx.get("previous_manifest_summary_max_chars") or 0) <= 600, manifest_ctx
+assert manifest_ctx.get("previous_manifest_summary_fields"), manifest_ctx
+
+retry=assistant.get("manifest_retry_policy") or {}
+assert float(retry.get("source_of_truth_strip_ratio_threshold") or 0) >= 0.6, retry
+assert int(retry.get("min_stripped_updates_for_retry") or 0) >= 3, retry
+
+routing=assistant.get("response_model_routing") or {}
+assert routing.get("enabled") is True, routing
+assert routing.get("simple_model"), routing
+assert routing.get("default_model"), routing
+assert (routing.get("never_use_simple_model_when") or {}).get("tool_result") is True, routing
+
+compaction=assistant.get("response_compaction") or {}
+assert compaction.get("enabled") is True, compaction
+assert compaction.get("exclude_variable_paths_when_tool_result_has"), compaction
+assert int(compaction.get("max_variable_items") or 0) > 0, compaction
+
+quality=assistant.get("quality_guard_policy") or {}
+assert quality.get("enabled", True) is not False, quality
+assert int(quality.get("long_answer_chars") or 0) >= 200, quality
+
+subagent_reasoning=assistant.get("subagent_reasoning_policy") or {}
+assert subagent_reasoning.get("enabled", True) is not False, subagent_reasoning
+assert subagent_reasoning.get("skip_on_clean_executor_result") is True, subagent_reasoning
+assert float(subagent_reasoning.get("min_manifest_confidence") or 0) >= 0.7, subagent_reasoning
+assert subagent_reasoning.get("clean_actions"), subagent_reasoning
+
+assert "response_model_routing" in smart and "response_compaction" in smart, smart
 
 answer_safety=assistant.get("answer_safety") or {}
 assert answer_safety.get("record_id_label"), answer_safety
