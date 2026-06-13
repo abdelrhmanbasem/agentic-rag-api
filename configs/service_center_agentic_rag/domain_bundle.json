@@ -1432,9 +1432,6 @@
           "variables.customer_profile.full_name",
           "variables.customer_profile.phone",
           "variables.customer_profile.plate_number",
-          "variables.customer_profile.car_brand",
-          "variables.customer_profile.car_class",
-          "variables.customer_profile.car_model_year",
           "variables.customer_confirmed_booking"
         ],
         "field_labels": {
@@ -5881,6 +5878,15 @@
               "allow_update_from_latest_message": true,
               "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
               "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
+            },
+            {
+              "id": "arabic_plate_captured_as_brand_is_cleared_or_moved_to_plate",
+              "source_path": "customer_profile.car_brand",
+              "target_path": "customer_profile.plate_number",
+              "when_value_regex": "^\\s*(?=.*(?:19|20)?\\d|.*\\d)(?:[\\u0621-\\u064A]\\s*){1,4}\\s*\\d{1,6}\\s*$",
+              "only_if_target_missing": true,
+              "clear_source": true,
+              "vehicle_swap_correction_version": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
             }
           ],
           "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
@@ -5915,6 +5921,35 @@
           ],
           "default_priority": 100,
           "description": "Prefer exact configured date patterns over broad direct relative terms when multiple date candidates are present in one message."
+        },
+        "executor_lock_recovery": {
+          "enabled": true,
+          "context_paths": [
+            "booking.pending",
+            "appointment_date",
+            "date",
+            "date_text",
+            "appointment_time",
+            "appointment_section",
+            "selected_branch",
+            "location_branch",
+            "nearest_branch"
+          ],
+          "confirmation_paths": [
+            "customer_confirmed_booking"
+          ],
+          "version": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
+        },
+        "required_before_create_policy": {
+          "enabled": true,
+          "source_of_truth": "tool_catalog.required_inputs plus configured create_booking_arguments",
+          "optional_customer_details_do_not_block_create": true,
+          "optional_detail_paths": [
+            "variables.customer_profile.car_brand",
+            "variables.customer_profile.car_class",
+            "variables.customer_profile.car_model_year"
+          ],
+          "version": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
         }
       },
       "troubleshooting": {
@@ -8107,7 +8142,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -8873,7 +8908,8 @@
       "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
       "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
       "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
-      "6.57-configured-smart-clarification-fallback-no-hardcoding"
+      "6.57-configured-smart-clarification-fallback-no-hardcoding",
+      "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -10680,7 +10716,8 @@
       "help_gated_detail_extraction_and_closing_id_skip": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
       "marker_remainder_control": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
       "active_flow_stage_union_emotion_mirror_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
-      "active_flow_stage_union_emotion_mirror_slot_change_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
+      "active_flow_stage_union_emotion_mirror_slot_change_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
+      "booking_executor_lock_required_create_alignment": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
     }
   },
   "schema": {
