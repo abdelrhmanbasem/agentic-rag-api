@@ -25,6 +25,7 @@ from app.subagents.base import (
 # Architecture batch: 6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding
 # Architecture patch: 6.43-deterministic-vehicle-detail-correction-no-hardcoding
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding
+# Architecture patch: 6.47-runtime-detail-safety-no-hardcoding
 
 class BookingSubagent:
     """
@@ -5035,6 +5036,22 @@ class BookingSubagent:
 
         return str(config.get("default_missing_template_key", "missing_fields") or "missing_fields")
 
+    def enabled_extraction_patterns(self, patterns: Any) -> List[Dict[str, Any]]:
+        """
+        Return only enabled configured extraction patterns.
+
+        Disabled patterns are a domain-config safety valve. Python does not know
+        what the patterns mean; it only respects the generic enabled flag.
+        """
+        if not isinstance(patterns, list):
+            return []
+        return [
+            item
+            for item in patterns
+            if isinstance(item, dict) and item.get("enabled", True) is not False
+        ]
+
+
     def extract_customer_details(
         self,
         message: str,
@@ -5042,9 +5059,15 @@ class BookingSubagent:
         variables: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> Dict[str, Any]:
+        text = str(message or "").strip()
+        if self.is_hold_or_delay_message(text, config, normalization):
+            return {}
+        if self.get_field_help_match(text, config, normalization):
+            return {}
+
         extracted = extract_by_patterns(
             message=message,
-            patterns=config.get("extraction_patterns", []),
+            patterns=self.enabled_extraction_patterns(config.get("extraction_patterns", [])),
             variables=variables,
             normalization_config=normalization
         )
@@ -5196,8 +5219,8 @@ class BookingSubagent:
         if not text:
             return variables
 
-        patterns = config.get("extraction_patterns", [])
-        if not isinstance(patterns, list) or not patterns:
+        patterns = self.enabled_extraction_patterns(config.get("extraction_patterns", []))
+        if not patterns:
             return variables
 
         missing_paths = self.get_missing_required_create_fields(config, variables)
@@ -5280,6 +5303,8 @@ class BookingSubagent:
 
         for item in patterns:
             if not isinstance(item, dict):
+                continue
+            if item.get("enabled", True) is False:
                 continue
 
             item_target = self.strip_variables_prefix(
@@ -5727,9 +5752,7 @@ class BookingSubagent:
         if not clean_target:
             return ""
 
-        patterns = config.get("extraction_patterns", [])
-        if not isinstance(patterns, list):
-            patterns = []
+        patterns = self.enabled_extraction_patterns(config.get("extraction_patterns", []))
 
         digit_map = normalization.get("digit_map", {})
         raw_message = str(message or "")
@@ -5740,6 +5763,8 @@ class BookingSubagent:
 
         for item in patterns:
             if not isinstance(item, dict):
+                continue
+            if item.get("enabled", True) is False:
                 continue
 
             variable = self.strip_variables_prefix(
@@ -6303,6 +6328,8 @@ class BookingSubagent:
 
         for item in patterns:
             if isinstance(item, dict):
+                if item.get("enabled", True) is False:
+                    continue
                 pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
                 try:
                     group_index = int(item.get("group", 1))
