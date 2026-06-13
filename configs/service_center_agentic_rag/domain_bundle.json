@@ -362,7 +362,9 @@
         ],
         "answer_draft": "BOOKING_COMPLETED_CLOSING",
         "response_template": "العفو، تحت أمرك.",
-        "force_direct_response": true
+        "force_direct_response": true,
+        "suppress_confirmed_record_id_append": true,
+        "runtime_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
       }
     },
     "response_rules": [
@@ -1671,9 +1673,13 @@
           },
           {
             "variable": "customer_profile.car_class",
-            "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+            "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
             "group": 1,
-            "when_missing": "customer_profile.car_class"
+            "when_missing": "customer_profile.car_class",
+            "blocked_message_regex": [
+              "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+            ],
+            "note": "Requires configured class marker plus actual value; help questions are gated by config."
           },
           {
             "variable": "customer_profile.car_model_year",
@@ -3536,19 +3542,11 @@
               "extraction": {
                 "capture_patterns": [
                   {
-                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   },
                   {
-                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
-                    "group": 1
-                  },
-                  {
-                    "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
-                    "group": 1
-                  },
-                  {
-                    "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   }
                 ],
@@ -3567,9 +3565,11 @@
                   "فرع"
                 ],
                 "reject_if_regex": [
-                  "^\\s*(?:19|20)\\d{2}\\s*$"
+                  "^\\s*(?:19|20)\\d{2}\\s*$",
+                  "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+                  "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
                 ],
-                "min_length": 2,
+                "min_length": 3,
                 "max_length": 80,
                 "reject_if_contains_any": [
                   "موديل",
@@ -3577,10 +3577,18 @@
                   "model year",
                   "year model",
                   "car year"
-                ]
+                ],
+                "min_letter_count": 2,
+                "marker_remainder_enabled": false,
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
               },
               "required": true,
-              "label": "car class"
+              "label": "car class",
+              "blocked_message_regex": [
+                "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+              ],
+              "allow_update_from_latest_message": true,
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
             },
             "car_model_year": {
               "target_path": "customer_profile.car_model_year",
@@ -4314,19 +4322,11 @@
             "extraction": {
               "capture_patterns": [
                 {
-                  "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                  "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                   "group": 1
                 },
                 {
-                  "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
-                  "group": 1
-                },
-                {
-                  "regex": "(?:فئة العربية|فئه العربيه|الفئة|الفئه|فئة|فئه|class|car class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
-                  "group": 1
-                },
-                {
-                  "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                  "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                   "group": 1
                 }
               ],
@@ -4345,9 +4345,11 @@
                 "فرع"
               ],
               "reject_if_regex": [
-                "^\\s*(?:19|20)\\d{2}\\s*$"
+                "^\\s*(?:19|20)\\d{2}\\s*$",
+                "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+                "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
               ],
-              "min_length": 2,
+              "min_length": 3,
               "max_length": 80,
               "reject_if_contains_any": [
                 "موديل",
@@ -4355,11 +4357,19 @@
                 "model year",
                 "year model",
                 "car year"
-              ]
+              ],
+              "min_letter_count": 2,
+              "marker_remainder_enabled": false,
+              "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
             },
             "required": true,
             "label": "car class",
-            "field": "car_class"
+            "field": "car_class",
+            "blocked_message_regex": [
+              "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+            ],
+            "allow_update_from_latest_message": true,
+            "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
           },
           {
             "target_path": "customer_profile.car_model_year",
@@ -5450,11 +5460,11 @@
               "extraction": {
                 "capture_patterns": [
                   {
-                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   },
                   {
-                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   }
                 ],
@@ -5467,8 +5477,21 @@
                   "model year",
                   "year model",
                   "car year"
-                ]
-              }
+                ],
+                "reject_if_regex": [
+                  "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+                  "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
+                ],
+                "min_letter_count": 2,
+                "min_length": 3,
+                "marker_remainder_enabled": false,
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+              },
+              "blocked_message_regex": [
+                "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+              ],
+              "allow_update_from_latest_message": true,
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
             },
             "car_model_year": {
               "target_path": "customer_profile.car_model_year",
@@ -5735,11 +5758,11 @@
               "extraction": {
                 "capture_patterns": [
                   {
-                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   },
                   {
-                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   }
                 ],
@@ -5752,8 +5775,21 @@
                   "model year",
                   "year model",
                   "car year"
-                ]
-              }
+                ],
+                "reject_if_regex": [
+                  "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+                  "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
+                ],
+                "min_letter_count": 2,
+                "min_length": 3,
+                "marker_remainder_enabled": false,
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+              },
+              "blocked_message_regex": [
+                "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+              ],
+              "allow_update_from_latest_message": true,
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
             },
             {
               "id": "year_in_booking_profile_class_goes_to_model_year",
@@ -5773,11 +5809,11 @@
               "extraction": {
                 "capture_patterns": [
                   {
-                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   },
                   {
-                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                    "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
                   }
                 ],
@@ -5790,8 +5826,21 @@
                   "model year",
                   "year model",
                   "car year"
-                ]
-              }
+                ],
+                "reject_if_regex": [
+                  "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+                  "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
+                ],
+                "min_letter_count": 2,
+                "min_length": 3,
+                "marker_remainder_enabled": false,
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+              },
+              "blocked_message_regex": [
+                "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+              ],
+              "allow_update_from_latest_message": true,
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
             }
           ]
         },
@@ -8000,7 +8049,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -8592,11 +8641,11 @@
           "extraction": {
             "capture_patterns": [
               {
-                "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*[^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                "regex": "((?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+[^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                 "group": 1
               },
               {
-                "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]*?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
+                "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                 "group": 1
               }
             ],
@@ -8609,7 +8658,15 @@
               "model year",
               "year model",
               "car year"
-            ]
+            ],
+            "reject_if_regex": [
+              "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
+              "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
+            ],
+            "min_letter_count": 2,
+            "min_length": 3,
+            "marker_remainder_enabled": false,
+            "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
           },
           "cleanup_patterns": [
             "\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b.*$"
@@ -8620,7 +8677,11 @@
             "model year",
             "year model",
             "car year"
-          ]
+          ],
+          "blocked_message_regex": [
+            "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+          ],
+          "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
         },
         {
           "id": "customer_car_model_year",
@@ -8736,8 +8797,10 @@
         }
       ],
       "blocked_message_regex": [
-        "(?:يعني\\s+ايه|يعني\\s+إيه|what\\s+does|what\\s+is).{0,40}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
-      ]
+        "(?:يعني\\s+ايه|يعني\\s+إيه|what\\s+does|what\\s+is).{0,40}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)",
+        "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
+      ],
+      "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
     },
     "architecture_patches": [
       "6.38-config-driven-memory-policy-no-hardcoding",
@@ -8748,7 +8811,8 @@
       "6.44-semantic-detail-safety-no-hardcoding",
       "6.45-code-expert-cost-smartness-config-no-hardcoding",
       "6.47-runtime-detail-safety-config-no-hardcoding",
-      "6.48-configured-detail-validation-tightening-no-hardcoding"
+      "6.48-configured-detail-validation-tightening-no-hardcoding",
+      "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -10499,7 +10563,11 @@
     },
     "architecture_features": [
       "6.50-completed-closing-and-class-boundary-config-no-hardcoding"
-    ]
+    ],
+    "runtime_patch_versions": {
+      "help_gated_detail_extraction_and_closing_id_skip": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+      "marker_remainder_control": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
