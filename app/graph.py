@@ -7,6 +7,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.45-code-expert-cost-smartness-no-hardcoding-graph
 # Architecture patch: 6.46-root-regression-fixes-no-hardcoding-graph
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding-graph
+# Architecture patch: 6.49-runtime-debug-state-and-closing-route-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -4386,6 +4387,13 @@ def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: 
             offered = build_last_offered_options_from_variables(variables_after, tool_result, agent_config)
         if offered:
             updated["last_offered_options"] = offered
+            if isinstance(variables_after, dict):
+                variables_after = mirror_runtime_metadata_into_variables(
+                    variables_after,
+                    last_offered_options=offered,
+                    agent_config=agent_config,
+                )
+                updated["variables"] = variables_after
         recovery = build_failure_recovery_context(tool_result, agent_config)
         if recovery:
             updated["failure_recovery_context"] = recovery
@@ -4418,6 +4426,41 @@ def derive_last_offered_options_from_state(state: AgentState) -> Dict[str, Any]:
             return offered
 
     return {}
+
+
+def mirror_runtime_metadata_into_variables(
+    variables: Dict[str, Any],
+    *,
+    manifest: Optional[Dict[str, Any]] = None,
+    funnel_stage: str = "",
+    last_offered_options: Optional[Dict[str, Any]] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Mirror graph-level runtime metadata into the persisted variables object.
+
+    The API debug payload exposes variables as state_after, so generic runtime
+    metadata that regression/debug tooling needs must be mirrored there as
+    ordinary state too. This helper is domain-neutral: it only mirrors generic
+    graph concepts already present in AgentState, not assistant-specific fields.
+    """
+    if not isinstance(variables, dict):
+        variables = {}
+
+    patched = json.loads(json.dumps(variables, ensure_ascii=False))
+    config = agent_config or {}
+
+    if isinstance(manifest, dict) and manifest:
+        manifest_copy = apply_funnel_stage_policy(dict(manifest), config)
+        patched["manifest"] = compact_manifest(manifest_copy)
+        stage = str(funnel_stage or manifest_copy.get("funnel_stage") or "").strip()
+        if stage:
+            patched["funnel_stage"] = stage
+
+    if isinstance(last_offered_options, dict) and last_offered_options:
+        patched["last_offered_options"] = last_offered_options
+
+    return patched
 
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
@@ -4761,6 +4804,12 @@ def unified_manifest_node(state: AgentState):
     )
     updated_variables = validate_and_heal_variables(updated_variables, schema, agent_config)
     variable_changes = compute_variable_changes(variables, updated_variables, agent_config)
+    updated_variables = mirror_runtime_metadata_into_variables(
+        updated_variables,
+        manifest=manifest,
+        funnel_stage=str(manifest.get("funnel_stage") or ""),
+        agent_config=agent_config,
+    )
     new_emotion_history = update_emotion_history(
         current_emotion=str(manifest.get("customer_emotion") or "neutral"),
         prior_history=prior_emotion_history,
@@ -4793,6 +4842,9 @@ def unified_manifest_node(state: AgentState):
 def decide_after_manifest(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
+
     if should_use_simple_response(state):
         return "simple_response"
 
@@ -4804,9 +4856,6 @@ def decide_after_manifest(state: AgentState) -> str:
 
     if should_route_to_semantic_extraction(state):
         return "semantic_extraction"
-
-    if active_deterministic_flow_subagent_id_from_state(state):
-        return "tool_execution"
 
     if manifest_has_parallel_tool_requests(manifest):
         return "tool_execution"
@@ -6839,9 +6888,18 @@ Smartness instructions:
     answer = response.content if hasattr(response, "content") else str(response)
     answer = enforce_answer_safety(answer, state)
 
+    mirrored_variables = mirror_runtime_metadata_into_variables(
+        state.get("variables", {}) or {},
+        manifest=manifest,
+        funnel_stage=str(state.get("funnel_stage", "") or manifest.get("funnel_stage", "")),
+        last_offered_options=derive_last_offered_options_from_state(state),
+        agent_config=agent_config,
+    )
+
     return {
         "messages": [AIMessage(content=answer)],
         "final_answer": answer,
+        "variables": mirrored_variables,
         "quality": {
             "pass_check": True,
             "skipped": False,
@@ -6865,6 +6923,15 @@ def response_node(state: AgentState):
                 "deterministic_template_used": True,
             },
         }
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=state.get("manifest", {}) or {},
+            funnel_stage=str(state.get("funnel_stage", "") or (state.get("manifest", {}) or {}).get("funnel_stage", "")),
+            last_offered_options=derived_last_offered_options,
+            agent_config=state.get("agent_config", {}) or {},
+        )
+        if mirrored_variables != (state.get("variables", {}) or {}):
+            result["variables"] = mirrored_variables
         if derived_last_offered_options:
             result["last_offered_options"] = derived_last_offered_options
         return result
@@ -7026,6 +7093,15 @@ Response guidance mode: {response_guidance.get('mode', 'layered_response_rules')
             "pre_quality_guard": True,
         },
     }
+    mirrored_variables = mirror_runtime_metadata_into_variables(
+        variables,
+        manifest=manifest,
+        funnel_stage=str(state.get("funnel_stage", "") or manifest.get("funnel_stage", "")),
+        last_offered_options=derived_last_offered_options,
+        agent_config=agent_config,
+    )
+    if mirrored_variables != variables:
+        result["variables"] = mirrored_variables
     if derived_last_offered_options:
         result["last_offered_options"] = derived_last_offered_options
     return result
@@ -7718,6 +7794,16 @@ def memory_writer_node(state: AgentState):
             response["manifest"] = patched_manifest
             if str(patched_manifest.get("funnel_stage") or "").strip():
                 response["funnel_stage"] = str(patched_manifest.get("funnel_stage") or "").strip()
+
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=patched_manifest if isinstance(patched_manifest, dict) else manifest,
+            funnel_stage=str((patched_manifest or {}).get("funnel_stage") or state.get("funnel_stage", "")),
+            last_offered_options=derived_last_offered_options,
+            agent_config=state.get("agent_config", {}) or {},
+        )
+        if mirrored_variables != (state.get("variables", {}) or {}):
+            response["variables"] = mirrored_variables
 
         return response
 
