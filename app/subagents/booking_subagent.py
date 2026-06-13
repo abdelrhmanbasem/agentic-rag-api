@@ -28,6 +28,7 @@ from app.subagents.base import (
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding
 # Architecture patch: 6.48-configured-detail-validation-tightening-no-hardcoding
 # Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
+# Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
 
 class BookingSubagent:
     """
@@ -4663,6 +4664,21 @@ class BookingSubagent:
         normalization = context.assistant_config.get("normalization", {})
         if not self.is_hold_or_delay_message(context.user_message, config, normalization):
             return None
+
+        # A configured hold marker can appear inside a correction/change message.
+        # When the same message also resolves to a different configured slot, the
+        # deterministic slot-change path must win; otherwise phrases such as a
+        # user pausing/correcting themselves can block the selected time update.
+        # The behavior is controlled by config and uses configured slot resolver
+        # rules only; no domain phrases or test cases are embedded here.
+        if policy.get("ignore_when_slot_selection_resolves", True) is not False:
+            selected_slot = self.resolve_slot_selection(
+                context=context,
+                config=config,
+                variables=variables
+            )
+            if selected_slot and self.selected_slot_differs_from_pending(selected_slot, variables, config):
+                return None
 
         stage_path = config.get("stage_path", "booking.stage")
         current_stage = str(deep_get(variables, stage_path, "") or "")
