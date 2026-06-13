@@ -498,7 +498,8 @@
       "If proactive_surface_items are available and directly relevant, weave them naturally into the answer without creating a separate robotic section.",
       "If stuck_pattern is present, do not ask the same question again; use a different approach or offer a simple choice.",
       "If memory pre-populates a preference, use it as a soft preference, not as a confirmed booking choice unless the customer confirms.",
-      "If progressive_display_context says there are more options, show the configured subset and mention more are available naturally."
+      "If progressive_display_context says there are more options, show the configured subset and mention more are available naturally.",
+      "Wrong-label vehicle detail corrections must stay config-driven: a year captured under class moves to model year, and non-year trim/class text captured under model markers moves to class."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -3548,6 +3549,11 @@
                   {
                     "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
+                  },
+                  {
+                    "regex": "(?:موديل\\s+(?:العربية|العربيه|السنة)|موديل|سنة\\s+الموديل|model\\s+year|year\\s+model|car\\s+year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                    "group": 1,
+                    "note": "Wrong-label correction: configured model/trim marker with a non-year value is a class/trim candidate."
                   }
                 ],
                 "cleanup_patterns": [
@@ -3565,6 +3571,7 @@
                   "فرع"
                 ],
                 "reject_if_regex": [
+                  "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
                   "^\\s*(?:19|20)\\d{2}\\s*$",
                   "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
                   "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
@@ -3580,7 +3587,8 @@
                 ],
                 "min_letter_count": 2,
                 "marker_remainder_enabled": false,
-                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+                "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
               },
               "required": true,
               "label": "car class",
@@ -3642,7 +3650,8 @@
                 "validation_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
                 "min_length": 4,
                 "max_length": 4,
-                "require_marker_for_unlabelled_capture": true
+                "require_marker_for_unlabelled_capture": true,
+                "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
               },
               "required": true,
               "label": "car model year"
@@ -5466,6 +5475,11 @@
                   {
                     "regex": "(?:فئة\\s+(?:العربية|العربيه)|فئه\\s+(?:العربية|العربيه)|الفئة|الفئه|فئة|فئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s+([^\\n،,.!?؟]+?)(?=\\s+(?:موديل\\s+(?:العربية|العربيه|السنة)?|سنة\\s+الموديل|سنة|model\\s+year|year\\s+model|car\\s+year)\\b|[\\n،,.!?؟]|$)",
                     "group": 1
+                  },
+                  {
+                    "regex": "(?:موديل\\s+(?:العربية|العربيه|السنة)|موديل|سنة\\s+الموديل|model\\s+year|year\\s+model|car\\s+year)\\s*[:：\\-–—ـ]?\\s*(?!\\s*(?:19|20)\\d{2}\\b)([^\\n،,.!?؟]{2,40})",
+                    "group": 1,
+                    "note": "Wrong-label correction: configured model/trim marker with a non-year value is a class/trim candidate."
                   }
                 ],
                 "cleanup_patterns": [
@@ -5479,13 +5493,15 @@
                   "car year"
                 ],
                 "reject_if_regex": [
+                  "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
                   "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*$",
                   "^\\s*(?:يعني|ايه|إيه|what\\b).*$"
                 ],
                 "min_letter_count": 2,
                 "min_length": 3,
                 "marker_remainder_enabled": false,
-                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+                "marker_remainder_control_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+                "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
               },
               "blocked_message_regex": [
                 "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
@@ -5527,7 +5543,10 @@
                 "car_year"
               ],
               "required": true,
-              "label": "car model year"
+              "label": "car model year",
+              "extraction": {
+                "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
+              }
             }
           }
         },
@@ -5578,7 +5597,9 @@
           ],
           "set_updates": {
             "booking.hold_or_delay_detected": true
-          }
+          },
+          "ignore_when_slot_selection_resolves": true,
+          "slot_change_preempts_hold_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         },
         "field_help": {
           "customer_profile.car_brand": {
@@ -5744,9 +5765,13 @@
               "id": "year_captured_as_class_goes_to_model_year",
               "source_path": "customer_profile.car_class",
               "target_path": "customer_profile.car_model_year",
-              "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "when_value_regex": "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
               "only_if_target_missing": true,
-              "clear_source": true
+              "clear_source": true,
+              "cleanup_patterns": [
+                "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*"
+              ],
+              "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
             },
             {
               "id": "non_year_captured_as_model_year_goes_to_class",
@@ -5789,15 +5814,20 @@
                 "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
               ],
               "allow_update_from_latest_message": true,
-              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+              "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
             },
             {
               "id": "year_in_booking_profile_class_goes_to_model_year",
               "source_path": "booking.customer_profile.car_class",
               "target_path": "customer_profile.car_model_year",
-              "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+              "when_value_regex": "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
               "only_if_target_missing": true,
-              "clear_source": true
+              "clear_source": true,
+              "cleanup_patterns": [
+                "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*"
+              ],
+              "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
             },
             {
               "id": "non_year_in_booking_profile_model_year_goes_to_class",
@@ -5840,9 +5870,11 @@
                 "(?:يعني\\s+ايه|يعني\\s+إيه|ايه\\s+|إيه\\s+|what\\s+do\\s+you\\s+mean|what\\s+is).{0,50}(?:فئة|فئه|class|trim|موديل|ماركة|ماركه|brand|year)"
               ],
               "allow_update_from_latest_message": true,
-              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+              "help_gated_detail_extraction_version": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+              "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
             }
-          ]
+          ],
+          "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         },
         "name_cleanup": {
           "cut_patterns": [
@@ -5857,7 +5889,14 @@
           "plate_number": "Requires at least one digit and one letter by configured validation; pure digit fallback patterns disabled.",
           "car_model_year": "Bare appointment years are not accepted as model year unless captured through configured model-year field rules.",
           "customer_details": "Field validators and markers are config-owned; Python applies them generically."
-        }
+        },
+        "pending_booking_executor_stages": [
+          "awaiting_confirmation",
+          "awaiting_customer_details",
+          "slot_selection"
+        ],
+        "pending_booking_executor_stage_union_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
+        "slot_change_preempts_hold_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -8049,7 +8088,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -8812,7 +8851,9 @@
       "6.45-code-expert-cost-smartness-config-no-hardcoding",
       "6.47-runtime-detail-safety-config-no-hardcoding",
       "6.48-configured-detail-validation-tightening-no-hardcoding",
-      "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+      "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+      "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
+      "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -10377,9 +10418,13 @@
           "id": "year_captured_as_class_goes_to_model_year",
           "source_path": "customer_profile.car_class",
           "target_path": "customer_profile.car_model_year",
-          "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "when_value_regex": "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
           "only_if_target_missing": true,
-          "clear_source": true
+          "clear_source": true,
+          "cleanup_patterns": [
+            "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*"
+          ],
+          "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         },
         {
           "id": "non_year_captured_as_model_year_goes_to_class",
@@ -10409,15 +10454,20 @@
               "year model",
               "car year"
             ]
-          }
+          },
+          "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         },
         {
           "id": "year_in_booking_profile_class_goes_to_model_year",
           "source_path": "booking.customer_profile.car_class",
           "target_path": "customer_profile.car_model_year",
-          "when_value_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
+          "when_value_regex": "^\\s*(?:(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*)?(?:19|20)\\d{2}\\s*$",
           "only_if_target_missing": true,
-          "clear_source": true
+          "clear_source": true,
+          "cleanup_patterns": [
+            "^\\s*(?:فئة\\s*(?:العربية|العربيه)?|فئه\\s*(?:العربية|العربيه)?|الفئة|الفئه|class|car\\s+class|trim|category|version)\\s*[:：\\-–—ـ]?\\s*"
+          ],
+          "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         },
         {
           "id": "non_year_in_booking_profile_model_year_goes_to_class",
@@ -10447,9 +10497,11 @@
               "year model",
               "car year"
             ]
-          }
+          },
+          "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
         }
-      ]
+      ],
+      "vehicle_swap_correction_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
     },
     "manifest_context": {
       "previous_manifest_summary_enabled": true,
@@ -10566,7 +10618,9 @@
     ],
     "runtime_patch_versions": {
       "help_gated_detail_extraction_and_closing_id_skip": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
-      "marker_remainder_control": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding"
+      "marker_remainder_control": "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
+      "active_flow_stage_union_emotion_mirror_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
+      "active_flow_stage_union_emotion_mirror_slot_change_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
     }
   },
   "schema": {
