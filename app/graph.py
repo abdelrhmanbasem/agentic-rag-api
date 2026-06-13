@@ -5,6 +5,8 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.42-breathtaking-smartness-runtime-no-hardcoding-graph
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding-graph
 # Architecture patch: 6.45-code-expert-cost-smartness-no-hardcoding-graph
+# Architecture patch: 6.46-root-regression-fixes-no-hardcoding-graph
+# Architecture patch: 6.47-runtime-detail-safety-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -2247,9 +2249,32 @@ def sanitize_semantic_extracted_value(
     if not text:
         return ""
 
+    reject_value_sources = (
+        field.get("reject_value_sources")
+        or field.get("reject_if_value_sources")
+        or field.get("blocked_value_sources")
+        or []
+    )
+    if reject_value_sources and value_matches_configured_sources(text, agent_config, reject_value_sources):
+        return ""
+
     if field.get("value_must_appear_in_message") is True:
         if not semantic_value_present_in_latest_message(text, message, agent_config):
             return ""
+
+    try:
+        min_digits = int(field.get("min_digit_count", field.get("min_digits", 0)) or 0)
+    except Exception:
+        min_digits = 0
+    try:
+        min_letters = int(field.get("min_letter_count", field.get("min_letters", 0)) or 0)
+    except Exception:
+        min_letters = 0
+
+    if min_digits > 0 and len(re.findall(r"\d", text)) < min_digits:
+        return ""
+    if min_letters > 0 and len(re.findall(r"[A-Za-z\u0600-\u06FF]", text)) < min_letters:
+        return ""
 
     reject_regexes = field.get("reject_if_regex", [])
     if isinstance(reject_regexes, str):
@@ -2335,6 +2360,196 @@ def build_last_offered_options_from_variables(
     return {}
 
 
+# ── SEMANTIC EXTRACTION SAFETY GATES (CONFIG-DRIVEN) ────────────────────────
+
+def regex_list_matches(text: str, patterns: Any) -> bool:
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    if not isinstance(patterns, list):
+        return False
+    for pattern in patterns:
+        pattern_text = str(pattern or "").strip()
+        if not pattern_text:
+            continue
+        try:
+            if re.search(pattern_text, str(text or ""), flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def semantic_sources_match(message: str, agent_config: Dict[str, Any], sources: Any) -> bool:
+    if not sources:
+        return False
+    if isinstance(sources, dict):
+        sources = [sources]
+    if not isinstance(sources, list):
+        return False
+    return message_matches_configured_sources(message, agent_config, sources)
+
+
+def semantic_extraction_message_blocked(
+    cfg: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+) -> bool:
+    """
+    Config-driven global extraction gate.
+
+    Use this for turns like hold/delay/help/control messages where semantic LLM
+    extraction is more likely to copy context than extract a new user value.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    if semantic_sources_match(message, agent_config, cfg.get("blocked_message_sources")):
+        return True
+    if semantic_sources_match(message, agent_config, cfg.get("skip_when_message_sources")):
+        return True
+    if regex_list_matches(message, cfg.get("blocked_message_regex")):
+        return True
+    if regex_list_matches(message, cfg.get("skip_when_message_regex")):
+        return True
+    return False
+
+
+def semantic_field_message_allowed(
+    field: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+) -> bool:
+    """
+    Field-level latest-message guardrails.
+
+    Python owns only generic mechanics. The domain bundle defines which phrase
+    sources or regexes should allow/block each configured field.
+    """
+    if not isinstance(field, dict):
+        return False
+    if semantic_sources_match(message, agent_config, field.get("blocked_message_sources")):
+        return False
+    if semantic_sources_match(message, agent_config, field.get("skip_when_message_sources")):
+        return False
+    if regex_list_matches(message, field.get("blocked_message_regex")):
+        return False
+    if regex_list_matches(message, field.get("skip_when_message_regex")):
+        return False
+
+    required_sources = field.get("required_message_sources")
+    if required_sources and not semantic_sources_match(message, agent_config, required_sources):
+        return False
+
+    required_regex = field.get("required_message_regex")
+    if required_regex and not regex_list_matches(message, required_regex):
+        return False
+
+    any_sources = field.get("required_any_message_sources")
+    any_regex = field.get("required_any_message_regex")
+    if any_sources or any_regex:
+        if not semantic_sources_match(message, agent_config, any_sources) and not regex_list_matches(message, any_regex):
+            return False
+
+    return True
+
+
+def semantic_field_context_conditions_met(
+    field: Dict[str, Any],
+    variables: Dict[str, Any],
+    manifest: Dict[str, Any],
+) -> bool:
+    """
+    Reuse the same configured activation predicates as field_is_required_now,
+    but do not treat an existing value as a reason to stop. This allows a later
+    explicit user correction to repair a bad/partial prior extraction.
+    """
+    if not isinstance(field, dict):
+        return False
+
+    if field.get("always_required", False):
+        return True
+
+    conditions_met: List[bool] = []
+
+    stage_path = str(field.get("required_when_stage_path") or "").strip()
+    required_stages = field.get("required_when_stages", [])
+    if stage_path and isinstance(required_stages, list) and required_stages:
+        current_stage = str(deep_get(variables, stage_path) or "").strip()
+        stage_values = {str(item or "").strip() for item in required_stages if str(item or "").strip()}
+        conditions_met.append(bool(current_stage and current_stage in stage_values))
+
+    path_conditions = field.get("required_when_paths", [])
+    if isinstance(path_conditions, list):
+        for condition in path_conditions:
+            if not isinstance(condition, dict):
+                continue
+            check_path = str(condition.get("path") or "").strip()
+            if not check_path:
+                continue
+            value = deep_get(variables, check_path)
+            if condition.get("must_be_present", False):
+                conditions_met.append(value not in [None, "", [], {}])
+            if condition.get("must_be_absent", False):
+                conditions_met.append(value in [None, "", [], {}])
+            if "equals" in condition:
+                expected = condition.get("equals")
+                if isinstance(expected, list):
+                    conditions_met.append(value in expected)
+                else:
+                    conditions_met.append(value == expected)
+            not_in_values = condition.get("not_in", [])
+            if isinstance(not_in_values, list) and not_in_values:
+                normalized_value = str(value or "").strip().lower()
+                blocked = {str(item or "").strip().lower() for item in not_in_values}
+                conditions_met.append(normalized_value not in blocked)
+
+    manifest_conditions = field.get("required_when_manifest", {})
+    if isinstance(manifest_conditions, dict):
+        for manifest_key, expected_value in manifest_conditions.items():
+            key_text = str(manifest_key or "").strip()
+            if not key_text:
+                continue
+            actual = manifest.get(key_text)
+            if isinstance(expected_value, list):
+                conditions_met.append(actual in expected_value)
+            else:
+                conditions_met.append(actual == expected_value)
+
+    if not conditions_met:
+        return True
+    return all(conditions_met)
+
+
+def semantic_field_should_run(
+    field: Dict[str, Any],
+    variables: Dict[str, Any],
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+) -> bool:
+    target_path = str((field or {}).get("target_path") or "").strip()
+    if not target_path:
+        return False
+    if not semantic_field_message_allowed(field, message, agent_config):
+        return False
+
+    existing = deep_get(variables, target_path, None)
+    if existing in [None, "", [], {}]:
+        return field_is_required_now(field, variables, manifest, agent_config)
+
+    if not bool(field.get("allow_update_from_latest_message") or field.get("allow_correction_from_latest_message")):
+        return False
+
+    return semantic_field_context_conditions_met(field, variables, manifest)
+
+
+def value_matches_configured_sources(
+    value: str,
+    agent_config: Dict[str, Any],
+    sources: Any,
+) -> bool:
+    return semantic_sources_match(str(value or ""), agent_config, sources)
+
+
 def semantic_extraction_node(state: AgentState):
     """
     Config-driven semantic variable extraction.
@@ -2361,11 +2576,14 @@ def semantic_extraction_node(state: AgentState):
     if not str(message or "").strip():
         return {}
 
+    if semantic_extraction_message_blocked(cfg, message, agent_config):
+        return {}
+
     required_fields = [
         field
         for field in fields
         if isinstance(field, dict)
-        and field_is_required_now(field, variables, manifest, agent_config)
+        and semantic_field_should_run(field, variables, manifest, message, agent_config)
     ]
 
     if not required_fields:
@@ -2567,11 +2785,29 @@ def graph_extract_pending_required_details_from_patterns(
     raw_message = str(message or "")
     digit_message = graph_normalize_digits(raw_message, digit_map)
 
+    # v6.47: pattern extraction must obey the same configured field gates as
+    # semantic extraction. This prevents disabled/broad regexes or control turns
+    # from writing protected customer-detail fields before the deterministic
+    # booking executor runs. Field names/markers stay in domain_bundle.json.
+    semantic_field_by_target: Dict[str, Dict[str, Any]] = {}
+    try:
+        semantic_cfg = get_semantic_extraction_config(agent_config)
+        for configured_field in semantic_cfg.get("fields", []) or []:
+            if not isinstance(configured_field, dict):
+                continue
+            target_path = graph_strip_variables_prefix(str(configured_field.get("target_path") or "").strip())
+            if target_path:
+                semantic_field_by_target[target_path] = configured_field
+    except Exception:
+        semantic_field_by_target = {}
+
     updates: Dict[str, Any] = {}
 
     for missing_path in missing_paths:
         for item in patterns:
             if not isinstance(item, dict):
+                continue
+            if item.get("enabled", True) is False:
                 continue
 
             target = graph_strip_variables_prefix(
@@ -2585,6 +2821,10 @@ def graph_extract_pending_required_details_from_patterns(
             when_missing = graph_strip_variables_prefix(str(item.get("when_missing") or "").strip())
 
             if target != missing_path and when_missing != missing_path:
+                continue
+
+            field_config = semantic_field_by_target.get(missing_path, {})
+            if field_config and not semantic_field_message_allowed(field_config, raw_message, agent_config):
                 continue
 
             pattern_text = str(item.get("regex") or item.get("pattern") or "").strip()
@@ -2625,6 +2865,10 @@ def graph_extract_pending_required_details_from_patterns(
 
             candidates.sort(key=lambda value: (len(value), bool(re.search(r"\d", value))), reverse=True)
             value = candidates[0]
+            if field_config:
+                value = sanitize_semantic_extracted_value(field_config, value, raw_message, agent_config)
+            if not value:
+                continue
             updates[missing_path] = value
 
             if missing_path.startswith("customer_profile."):
@@ -2790,6 +3034,70 @@ def collect_configured_phrases_deep(
     return append_unique([], phrases)
 
 
+
+
+def completed_flow_closing_subagent_id(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    message: str,
+) -> str:
+    """
+    Config-driven routing for short closing/thanks messages after a flow is
+    already complete. This lets the deterministic executor return the configured
+    short closing label instead of the response LLM repeating operational facts.
+    """
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return ""
+
+    rule = guardrails.get("completed_flow_closing") or guardrails.get("completed_flow_closing_routing")
+    if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+        return ""
+
+    target = unify_subagent_id(str(rule.get("target_subagent_id") or rule.get("subagent_id") or "").strip())
+    if not target:
+        return ""
+
+    id_paths = rule.get("completion_id_paths", [])
+    if not isinstance(id_paths, list):
+        id_paths = []
+
+    status_paths = rule.get("completion_status_paths", [])
+    if not isinstance(status_paths, list):
+        status_paths = []
+
+    completed_statuses = {
+        str(item or "").strip().lower()
+        for item in rule.get("completed_statuses", []) or []
+        if str(item or "").strip()
+    }
+
+    completed = False
+    for path in id_paths:
+        if deep_get(variables, str(path or ""), None) not in [None, "", [], {}]:
+            completed = True
+            break
+
+    if not completed:
+        for path in status_paths:
+            value = str(deep_get(variables, str(path or ""), "") or "").strip().lower()
+            if value and (not completed_statuses or value in completed_statuses):
+                completed = True
+                break
+
+    if not completed:
+        return ""
+
+    sources = rule.get("message_sources") or rule.get("closing_message_sources") or []
+    regexes = rule.get("message_regex") or rule.get("closing_message_regex") or []
+
+    if sources and semantic_sources_match(message, agent_config, sources):
+        return target
+    if regexes and regex_list_matches(message, regexes):
+        return target
+
+    return ""
+
 def get_active_configured_flow_subagent_id(
     agent_config: Dict[str, Any],
     variables: Dict[str, Any],
@@ -2806,6 +3114,14 @@ def get_active_configured_flow_subagent_id(
     guardrails = agent_config.get("routing_guardrails", {})
     if not isinstance(guardrails, dict):
         return ""
+
+    closing_target = completed_flow_closing_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+    )
+    if closing_target:
+        return closing_target
 
     if booking_pending_requires_executor(
         agent_config=agent_config,
@@ -4074,6 +4390,34 @@ def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: 
         if recovery:
             updated["failure_recovery_context"] = recovery
     return updated
+
+
+def derive_last_offered_options_from_state(state: AgentState) -> Dict[str, Any]:
+    existing = state.get("last_offered_options", {}) or {}
+    if isinstance(existing, dict) and existing:
+        return existing
+
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    tool_result = state.get("tool_result", {}) or {}
+
+    if isinstance(tool_result, dict):
+        offered = build_last_offered_options_from_tool_result(tool_result, agent_config)
+        if offered:
+            return offered
+
+    offered = build_last_offered_options_from_variables(variables, tool_result, agent_config)
+    if offered:
+        return offered
+
+    for item in reversed(state.get("multi_tool_results", []) or []):
+        if not isinstance(item, dict):
+            continue
+        offered = build_last_offered_options_from_tool_result(item, agent_config)
+        if offered:
+            return offered
+
+    return {}
 
 def unified_manifest_node(state: AgentState):
     message = last_user_message(state)
@@ -6507,11 +6851,12 @@ Smartness instructions:
     }
 
 def response_node(state: AgentState):
+    derived_last_offered_options = derive_last_offered_options_from_state(state)
     deterministic_answer = maybe_policy_template_answer(state)
 
     if deterministic_answer:
         deterministic_answer = enforce_answer_safety(deterministic_answer, state)
-        return {
+        result = {
             "messages": [AIMessage(content=deterministic_answer)],
             "final_answer": deterministic_answer,
             "quality": {
@@ -6520,6 +6865,9 @@ def response_node(state: AgentState):
                 "deterministic_template_used": True,
             },
         }
+        if derived_last_offered_options:
+            result["last_offered_options"] = derived_last_offered_options
+        return result
 
     agent_config = state.get("agent_config", {}) or {}
     subagent = state.get("selected_subagent", {}) or {}
@@ -6670,7 +7018,7 @@ Response guidance mode: {response_guidance.get('mode', 'layered_response_rules')
     answer = response.content if hasattr(response, "content") else str(response)
     answer = enforce_answer_safety(answer, state)
 
-    return {
+    result = {
         "messages": [AIMessage(content=answer)],
         "final_answer": answer,
         "quality": {
@@ -6678,6 +7026,9 @@ Response guidance mode: {response_guidance.get('mode', 'layered_response_rules')
             "pre_quality_guard": True,
         },
     }
+    if derived_last_offered_options:
+        result["last_offered_options"] = derived_last_offered_options
+    return result
 
 def pre_response_guardrail_node(state: AgentState):
     """
@@ -7353,9 +7704,22 @@ def memory_writer_node(state: AgentState):
                 "reason": "invalid_memory_writer_result",
             }
 
-        return {
+        response: Dict[str, Any] = {
             "memory_writer": result
         }
+
+        derived_last_offered_options = derive_last_offered_options_from_state(state)
+        if derived_last_offered_options:
+            response["last_offered_options"] = derived_last_offered_options
+
+        manifest = state.get("manifest", {}) or {}
+        patched_manifest = apply_funnel_stage_policy(manifest, state.get("agent_config", {}) or {})
+        if patched_manifest != manifest:
+            response["manifest"] = patched_manifest
+            if str(patched_manifest.get("funnel_stage") or "").strip():
+                response["funnel_stage"] = str(patched_manifest.get("funnel_stage") or "").strip()
+
+        return response
 
     except Exception as exc:
         return {
