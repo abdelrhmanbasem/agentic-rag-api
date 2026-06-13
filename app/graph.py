@@ -14,6 +14,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.53-enforce-answer-safety-id-skip-no-hardcoding-graph
 # Architecture patch: 6.54-active-flow-stage-union-and-emotion-mirror-no-hardcoding-graph
 # Architecture patch: 6.55-mirror-variable-changes-to-debug-state-no-hardcoding-graph
+# Architecture patch: 6.57-configured-smart-clarification-fallback-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -3949,6 +3950,75 @@ def apply_hesitation_detection(manifest: Dict[str, Any], message: str, agent_con
     return patched
 
 
+def build_configured_smart_clarification_hypothesis(manifest: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    fallback_cfg = cfg.get("fallback_hypothesis", {})
+    if not isinstance(fallback_cfg, dict) or fallback_cfg.get("enabled", False) is not True:
+        return ""
+
+    try:
+        min_chars = int(fallback_cfg.get("min_chars", 1) or 1)
+    except Exception:
+        min_chars = 1
+
+    try:
+        max_chars = int(fallback_cfg.get("max_chars", 180) or 180)
+    except Exception:
+        max_chars = 180
+
+    source_paths = fallback_cfg.get("source_paths", [])
+    if not isinstance(source_paths, list):
+        source_paths = []
+
+    values: Dict[str, Any] = {}
+    for path in source_paths:
+        path_text = str(path or "").strip()
+        if not path_text:
+            continue
+
+        value = deep_get(manifest, path_text)
+        if value in [None, "", [], {}]:
+            value = deep_get({"manifest": manifest}, path_text)
+
+        if isinstance(value, (dict, list)) or value in [None, "", [], {}]:
+            continue
+
+        clean_value = re.sub(r"\s+", " ", str(value or "").strip())
+        if clean_value:
+            values[path_text] = clean_value
+
+    templates = fallback_cfg.get("templates", [])
+    if not isinstance(templates, list):
+        templates = []
+
+    render_context = {
+        "manifest": manifest,
+        "values": values,
+    }
+
+    candidates: List[str] = []
+
+    for template in templates:
+        rendered = render_template(str(template or ""), render_context).strip()
+        if rendered:
+            candidates.append(rendered)
+
+    for path in source_paths:
+        path_text = str(path or "").strip()
+        if path_text in values:
+            candidates.append(str(values.get(path_text) or ""))
+
+    for candidate in candidates:
+        cleaned = re.sub(r"\s+", " ", str(candidate or "").strip())
+        if len(cleaned) < min_chars:
+            continue
+        if max_chars > 0 and len(cleaned) > max_chars:
+            cleaned = cleaned[:max_chars].strip()
+        if cleaned:
+            return cleaned
+
+    return ""
+
+
 def apply_smart_clarification_policy(manifest: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = get_smartness_config(agent_config, "smart_clarification")
     if not cfg.get("enabled", True):
@@ -3965,8 +4035,20 @@ def apply_smart_clarification_policy(manifest: Dict[str, Any], agent_config: Dic
     except Exception:
         confidence = 0.0
 
+    try:
+        min_hypothesis_confidence = float(cfg.get("hypothesis_min_confidence", 0.0) or 0.0)
+    except Exception:
+        min_hypothesis_confidence = 0.0
+
     hypothesis = str(clarification.get("hypothesis") or "").strip()
     ask_confirm = bool(clarification.get("ask_confirm", False))
+
+    if (
+        not hypothesis
+        and confidence < threshold
+        and confidence >= min_hypothesis_confidence
+    ):
+        hypothesis = build_configured_smart_clarification_hypothesis(patched, cfg)
 
     if hypothesis and confidence < threshold and not bool(patched.get("needs_tool", False)):
         ask_confirm = True
