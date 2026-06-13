@@ -16,6 +16,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.55-mirror-variable-changes-to-debug-state-no-hardcoding-graph
 # Architecture patch: 6.57-configured-smart-clarification-fallback-no-hardcoding-graph
 # Architecture patch: 6.58-explicit-smartness-policy-enabled-no-hardcoding-graph
+# Architecture patch: 6.59-configured-booking-executor-lock-recovery-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -2974,22 +2975,17 @@ def booking_pending_requires_executor(
     """
     Config-driven booking execution lock.
 
-    If a pending booking exists and it has not been confirmed by a successful
-    create_booking result, route the turn to the booking executor. This prevents
-    the response LLM from merely acknowledging customer details without allowing
-    the booking executor to persist them and run create_booking.
+    A pending booking is the strongest signal, but it is not the only safe
+    signal. Some older or partially-migrated states can preserve the booking
+    stage/confirmation/root appointment fields while dropping the nested
+    pending object. In that case the booking executor must still own the turn
+    so it can rebuild pending state and persist customer details.
 
-    No domain detail names or phrases are hardcoded here. The actual detail
-    extraction remains owned by booking_subagent.py and domain_bundle.json.
+    The recovery paths are configured in the assistant bundle; Python does not
+    embed tenant phrases, fields, dates, slots, or test data.
     """
     booking_config = get_subagent_config(agent_config, "booking")
     if not isinstance(booking_config, dict) or not booking_config.get("enabled", False):
-        return False
-
-    pending_path = str(booking_config.get("pending_booking_path") or "booking.pending")
-    pending = deep_get(variables, pending_path, None)
-
-    if not isinstance(pending, dict) or not pending:
         return False
 
     # Do not keep forcing booking after a successful booking id/status exists.
@@ -3020,6 +3016,10 @@ def booking_pending_requires_executor(
         if str(value or "").strip().lower() in completed_statuses:
             return False
 
+    pending_path = str(booking_config.get("pending_booking_path") or "booking.pending")
+    pending = deep_get(variables, pending_path, None)
+    pending_exists = isinstance(pending, dict) and bool(pending)
+
     stage_path = str(booking_config.get("stage_path") or "booking.stage")
     stage = str(deep_get(variables, stage_path, "") or "").strip()
 
@@ -3029,15 +3029,46 @@ def booking_pending_requires_executor(
     )
 
     active_stage_set = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
+    stage_requires_executor = bool(stage and (not active_stage_set or stage in active_stage_set))
 
-    if stage and (not active_stage_set or stage in active_stage_set):
+    if pending_exists and stage_requires_executor:
         return True
 
-    # Even if stage was lost by an older deployment, a pending slot plus explicit
-    # confirmation means the deterministic booking executor should own the next
-    # customer-detail turn.
-    if deep_get(variables, "customer_confirmed_booking", None) is True:
-        return True
+    recovery = booking_config.get("executor_lock_recovery", {})
+    if not isinstance(recovery, dict):
+        recovery = {}
+
+    recovery_enabled = recovery.get("enabled", True) is not False
+
+    if recovery_enabled and stage_requires_executor:
+        context_paths = recovery.get("context_paths", [])
+        if not isinstance(context_paths, list) or not context_paths:
+            context_paths = [
+                booking_config.get("pending_booking_path", "booking.pending"),
+                booking_config.get("appointment_date_path", "appointment_date"),
+                booking_config.get("date_text_path", "date_text"),
+                "appointment_time",
+                "selected_branch",
+                "location_branch",
+                "nearest_branch",
+            ]
+
+        has_recoverable_context = any(
+            deep_get(variables, str(path or ""), None) not in [None, "", [], {}]
+            for path in context_paths
+        )
+
+        confirmation_paths = recovery.get("confirmation_paths", [])
+        if not isinstance(confirmation_paths, list) or not confirmation_paths:
+            confirmation_paths = ["customer_confirmed_booking"]
+
+        has_confirmation_context = any(
+            deep_get(variables, str(path or ""), None) is True
+            for path in confirmation_paths
+        )
+
+        if has_recoverable_context or has_confirmation_context:
+            return True
 
     normalization = agent_config.get("normalization", {}) or {}
     detail_marker_paths = (
@@ -3048,7 +3079,7 @@ def booking_pending_requires_executor(
     if isinstance(detail_marker_paths, list):
         markers = collect_configured_phrases_deep(agent_config, detail_marker_paths)
         if markers and matches_any(message, markers, normalization):
-            return True
+            return bool(pending_exists or stage_requires_executor)
 
     return False
 
