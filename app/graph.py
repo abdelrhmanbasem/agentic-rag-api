@@ -12,6 +12,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.51-help-gated-pattern-extraction-and-closing-id-skip-no-hardcoding-graph
 # Architecture patch: 6.52-configured-answer-draft-id-append-skip-no-hardcoding-graph
 # Architecture patch: 6.53-enforce-answer-safety-id-skip-no-hardcoding-graph
+# Architecture patch: 6.54-active-flow-stage-union-and-emotion-mirror-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -2906,6 +2907,55 @@ def graph_extract_pending_required_details_from_patterns(
     )
 
 
+def configured_active_booking_stage_values(
+    agent_config: Dict[str, Any],
+    booking_config: Dict[str, Any],
+) -> List[str]:
+    """
+    Collect all configured booking-flow stages that should be owned by the
+    deterministic booking executor while a pending booking exists.
+
+    This is intentionally config-driven: the graph does not know domain phrases
+    or field names. It reads stage values from booking config and routing
+    guardrails so confirmation, slot-selection, and customer-detail continuations
+    stay in the executor instead of falling back to a simple response.
+    """
+    stages: List[str] = []
+
+    def add_many(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    stages.append(text)
+
+    add_many(booking_config.get("extraction_active_stages", []))
+    add_many(booking_config.get("active_request_stages", []))
+
+    stages_map = booking_config.get("stages", {})
+    if isinstance(stages_map, dict):
+        for value in stages_map.values():
+            text = str(value or "").strip()
+            if text:
+                stages.append(text)
+
+    # Common bundle shape for active booking routing. The graph only reads the
+    # configured values; it does not hardcode what those stages mean.
+    active_route_rule = (
+        agent_config.get("routing_guardrails", {})
+        .get("active_booking_customer_detail_routing", {})
+    )
+    if isinstance(active_route_rule, dict):
+        add_many(active_route_rule.get("active_stage_values", []))
+
+    # Allow future tenants to expose additional stage lists in config without
+    # needing a graph code branch per domain.
+    add_many(booking_config.get("executor_owned_stages", []))
+    add_many(booking_config.get("pending_booking_executor_stages", []))
+
+    return append_unique([], stages)
+
+
 def booking_pending_requires_executor(
     agent_config: Dict[str, Any],
     variables: Dict[str, Any],
@@ -2963,16 +3013,10 @@ def booking_pending_requires_executor(
     stage_path = str(booking_config.get("stage_path") or "booking.stage")
     stage = str(deep_get(variables, stage_path, "") or "").strip()
 
-    active_stages = booking_config.get("extraction_active_stages", [])
-    if not isinstance(active_stages, list) or not active_stages:
-        stages_map = booking_config.get("stages", {})
-        if not isinstance(stages_map, dict):
-            stages_map = {}
-        active_stages = [
-            value
-            for value in stages_map.values()
-            if str(value or "").strip()
-        ]
+    active_stages = configured_active_booking_stage_values(
+        agent_config=agent_config,
+        booking_config=booking_config,
+    )
 
     active_stage_set = {str(item or "").strip() for item in active_stages if str(item or "").strip()}
 
@@ -4449,6 +4493,8 @@ def mirror_runtime_metadata_into_variables(
     manifest: Optional[Dict[str, Any]] = None,
     funnel_stage: str = "",
     last_offered_options: Optional[Dict[str, Any]] = None,
+    emotion_history: Optional[List[str]] = None,
+    emotion_trajectory: str = "",
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -4474,6 +4520,13 @@ def mirror_runtime_metadata_into_variables(
 
     if isinstance(last_offered_options, dict) and last_offered_options:
         patched["last_offered_options"] = last_offered_options
+
+    if isinstance(emotion_history, list) and emotion_history:
+        patched["emotion_history"] = [str(item) for item in emotion_history if str(item or "").strip()]
+
+    trajectory = str(emotion_trajectory or "").strip()
+    if trajectory:
+        patched["emotion_trajectory"] = trajectory
 
     return patched
 
@@ -4819,15 +4872,17 @@ def unified_manifest_node(state: AgentState):
     )
     updated_variables = validate_and_heal_variables(updated_variables, schema, agent_config)
     variable_changes = compute_variable_changes(variables, updated_variables, agent_config)
+    new_emotion_history = update_emotion_history(
+        current_emotion=str(manifest.get("customer_emotion") or "neutral"),
+        prior_history=prior_emotion_history,
+        agent_config=agent_config,
+    )
     updated_variables = mirror_runtime_metadata_into_variables(
         updated_variables,
         manifest=manifest,
         funnel_stage=str(manifest.get("funnel_stage") or ""),
-        agent_config=agent_config,
-    )
-    new_emotion_history = update_emotion_history(
-        current_emotion=str(manifest.get("customer_emotion") or "neutral"),
-        prior_history=prior_emotion_history,
+        emotion_history=new_emotion_history,
+        emotion_trajectory=str(manifest.get("emotion_trajectory") or ""),
         agent_config=agent_config,
     )
     new_stuck_signals = update_stuck_signals(state, manifest, variables, updated_variables)
