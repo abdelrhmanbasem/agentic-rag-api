@@ -13,6 +13,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.52-configured-answer-draft-id-append-skip-no-hardcoding-graph
 # Architecture patch: 6.53-enforce-answer-safety-id-skip-no-hardcoding-graph
 # Architecture patch: 6.54-active-flow-stage-union-and-emotion-mirror-no-hardcoding-graph
+# Architecture patch: 6.55-mirror-variable-changes-to-debug-state-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -4439,6 +4440,13 @@ def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: 
     changes = compute_variable_changes(previous_variables, variables_after, agent_config)
     if changes:
         updated["variable_changes_this_turn"] = changes
+        if isinstance(variables_after, dict):
+            variables_after = mirror_runtime_metadata_into_variables(
+                variables_after,
+                variable_changes=changes,
+                agent_config=agent_config,
+            )
+            updated["variables"] = variables_after
     tool_result = updated.get("tool_result")
     if isinstance(tool_result, dict):
         offered = build_last_offered_options_from_tool_result(tool_result, agent_config)
@@ -4495,6 +4503,7 @@ def mirror_runtime_metadata_into_variables(
     last_offered_options: Optional[Dict[str, Any]] = None,
     emotion_history: Optional[List[str]] = None,
     emotion_trajectory: str = "",
+    variable_changes: Optional[List[Dict[str, Any]]] = None,
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -4527,6 +4536,14 @@ def mirror_runtime_metadata_into_variables(
     trajectory = str(emotion_trajectory or "").strip()
     if trajectory:
         patched["emotion_trajectory"] = trajectory
+
+    if isinstance(variable_changes, list) and variable_changes:
+        clean_changes: List[Dict[str, Any]] = []
+        for change in variable_changes:
+            if isinstance(change, dict) and change:
+                clean_changes.append(dict(change))
+        if clean_changes:
+            patched["variable_changes_this_turn"] = clean_changes
 
     return patched
 
@@ -4883,6 +4900,7 @@ def unified_manifest_node(state: AgentState):
         funnel_stage=str(manifest.get("funnel_stage") or ""),
         emotion_history=new_emotion_history,
         emotion_trajectory=str(manifest.get("emotion_trajectory") or ""),
+        variable_changes=variable_changes,
         agent_config=agent_config,
     )
     new_stuck_signals = update_stuck_signals(state, manifest, variables, updated_variables)
