@@ -26,6 +26,7 @@ from app.subagents.base import (
 # Architecture patch: 6.43-deterministic-vehicle-detail-correction-no-hardcoding
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding
+# Architecture patch: 6.48-configured-detail-validation-tightening-no-hardcoding
 
 class BookingSubagent:
     """
@@ -34,13 +35,13 @@ class BookingSubagent:
     Responsibilities:
     - maintain booking state across turns
     - detect date CHANGES mid-conversation and reset slot state cleanly
-    - resolve ALL natural date expressions to ISO dates using real today-relative logic:
-        * relative offsets  : "today", "tomorrow", "بكرة", "النهارده"
-        * weekday names     : "tuesday", "الخميس", "next friday", "الجمعة الجاي"
-        * "next week" marker: forces the FOLLOWING week even if the weekday hasn't passed yet
-        * "this week" marker: forces the CURRENT week occurrence
-        * explicit dates    : "15/6", "2025-06-15", "15 يونيو"
-        * named months      : "15 مارس", "يوليو 10"
+    - resolve natural date expressions to ISO dates using real today-relative logic:
+        * configured relative offsets
+        * configured weekday names
+        * configured next-week markers
+        * configured this-week markers
+        * configured explicit date formats
+        * configured named month formats
     - extract deterministic fields from natural language
     - resolve canonical branch from stored branch state or configured branch aliases
     - resolve slot selection (ordinal, time, 12-hour disambiguation)
@@ -2051,7 +2052,7 @@ class BookingSubagent:
         marker/period marker is present.
 
         This prevents "option 2" from being parsed as 02:00, while preserving
-        "2 PM" or "الساعة 2" as time selection.
+        a configured explicit time expression as time selection.
         """
         normalized = normalize_text(str(message or ""), normalization)
 
@@ -2491,7 +2492,7 @@ class BookingSubagent:
             return message_time
 
         # Stored time paths are fallback/context only. They must not turn a
-        # confirmation-only message like "اه" into a repeated slot selection.
+        # confirmation-only messages into repeated slot selections.
         if not self.message_contains_time_intent_without_stored_context(
             context.user_message,
             config,
@@ -3201,16 +3202,16 @@ class BookingSubagent:
         anchored to the real current date in the configured timezone.
 
         Resolution priority:
-          1. Relative offsets   ("today", "tomorrow", "بكرة", "+2 days")
-          2. Weekday names      ("tuesday", "الخميس") with next/this-week modifiers
-          3. ISO format         ("2025-06-15")
-          4. Numeric date       ("15/6", "15-6-2025")
-          5. Named month        ("15 يونيو", "يوليو 10")
+          1. configured relative offsets
+          2. configured weekday names with next/this-week modifiers
+          3. configured ISO formats
+          4. configured numeric date formats
+          5. configured named month formats
 
-        Weekday resolution rules (mirrors real human expectations):
-          - "next thursday" / "الخميس الجاي"  → force_next_week=True
-          - "this friday"  / "الأسبوع ده"      → force_this_week=True
-          - bare weekday name                   → soonest upcoming (today or later)
+        Weekday resolution rules:
+          - configured next-week markers force force_next_week=True
+          - configured this-week markers force force_this_week=True
+          - bare configured weekday names resolve to the soonest upcoming occurrence
         """
         config = config or {}
         normalization = normalization or {}
@@ -3556,22 +3557,20 @@ class BookingSubagent:
 
         Logic (mirrors how a human receptionist thinks):
 
-        Case 1 — force_next_week=True  (user said "next", "الجاي", "القادم"):
+        Case 1 — force_next_week=True:
             Always the occurrence in the FOLLOWING 7-day window.
             If today IS that weekday, still return next week's occurrence.
 
-        Case 2 — force_this_week=True  (user said "this", "الأسبوع ده", "هذا الأسبوع"):
+        Case 2 — force_this_week=True:
             Return this week's occurrence.
-            If it has already passed (including today), return today + 7 days
-            (i.e. same weekday next week) as a natural fallback.
+            If it has already passed, return the same weekday next week as a natural fallback.
 
         Case 3 — no modifier:
             If the weekday hasn't occurred yet this week  → return it this week.
             If the weekday is today                       → return today.
             If the weekday has already passed this week   → return next week.
 
-        weekday_index follows Python's datetime.weekday():
-            0=Monday … 4=Friday, 5=Saturday, 6=Sunday
+        weekday_index follows Python's datetime.weekday().
         """
         days_ahead = weekday_index - today.weekday()
 
@@ -3606,8 +3605,7 @@ class BookingSubagent:
         """
         Return True if the message contains a 'this week' marker.
 
-        Configure via date_resolution.this_week_markers in domain_bundle.json:
-          "this_week_markers": ["this", "هذا الأسبوع", "الأسبوع ده", "الأسبوع الحالي"]
+        Configure via date_resolution.this_week_markers in domain_bundle.json.
         """
         config = config or {}
         normalization = normalization or {}
@@ -4295,11 +4293,9 @@ class BookingSubagent:
         Return True when the user is asking for availability for a new date.
 
         Detects three patterns:
-          1. Explicit availability intent phrase + any date expression
+          1. Explicit configured availability intent phrase + any date expression
           2. A date expression that resolves to a DIFFERENT date than what is stored
-             (covers "change of mind" without an explicit intent phrase, e.g.
-             "actually الخميس" while still in slot_selection)
-          3. A date-change marker phrase ("instead", "بدلاً من", "غير") + any date
+          3. A configured date-change marker phrase + any date
         """
         normalization = context.assistant_config.get("normalization", {})
         message = normalize_text(context.user_message, normalization)
@@ -5436,9 +5432,9 @@ class BookingSubagent:
         if not text:
             return ""
 
-        # Generic item-level safeguards. These are config-driven where present
-        # and intentionally light when the regex itself already targeted the
-        # required missing path.
+        # Generic item-level safeguards. These are config-driven where present.
+        # Field-level validation remains authoritative when a field config exists;
+        # a broad missing-field regex must not bypass that field's validator.
         if item.get("require_digit") is True and not re.search(r"\d", text):
             return ""
 
@@ -5447,6 +5443,22 @@ class BookingSubagent:
 
         if item.get("require_letter_or_digit") is True and not re.search(r"[A-Za-z0-9\u0600-\u06FF]", text):
             return ""
+
+        if isinstance(field_config, dict) and field_config:
+            allow_loose_fallback = bool(
+                item.get("allow_loose_fallback", False)
+                or item.get("allow_loose_field_validation", False)
+                or (
+                    isinstance(field_config.get("extraction", {}), dict)
+                    and field_config.get("extraction", {}).get("allow_loose_fallback") is True
+                )
+            )
+            if not allow_loose_fallback and not self.configured_customer_detail_value_is_valid(
+                value=text,
+                field_config=field_config,
+                normalization=normalization
+            ):
+                return ""
 
         try:
             min_length = int(item.get("min_length", 1) or 1)
@@ -5509,10 +5521,20 @@ class BookingSubagent:
 
             clean_target_path = self.strip_variables_prefix(target_path)
             existing_value = deep_get(variables, clean_target_path)
-
-            # Only force-capture missing/empty configured details. This prevents
-            # accidental overwrite of already known customer details.
+            existing_is_valid = False
             if existing_value not in [None, "", [], {}]:
+                existing_is_valid = bool(self.normalize_customer_profile_value(
+                    value=existing_value,
+                    validator=str(field_config.get("validator") or ""),
+                    config=config,
+                    normalization=normalization,
+                    field_config=field_config,
+                ))
+
+            # Only force-capture missing or currently invalid configured details.
+            # This prevents accidental overwrite of valid known details while
+            # allowing repair of stale invalid values from older deployments.
+            if existing_value not in [None, "", [], {}] and existing_is_valid:
                 continue
 
             if missing_clean and clean_target_path not in missing_clean:
@@ -5610,7 +5632,7 @@ class BookingSubagent:
         Direct configured-marker capture fallback.
 
         This version deliberately searches the NORMALIZED message and NORMALIZED
-        markers. That fixes Arabic spelling variants such as ة/ه, أ/ا, and
+        markers. That fixes configured spelling variants and
         digit forms without hardcoding any domain phrase in Python.
         """
         candidates = self.extract_normalized_marker_remainder_candidates(
@@ -6082,6 +6104,78 @@ class BookingSubagent:
 
         return output
 
+    @staticmethod
+    def merge_customer_detail_lists(existing: Any, incoming: Any) -> List[Any]:
+        output: List[Any] = []
+
+        for source in [existing, incoming]:
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if item in [None, "", [], {}]:
+                    continue
+                if item not in output:
+                    output.append(item)
+
+        return output
+
+    def merge_customer_detail_field_config(
+        self,
+        existing: Dict[str, Any],
+        incoming: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Merge configured customer-detail field definitions without dropping
+        nested validation/extraction rules from richer config sources.
+
+        Later config sources may supplement or override scalar metadata, but
+        nested extraction config and list values are merged so required-path
+        fallbacks cannot erase validators such as required letters/digits,
+        blocklists, cleanup rules, or capture patterns.
+        """
+        if not isinstance(existing, dict):
+            existing = {}
+        if not isinstance(incoming, dict):
+            incoming = {}
+
+        merged: Dict[str, Any] = dict(existing)
+
+        for key, value in incoming.items():
+            if value in [None, "", [], {}]:
+                continue
+
+            prior = merged.get(key)
+
+            if isinstance(prior, dict) and isinstance(value, dict):
+                nested = dict(prior)
+                for child_key, child_value in value.items():
+                    if child_value in [None, "", [], {}]:
+                        continue
+                    prior_child = nested.get(child_key)
+                    if isinstance(prior_child, list) and isinstance(child_value, list):
+                        nested[child_key] = self.merge_customer_detail_lists(prior_child, child_value)
+                    elif isinstance(prior_child, dict) and isinstance(child_value, dict):
+                        child_merged = dict(prior_child)
+                        child_merged.update({
+                            grand_key: grand_value
+                            for grand_key, grand_value in child_value.items()
+                            if grand_value not in [None, "", [], {}]
+                        })
+                        nested[child_key] = child_merged
+                    else:
+                        nested[child_key] = child_value
+                merged[key] = nested
+                continue
+
+            if isinstance(prior, list) and isinstance(value, list):
+                merged[key] = self.merge_customer_detail_lists(prior, value)
+                continue
+
+            merged[key] = value
+
+        return merged
+
+
     def get_customer_detail_field_configs(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Return the customer-detail fields this assistant requires/collects.
@@ -6134,9 +6228,10 @@ class BookingSubagent:
             )
 
             existing = collected.get(field_name, {})
-            merged = dict(existing)
-            merged.update({k: v for k, v in normalized.items() if v not in [None, "", [], {}]})
-            collected[field_name] = merged
+            collected[field_name] = self.merge_customer_detail_field_config(
+                existing=existing,
+                incoming=normalized,
+            )
 
         for key in ["customer_detail_fields", "required_customer_details"]:
             value = config.get(key, [])
@@ -6578,17 +6673,54 @@ class BookingSubagent:
             except re.error:
                 return False
 
+        digit_count = len(re.findall(r"\d", text))
+        letter_count = len(re.findall(r"[A-Za-z\u0600-\u06FF]", text))
+
         require_digit = extraction_config.get("require_digit", None)
-        if require_digit is True and not re.search(r"\d", text):
+        if require_digit is True and digit_count < 1:
             return False
 
         require_letter = extraction_config.get("require_letter", None)
-        if require_letter is True and not re.search(r"[A-Za-z\u0600-\u06FF]", text):
+        if require_letter is True and letter_count < 1:
             return False
 
         require_letter_or_digit = extraction_config.get("require_letter_or_digit", None)
-        if require_letter_or_digit is True and not re.search(r"[A-Za-z0-9\u0600-\u06FF]", text):
+        if require_letter_or_digit is True and digit_count + letter_count < 1:
             return False
+
+        for key, count in [
+            ("min_digit_count", digit_count),
+            ("min_digits_count", digit_count),
+            ("minimum_digit_count", digit_count),
+            ("min_letter_count", letter_count),
+            ("min_letters_count", letter_count),
+            ("minimum_letter_count", letter_count),
+        ]:
+            if key not in extraction_config:
+                continue
+            try:
+                minimum = int(extraction_config.get(key) or 0)
+            except Exception:
+                minimum = 0
+            if minimum > 0 and count < minimum:
+                return False
+
+        for key, count in [
+            ("max_digit_count", digit_count),
+            ("max_digits_count", digit_count),
+            ("maximum_digit_count", digit_count),
+            ("max_letter_count", letter_count),
+            ("max_letters_count", letter_count),
+            ("maximum_letter_count", letter_count),
+        ]:
+            if key not in extraction_config:
+                continue
+            try:
+                maximum = int(extraction_config.get(key) or 0)
+            except Exception:
+                maximum = 0
+            if maximum > 0 and count > maximum:
+                return False
 
         try:
             min_length = int(extraction_config.get("min_length", 1) or 1)
