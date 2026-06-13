@@ -29,6 +29,7 @@ from app.subagents.base import (
 # Architecture patch: 6.48-configured-detail-validation-tightening-no-hardcoding
 # Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
 # Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
+# Architecture patch: 6.56-configured-date-candidate-priority-no-hardcoding
 
 class BookingSubagent:
     """
@@ -2752,14 +2753,117 @@ class BookingSubagent:
             return {}
 
         existing = str(existing_date or "").strip()
+        candidate_pool = candidates
 
         if prefer_different and existing:
+            different_candidates = []
             for candidate in candidates:
                 resolved = str(candidate.get("resolved_date") or "").strip()
                 if resolved and resolved != existing:
-                    return candidate
+                    different_candidates.append(candidate)
+            if different_candidates:
+                candidate_pool = different_candidates
 
-        return candidates[0]
+        ranked_candidates = sorted(
+            candidate_pool,
+            key=lambda candidate: self.date_candidate_sort_key(
+                candidate=candidate,
+                config=config,
+                prefer_different=prefer_different,
+            )
+        )
+
+        return ranked_candidates[0] if ranked_candidates else {}
+
+
+    def date_candidate_sort_key(
+        self,
+        candidate: Dict[str, Any],
+        config: Dict[str, Any],
+        prefer_different: bool = False
+    ):
+        """
+        Rank competing configured date candidates.
+
+        Candidate sources are produced by this same date extractor. The ordering
+        is configurable so assistants can decide whether exact/explicit date
+        patterns should beat relative/direct terms when both appear in one
+        message.
+        """
+        priority = self.date_candidate_source_priority(config)
+        source = str(candidate.get("source") or "").strip()
+
+        source_rank = priority.get(source, priority.get("default", 100))
+
+        try:
+            score = int(candidate.get("score", 0) or 0)
+        except Exception:
+            score = 0
+
+        try:
+            start = int(candidate.get("start", 0) or 0)
+        except Exception:
+            start = 0
+
+        return (source_rank, -score, start)
+
+
+    def date_candidate_source_priority(self, config: Dict[str, Any]) -> Dict[str, int]:
+        """
+        Return configured priority for candidate source types.
+
+        Supported config shapes:
+        - date_candidate_priority.source_priority = {source: rank}
+        - date_candidate_priority.source_order = [source, ...]
+        - date_change.date_candidate_priority with the same shapes
+
+        Defaults prefer explicit dates over broad direct terms, without knowing
+        any date phrase, branch, slot, or customer-detail values.
+        """
+        default_order = [
+            "explicit_pattern",
+            "date_extraction_pattern",
+            "direct_term",
+        ]
+        output = {source: idx for idx, source in enumerate(default_order)}
+        output["default"] = len(default_order) + 10
+
+        priority_config = config.get("date_candidate_priority", {})
+        if not isinstance(priority_config, dict):
+            priority_config = {}
+
+        date_change_config = config.get("date_change", {})
+        if isinstance(date_change_config, dict):
+            nested = date_change_config.get("date_candidate_priority", {})
+            if isinstance(nested, dict):
+                merged = dict(priority_config)
+                merged.update(nested)
+                priority_config = merged
+
+        configured_priority = priority_config.get("source_priority", {})
+        if isinstance(configured_priority, dict):
+            for source, rank in configured_priority.items():
+                source_text = str(source or "").strip()
+                if not source_text:
+                    continue
+                try:
+                    output[source_text] = int(rank)
+                except Exception:
+                    continue
+
+        source_order = priority_config.get("source_order", [])
+        if isinstance(source_order, list) and source_order:
+            for index, source in enumerate(source_order):
+                source_text = str(source or "").strip()
+                if source_text:
+                    output[source_text] = index
+
+        try:
+            output["default"] = int(priority_config.get("default_priority", output.get("default", 100)))
+        except Exception:
+            pass
+
+        return output
 
     def resolve_date_candidates(
         self,
