@@ -230,16 +230,26 @@
             "required": [
               "branch",
               "date",
+              "date_text",
               "time",
               "section",
               "full_name",
               "phone",
               "plate_number",
-              "car_brand",
-              "car_class",
-              "car_model_year",
               "customer_confirmed_booking"
-            ]
+            ],
+            "required_inputs": [
+              "branch",
+              "date",
+              "date_text",
+              "time",
+              "section",
+              "full_name",
+              "phone",
+              "plate_number",
+              "customer_confirmed_booking"
+            ],
+            "required_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs"
           }
         }
       },
@@ -652,9 +662,6 @@
               "full_name",
               "phone",
               "plate_number",
-              "car_brand",
-              "car_class",
-              "car_model_year",
               "customer_confirmed_booking"
             ],
             "optional": [
@@ -712,7 +719,19 @@
                 "phone",
                 "plate_number"
               ]
-            }
+            },
+            "required_inputs": [
+              "branch",
+              "date",
+              "date_text",
+              "time",
+              "section",
+              "full_name",
+              "phone",
+              "plate_number",
+              "customer_confirmed_booking"
+            ],
+            "required_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs"
           }
         },
         "retry": {
@@ -5950,7 +5969,19 @@
             "variables.customer_profile.car_model_year"
           ],
           "version": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
-        }
+        },
+        "required_before_create_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs",
+        "create_booking_effective_required_inputs": [
+          "branch",
+          "date",
+          "date_text",
+          "time",
+          "section",
+          "full_name",
+          "phone",
+          "plate_number",
+          "customer_confirmed_booking"
+        ]
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -8142,7 +8173,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -9709,7 +9740,8 @@
         "long_answer_chars": 700,
         "enabled": true
       },
-      "completed_closing_and_class_boundary_version": "6.50-completed-closing-and-class-boundary-config-no-hardcoding"
+      "completed_closing_and_class_boundary_version": "6.50-completed-closing-and-class-boundary-config-no-hardcoding",
+      "create_required_contract_alignment_version": "6.60-create-required-contract-alignment-no-hardcoding"
     },
     "emotion_arc_guidance": {
       "persistently_frustrated": "Start with genuine empathy for the repeated difficulty. Give the simplest next step or resolution path. Do not ask more than one question.",
@@ -11058,5 +11090,6 @@
         "Python should not know car-specific fields; it reads semantic_variable_extraction.fields declaratively."
       ]
     }
-  }
+  },
+  "metadata": {}
 }
