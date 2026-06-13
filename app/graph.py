@@ -11,6 +11,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.50-configured-completed-closing-direct-response-no-hardcoding-graph
 # Architecture patch: 6.51-help-gated-pattern-extraction-and-closing-id-skip-no-hardcoding-graph
 # Architecture patch: 6.52-configured-answer-draft-id-append-skip-no-hardcoding-graph
+# Architecture patch: 6.53-enforce-answer-safety-id-skip-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -7813,7 +7814,24 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
     append_visit_id = safety_config.get("append_visit_id_on_confirmed_booking", True)
     visit_id = extract_visit_id_from_state(state)
 
-    if append_visit_id and create_booking_confirmed(state) and visit_id and visit_id not in text:
+    # 6.53: enforce_answer_safety is the final safety pass and can run after
+    # pre_response_guardrail_node. Reuse the same config-driven skip helper here
+    # so short completed-flow closings and configured answer-draft labels do not
+    # receive a confirmed record id later in the pipeline.
+    skip_confirmed_record_id = should_skip_confirmed_record_id_append(
+        state,
+        text,
+        agent_config,
+        safety_config,
+    )
+
+    if (
+        append_visit_id
+        and not skip_confirmed_record_id
+        and create_booking_confirmed(state)
+        and visit_id
+        and visit_id not in text
+    ):
         text = render_configured_visit_id_append(text, visit_id, state)
 
     return text
