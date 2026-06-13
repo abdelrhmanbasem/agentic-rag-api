@@ -9,6 +9,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding-graph
 # Architecture patch: 6.49-runtime-debug-state-and-closing-route-no-hardcoding-graph
 # Architecture patch: 6.50-configured-completed-closing-direct-response-no-hardcoding-graph
+# Architecture patch: 6.51-help-gated-pattern-extraction-and-closing-id-skip-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -2786,6 +2787,17 @@ def graph_extract_pending_required_details_from_patterns(
     digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
     raw_message = str(message or "")
     digit_message = graph_normalize_digits(raw_message, digit_map)
+
+    # v6.51: deterministic graph pattern extraction must obey the global
+    # configured semantic-extraction message gate too. This keeps help,
+    # hold/delay, and control-only turns from being captured as customer
+    # details before the deterministic booking executor can answer them.
+    try:
+        semantic_cfg_for_message_gate = get_semantic_extraction_config(agent_config)
+        if semantic_extraction_message_blocked(semantic_cfg_for_message_gate, raw_message, agent_config):
+            return variables
+    except Exception:
+        pass
 
     # v6.47: pattern extraction must obey the same configured field gates as
     # semantic extraction. This prevents disabled/broad regexes or control turns
@@ -6908,6 +6920,32 @@ def build_layered_response_rules(agent_config: Dict[str, Any]) -> Dict[str, List
 
 
 def simple_response_node(state: AgentState):
+    configured_closing_answer = completed_flow_closing_response_from_config(state)
+    if configured_closing_answer:
+        configured_closing_answer = enforce_answer_safety(configured_closing_answer, state)
+        agent_config_for_closing = state.get("agent_config", {}) or {}
+        manifest_for_closing = state.get("manifest", {}) or {}
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=manifest_for_closing,
+            funnel_stage=str(state.get("funnel_stage", "") or manifest_for_closing.get("funnel_stage", "")),
+            last_offered_options=derive_last_offered_options_from_state(state),
+            agent_config=agent_config_for_closing,
+        )
+        result = {
+            "messages": [AIMessage(content=configured_closing_answer)],
+            "final_answer": configured_closing_answer,
+            "variables": mirrored_variables,
+            "quality": {
+                "pass_check": True,
+                "skipped": False,
+                "simple_response_mode": True,
+                "node": "simple_response_completed_flow_closing_template",
+                "deterministic_template_used": True,
+            },
+        }
+        return result
+
     agent_config = state.get("agent_config", {}) or {}
     subagent = state.get("selected_subagent", {}) or {}
     manifest = state.get("manifest", {}) or {}
@@ -7233,6 +7271,25 @@ def pre_response_guardrail_node(state: AgentState):
 
     if not append_id:
         return {}
+
+    # v6.51: completed-flow closing messages can be configured to use a short
+    # deterministic response. Do not append confirmed record IDs to those
+    # closing replies unless the bundle explicitly opts back in.
+    closing_target = completed_flow_closing_subagent_id(
+        agent_config=agent_config,
+        variables=state.get("variables", {}) or {},
+        message=last_user_message(state),
+    )
+    if closing_target:
+        guardrails = agent_config.get("routing_guardrails", {}) or {}
+        closing_rule = {}
+        if isinstance(guardrails, dict):
+            raw_closing_rule = guardrails.get("completed_flow_closing") or guardrails.get("completed_flow_closing_routing")
+            if isinstance(raw_closing_rule, dict):
+                closing_rule = raw_closing_rule
+        suppress_id_append = closing_rule.get("suppress_confirmed_record_id_append", True)
+        if suppress_id_append is not False:
+            return {}
 
     if not create_booking_confirmed(state):
         return {}
