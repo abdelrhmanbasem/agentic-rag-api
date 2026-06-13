@@ -3803,7 +3803,16 @@
           "clear_pending_slot_only": true,
           "preserve_customer_profile": true,
           "preserve_known_branch": true,
-          "preserve_service_needed": true
+          "preserve_service_needed": true,
+          "date_candidate_priority": {
+            "source_order": [
+              "explicit_pattern",
+              "date_extraction_pattern",
+              "direct_term"
+            ],
+            "default_priority": 100,
+            "version": "6.56-configured-date-candidate-priority-no-hardcoding"
+          }
         },
         "slot_change_compare_fields": [
           "branch",
@@ -5896,7 +5905,17 @@
           "slot_selection"
         ],
         "pending_booking_executor_stage_union_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
-        "slot_change_preempts_hold_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
+        "slot_change_preempts_hold_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
+        "date_candidate_priority": {
+          "version": "6.56-configured-date-candidate-priority-no-hardcoding",
+          "source_order": [
+            "explicit_pattern",
+            "date_extraction_pattern",
+            "direct_term"
+          ],
+          "default_priority": 100,
+          "description": "Prefer exact configured date patterns over broad direct relative terms when multiple date candidates are present in one message."
+        }
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -8088,7 +8107,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
