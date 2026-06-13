@@ -17,6 +17,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.57-configured-smart-clarification-fallback-no-hardcoding-graph
 # Architecture patch: 6.58-explicit-smartness-policy-enabled-no-hardcoding-graph
 # Architecture patch: 6.59-configured-booking-executor-lock-recovery-no-hardcoding-graph
+# Architecture patch: 6.61-code-expert-completion-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -97,7 +98,7 @@ class AgentState(TypedDict, total=False):
     last_offered_options: Dict[str, Any]
     funnel_stage: str
     opener_context: str
-    variable_changes_this_turn: List[Dict[str, Any]]
+    variable_changes_this_turn: Annotated[List[Dict[str, Any]], operator.add]
     stuck_signals: Dict[str, int]
     stuck_pattern: Dict[str, Any]
     proactive_surface_items: List[Dict[str, Any]]
@@ -4267,24 +4268,137 @@ def build_opener_context(state: AgentState) -> str:
     return str(cfg.get("new_user_label") or "new_user")
 
 
-def detect_stuck_pattern(state: AgentState, manifest: Dict[str, Any]) -> Dict[str, Any]:
+def configured_stuck_progress_paths(agent_config: Dict[str, Any]) -> List[str]:
+    """
+    Return configured variable paths that represent user-visible progress.
+
+    This is assistant-configured. Python only supplies generic mechanics, so
+    future assistants can define their own progress paths without code changes.
+    """
+    cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
+    paths = as_string_list(
+        cfg.get("required_progress_paths")
+        or cfg.get("progress_paths")
+        or cfg.get("variable_progress_paths")
+        or []
+    )
+    return [str(path or "").strip() for path in paths if str(path or "").strip()]
+
+
+def compute_variable_progress_events(
+    existing: Dict[str, Any],
+    updated: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Detect progress events, including first-time captures and corrections.
+
+    compute_variable_changes intentionally focuses on corrections to existing
+    values. Stuck detection needs a broader signal: a previously missing
+    configured progress field becoming available is also progress.
+    """
+    cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
+    if cfg.get("enabled", False) is False:
+        return []
+
+    progress_paths = configured_stuck_progress_paths(agent_config)
+    if not progress_paths:
+        return []
+
+    max_events = graph_config_int(
+        {"stuck_pattern_detection": cfg},
+        "stuck_pattern_detection.max_progress_events",
+        12,
+        1,
+        100,
+    )
+
+    events: List[Dict[str, Any]] = []
+    for path in progress_paths:
+        old_value = deep_get(existing or {}, path, None)
+        new_value = deep_get(updated or {}, path, None)
+        if new_value in [None, "", [], {}]:
+            continue
+        if old_value == new_value:
+            continue
+        event_type = "filled" if old_value in [None, "", [], {}] else "changed"
+        events.append({
+            "path": path,
+            "type": event_type,
+            "from": clip_text(old_value, 80) if old_value not in [None, "", [], {}] else "",
+            "to": clip_text(new_value, 80),
+        })
+        if len(events) >= max_events:
+            break
+    return events
+
+
+def missing_configured_progress_paths(variables: Dict[str, Any], agent_config: Dict[str, Any]) -> List[str]:
+    paths = configured_stuck_progress_paths(agent_config)
+    return [path for path in paths if deep_get(variables or {}, path, None) in [None, "", [], {}]]
+
+
+def detect_stuck_pattern(
+    state: AgentState,
+    manifest: Dict[str, Any],
+    variables_after: Optional[Dict[str, Any]] = None,
+    stuck_signals: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """
+    Detect generic stuck patterns:
+    1. repeated intent without configured variable progress
+    2. variable stall: configured progress paths remain missing for N turns
+
+    All thresholds and paths are assistant-configured.
+    """
     agent_config = state.get("agent_config", {}) or {}
     cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
     if cfg.get("enabled", False) is False:
         return {}
-    stuck_signals = state.get("stuck_signals", {}) or {}
-    if not isinstance(stuck_signals, dict):
-        stuck_signals = {}
+
+    signals = stuck_signals if isinstance(stuck_signals, dict) else (state.get("stuck_signals", {}) or {})
+    if not isinstance(signals, dict):
+        signals = {}
+
+    variables_now = variables_after if isinstance(variables_after, dict) else (state.get("variables", {}) or {})
+
+    variable_stall_enabled = cfg.get("variable_stall_enabled", True) is not False
+    if variable_stall_enabled:
+        stall_key = str(cfg.get("variable_stall_signal_key") or "__variable_stall__")
+        stall_count = int(signals.get(stall_key, 0) or 0)
+        stall_threshold = graph_config_int(
+            {"stuck_pattern_detection": cfg},
+            "stuck_pattern_detection.variable_stall_turns",
+            graph_config_int({"stuck_pattern_detection": cfg}, "stuck_pattern_detection.threshold", 2, 1, 20),
+            1,
+            20,
+        )
+        missing = missing_configured_progress_paths(variables_now, agent_config)
+        if missing and stall_count >= stall_threshold:
+            return {
+                "pattern": "variable_stall",
+                "missing_paths": missing,
+                "turns_without_progress": stall_count,
+                "suggested_approach": str(cfg.get("variable_stall_suggestion") or cfg.get("response_policy", {}).get("variable_stall_suggestion") or ""),
+            }
+
     intent = str(manifest.get("user_intent") or manifest.get("conversation_stage") or "").strip()
     if not intent:
         return {}
+
     try:
-        count = int(stuck_signals.get(intent, 0) or 0)
+        count = int(signals.get(intent, 0) or 0)
     except Exception:
         count = 0
+
     threshold = graph_config_int({"stuck_pattern_detection": cfg}, "stuck_pattern_detection.threshold", 2, 1, 20)
     if count >= threshold:
-        return {"pattern": "repeated_intent_without_progress", "intent": intent, "count": count}
+        return {
+            "pattern": "repeated_intent_without_progress",
+            "intent": intent,
+            "count": count,
+            "suggested_approach": str(cfg.get("repeated_intent_suggestion") or cfg.get("response_policy", {}).get("repeated_intent_suggestion") or ""),
+        }
     return {}
 
 
@@ -4293,20 +4407,35 @@ def update_stuck_signals(state: AgentState, manifest: Dict[str, Any], variables_
     cfg = get_smartness_config(agent_config, "stuck_pattern_detection")
     if cfg.get("enabled", False) is False:
         return state.get("stuck_signals", {}) or {}
+
     existing = state.get("stuck_signals", {}) or {}
     if not isinstance(existing, dict):
         existing = {}
+
     result = {str(k): int(v or 0) for k, v in existing.items() if str(k).strip()}
     intent = str(manifest.get("user_intent") or manifest.get("conversation_stage") or "").strip()
-    if not intent:
-        return result
-    if compute_variable_changes(variables_before, variables_after, agent_config):
-        result[intent] = 0
+
+    progress_events = compute_variable_progress_events(variables_before, variables_after, agent_config)
+    if not progress_events:
+        progress_events = compute_variable_changes(variables_before, variables_after, agent_config)
+
+    made_progress = bool(progress_events)
+
+    if intent:
+        if made_progress:
+            result[intent] = 0
+        else:
+            result[intent] = int(result.get(intent, 0) or 0) + 1
+
+    stall_key = str(cfg.get("variable_stall_signal_key") or "__variable_stall__")
+    missing = missing_configured_progress_paths(variables_after, agent_config)
+    if made_progress or not missing:
+        result[stall_key] = 0
     else:
-        result[intent] = int(result.get(intent, 0) or 0) + 1
+        result[stall_key] = int(result.get(stall_key, 0) or 0) + 1
+
     max_keys = graph_config_int({"stuck_pattern_detection": cfg}, "stuck_pattern_detection.max_keys", 20, 1, 100)
     return dict(list(result.items())[-max_keys:])
-
 
 def build_proactive_surface_items(knowledge_items: List[Dict[str, Any]], agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     cfg = get_smartness_config(agent_config, "proactive_surface")
@@ -4511,9 +4640,30 @@ def run_batch_semantic_extraction(required_fields: List[Dict[str, Any]], message
         return {}
 
 
+def dedupe_variable_change_events(events: List[Dict[str, Any]], agent_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    cfg = get_smartness_config(agent_config or {}, "contradiction_acknowledgment")
+    max_changes = graph_config_int({"contradiction_acknowledgment": cfg}, "contradiction_acknowledgment.max_changes", 12, 1, 100)
+    output: List[Dict[str, Any]] = []
+    seen = set()
+    for event in events or []:
+        if not isinstance(event, dict) or not event:
+            continue
+        path = str(event.get("path") or "").strip()
+        key = (path, str(event.get("from") or ""), str(event.get("to") or ""), str(event.get("type") or ""))
+        if not path or key in seen:
+            continue
+        seen.add(key)
+        output.append(dict(event))
+        if len(output) >= max_changes:
+            break
+    return output
+
+
 def smart_inference_node(state: AgentState):
     agent_config = state.get("agent_config", {}) or {}
     cfg = get_smartness_config(agent_config, "smart_inference")
+    if cfg.get("enabled", True) is False:
+        return {}
     rules = cfg.get("rules") if isinstance(cfg, dict) else None
     if rules is None:
         raw = get_nested_config(agent_config, "smart_inference_rules")
@@ -4528,10 +4678,12 @@ def smart_inference_node(state: AgentState):
         if not isinstance(rule, dict) or rule.get("enabled", True) is False:
             continue
         target = str(rule.get("target_path") or rule.get("set_variable") or "").strip()
-        if not target or deep_get(variables, target, None) not in [None, "", [], {}]:
+        if not target:
+            continue
+        if deep_get(variables, target, None) not in [None, "", [], {}] and rule.get("overwrite", False) is not True:
             continue
         value = None
-        source_path = str(rule.get("source_path") or "").strip()
+        source_path = str(rule.get("from_variable_path") or rule.get("source_path") or "").strip()
         if source_path:
             value = deep_get(variables, source_path, None)
         result_path = str(rule.get("from_tool_result_path") or "").strip()
@@ -4550,24 +4702,48 @@ def smart_inference_node(state: AgentState):
     if not updates:
         return {}
     updated_variables = apply_subagent_variable_patch(variables, updates, [], assistant_config=agent_config)
-    return {"variables": updated_variables, "smart_inferences": notes}
+    changes = compute_variable_changes(variables, updated_variables, agent_config)
+    progress = compute_variable_progress_events(variables, updated_variables, agent_config)
+    all_events = changes or progress
+    if all_events:
+        updated_variables = mirror_runtime_metadata_into_variables(
+            updated_variables,
+            variable_changes=dedupe_variable_change_events((state.get("variable_changes_this_turn", []) or []) + all_events, agent_config),
+            agent_config=agent_config,
+        )
+    result = {"variables": updated_variables, "smart_inferences": notes}
+    if all_events:
+        result["variable_changes_this_turn"] = all_events
+    return result
 
 
-def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+def attach_smartness_to_tool_update(
+    result: Dict[str, Any],
+    previous_variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    existing_variable_changes: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     if not isinstance(result, dict):
         return result
+
     updated = dict(result)
     variables_after = updated.get("variables") if isinstance(updated.get("variables"), dict) else previous_variables
+    existing_changes = existing_variable_changes if isinstance(existing_variable_changes, list) else []
     changes = compute_variable_changes(previous_variables, variables_after, agent_config)
-    if changes:
-        updated["variable_changes_this_turn"] = changes
+    progress = compute_variable_progress_events(previous_variables, variables_after, agent_config)
+    emitted_events = changes or progress
+
+    if emitted_events:
+        merged_events = dedupe_variable_change_events(existing_changes + emitted_events, agent_config)
+        updated["variable_changes_this_turn"] = emitted_events
         if isinstance(variables_after, dict):
             variables_after = mirror_runtime_metadata_into_variables(
                 variables_after,
-                variable_changes=changes,
+                variable_changes=merged_events,
                 agent_config=agent_config,
             )
             updated["variables"] = variables_after
+
     tool_result = updated.get("tool_result")
     if isinstance(tool_result, dict):
         offered = build_last_offered_options_from_tool_result(tool_result, agent_config)
@@ -4582,11 +4758,21 @@ def attach_smartness_to_tool_update(result: Dict[str, Any], previous_variables: 
                     agent_config=agent_config,
                 )
                 updated["variables"] = variables_after
+
         recovery = build_failure_recovery_context(tool_result, agent_config)
         if recovery:
             updated["failure_recovery_context"] = recovery
-    return updated
 
+        pseudo_state: AgentState = {
+            "variables": variables_after if isinstance(variables_after, dict) else previous_variables,
+            "tool_result": tool_result,
+            "agent_config": agent_config,
+        }
+        progressive = build_progressive_display_context(pseudo_state)
+        if progressive:
+            updated["progressive_display_context"] = progressive
+
+    return updated
 
 def derive_last_offered_options_from_state(state: AgentState) -> Dict[str, Any]:
     existing = state.get("last_offered_options", {}) or {}
@@ -5025,7 +5211,12 @@ def unified_manifest_node(state: AgentState):
         agent_config=agent_config,
     )
     new_stuck_signals = update_stuck_signals(state, manifest, variables, updated_variables)
-    new_stuck_pattern = detect_stuck_pattern(state, manifest)
+    new_stuck_pattern = detect_stuck_pattern(
+        state,
+        manifest,
+        variables_after=updated_variables,
+        stuck_signals=new_stuck_signals,
+    )
 
     return {
         "manifest": manifest,
@@ -5048,6 +5239,68 @@ def unified_manifest_node(state: AgentState):
     }
 
 
+def retrieve_memory_and_knowledge_node(state: AgentState):
+    """
+    Run independent memory and knowledge retrieval in parallel when both are
+    requested by the manifest. Both branches use the same immutable incoming
+    state; resulting variables are merged config-safely.
+    """
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        memory_future = executor.submit(retrieve_memory_node, dict(state))
+        knowledge_future = executor.submit(retrieve_knowledge_node, dict(state))
+
+        try:
+            memory_result = memory_future.result(timeout=20)
+        except Exception:
+            memory_result = {"memories": "", "memories_raw": []}
+
+        try:
+            knowledge_result = knowledge_future.result(timeout=20)
+        except Exception:
+            knowledge_result = {
+                "knowledge": "NO_CONFIDENT_KNOWLEDGE_FOUND",
+                "knowledge_items": [],
+                "multi_knowledge": [],
+            }
+
+    if not isinstance(memory_result, dict):
+        memory_result = {"memories": "", "memories_raw": []}
+    if not isinstance(knowledge_result, dict):
+        knowledge_result = {"knowledge": "NO_CONFIDENT_KNOWLEDGE_FOUND", "knowledge_items": [], "multi_knowledge": []}
+
+    merged: Dict[str, Any] = dict(knowledge_result)
+    merged.update({k: v for k, v in memory_result.items() if k != "variables"})
+
+    original_variables = state.get("variables", {}) or {}
+    memory_variables = memory_result.get("variables") if isinstance(memory_result.get("variables"), dict) else original_variables
+    knowledge_variables = knowledge_result.get("variables") if isinstance(knowledge_result.get("variables"), dict) else None
+
+    variables = memory_variables
+    if isinstance(knowledge_variables, dict) and knowledge_variables != original_variables:
+        variables = merge_variables_intelligently(
+            existing=memory_variables,
+            incoming=knowledge_variables,
+            deletions=[],
+            agent_config=state.get("agent_config", {}) or {},
+        )
+
+    if variables != original_variables:
+        merged["variables"] = variables
+        changes = compute_variable_changes(original_variables, variables, state.get("agent_config", {}) or {})
+        progress = compute_variable_progress_events(original_variables, variables, state.get("agent_config", {}) or {})
+        events = changes or progress
+        if events:
+            merged["variable_changes_this_turn"] = events
+
+    if not merged.get("proactive_surface_items"):
+        merged["proactive_surface_items"] = build_proactive_surface_items(
+            merged.get("knowledge_items", []) or [],
+            state.get("agent_config", {}) or {},
+        )
+
+    return merged
+
+
 def decide_after_manifest(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
@@ -5057,10 +5310,16 @@ def decide_after_manifest(state: AgentState) -> str:
     if should_use_simple_response(state):
         return "simple_response"
 
-    if manifest.get("needs_memory"):
+    needs_memory = bool(manifest.get("needs_memory"))
+    needs_knowledge = bool(manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest))
+
+    if needs_memory and needs_knowledge:
+        return "retrieve_memory_and_knowledge"
+
+    if needs_memory:
         return "retrieve_memory"
 
-    if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
+    if needs_knowledge:
         return "retrieve_knowledge"
 
     if should_route_to_semantic_extraction(state):
@@ -5371,7 +5630,38 @@ def retrieve_knowledge_node(state: AgentState):
     }
 
 
+def should_run_proactive_surface_check(state: AgentState) -> bool:
+    agent_config = state.get("agent_config", {}) or {}
+    cfg = get_smartness_config(agent_config, "proactive_surface")
+    if cfg.get("enabled", False) is False:
+        return False
+    if state.get("proactive_surface_items"):
+        return False
+    return bool(state.get("knowledge_items"))
+
+
 def decide_after_knowledge(state: AgentState) -> str:
+    manifest = state.get("manifest", {}) or {}
+
+    if should_run_proactive_surface_check(state):
+        return "proactive_surface"
+
+    if should_route_to_semantic_extraction(state):
+        return "semantic_extraction"
+
+    if active_deterministic_flow_subagent_id_from_state(state):
+        return "tool_execution"
+
+    if manifest.get("needs_tool") or manifest_has_parallel_tool_requests(manifest):
+        return "tool_execution"
+
+    if manifest.get("needs_subagent_reasoning"):
+        return "subagent_reasoning"
+
+    return "response"
+
+
+def decide_after_proactive_surface(state: AgentState) -> str:
     manifest = state.get("manifest", {}) or {}
 
     if should_route_to_semantic_extraction(state):
@@ -5387,6 +5677,16 @@ def decide_after_knowledge(state: AgentState) -> str:
         return "subagent_reasoning"
 
     return "response"
+
+
+def proactive_surface_check_node(state: AgentState):
+    items = build_proactive_surface_items(
+        state.get("knowledge_items", []) or [],
+        state.get("agent_config", {}) or {},
+    )
+    if not items:
+        return {}
+    return {"proactive_surface_items": items}
 
 
 
@@ -6330,6 +6630,7 @@ def tool_execution_node(state: AgentState):
             ),
             previous_variables=variables,
             agent_config=agent_config,
+            existing_variable_changes=state.get("variable_changes_this_turn", []) or [],
         )
 
     def run_executor(exec_id: str, vars_in: Dict[str, Any]):
@@ -6536,18 +6837,20 @@ def tool_execution_node(state: AgentState):
             "multi_tool_results": executed_results,
             "manifest": manifest,
             "response_synthesis": manifest.get("response_synthesis", {}),
-        }, previous_variables=state.get("variables", {}) or {}, agent_config=agent_config)
+        }, previous_variables=state.get("variables", {}) or {}, agent_config=agent_config, existing_variable_changes=state.get("variable_changes_this_turn", []) or [])
 
     if selected_id and all_observations:
-        return {
+        return attach_smartness_to_tool_update({
+            "variables": variables,
             "tool_result": {
                 "ok": False,
                 "subagent": selected_id,
+                "operation": selected_id,
                 "error": "Subagent execution failed or was not handled.",
                 "action": "reply",
                 "observations": all_observations,
             }
-        }
+        }, previous_variables=state.get("variables", {}) or {}, agent_config=agent_config, existing_variable_changes=state.get("variable_changes_this_turn", []) or [])
 
     tool_name = manifest.get("requested_tool_name", "")
     payload = normalize_tool_payload(manifest.get("tool_request_payload", {}) or {})
@@ -6576,7 +6879,7 @@ def tool_execution_node(state: AgentState):
             return attach_smartness_to_tool_update({
                 "variables": updated_variables,
                 "tool_result": validation.get("tool_result", {}),
-            }, previous_variables=variables, agent_config=agent_config)
+            }, previous_variables=variables, agent_config=agent_config, existing_variable_changes=state.get("variable_changes_this_turn", []) or [])
 
         try:
             raw_result = tool_runner.call(
@@ -6609,18 +6912,20 @@ def tool_execution_node(state: AgentState):
             "variables": updated_variables,
             "tool_result": enriched_result,
             "multi_tool_results": [enriched_result],
-        }, previous_variables=variables, agent_config=agent_config)
+        }, previous_variables=variables, agent_config=agent_config, existing_variable_changes=state.get("variable_changes_this_turn", []) or [])
 
-    return {
+    return attach_smartness_to_tool_update({
+        "variables": variables,
         "tool_result": {
             "ok": False,
+            "operation": str(operation or tool_name or selected_id or ""),
             "error": "Tool requested but no executable subagent/tool operation was available.",
             "selected_subagent_id": selected_id,
             "chained_subagent_id": chained_id,
             "requested_tool_name": tool_name,
             "tool_request_payload": payload,
         }
-    }
+    }, previous_variables=state.get("variables", {}) or {}, agent_config=agent_config, existing_variable_changes=state.get("variable_changes_this_turn", []) or [])
 
 
 def should_skip_subagent_reasoning_after_tool(state: AgentState) -> bool:
@@ -7374,7 +7679,7 @@ Smart clarification: {safe_json(manifest.get('best_guess_clarification', {}) or 
 Variable changes this turn: {safe_json(state.get('variable_changes_this_turn', []) or [], max_chars=700)}
 Proactive info to weave in naturally if relevant: {safe_json(state.get('proactive_surface_items', []) or [], max_chars=700)}
 Failure recovery context: {safe_json(build_failure_recovery_context(tool_result, agent_config) or state.get('failure_recovery_context', {}) or {}, max_chars=700)}
-Progressive display context: {safe_json(build_progressive_display_context(state), max_chars=900)}
+Progressive display context: {safe_json(state.get('progressive_display_context', {}) or build_progressive_display_context(state), max_chars=900)}
 
 === WHAT YOU KNOW AS FACTS ===
 Variables (user's known state):
@@ -8261,6 +8566,8 @@ workflow = StateGraph(AgentState)
 workflow.add_node("manifest_node", unified_manifest_node)
 workflow.add_node("retrieve_memory_node", retrieve_memory_node)
 workflow.add_node("retrieve_knowledge_node", retrieve_knowledge_node)
+workflow.add_node("retrieve_memory_and_knowledge_node", retrieve_memory_and_knowledge_node)
+workflow.add_node("proactive_surface_check_node", proactive_surface_check_node)
 workflow.add_node("tool_execution_node", tool_execution_node)
 workflow.add_node("semantic_extraction_node", semantic_extraction_node)
 workflow.add_node("smart_inference_node", smart_inference_node)
@@ -8280,6 +8587,7 @@ workflow.add_conditional_edges(
         "simple_response": "simple_response_node",
         "retrieve_memory": "retrieve_memory_node",
         "retrieve_knowledge": "retrieve_knowledge_node",
+        "retrieve_memory_and_knowledge": "retrieve_memory_and_knowledge_node",
         "tool_execution": "tool_execution_node",
         "semantic_extraction": "semantic_extraction_node",
         "subagent_reasoning": "subagent_reasoning_node",
@@ -8302,6 +8610,30 @@ workflow.add_conditional_edges(
 workflow.add_conditional_edges(
     "retrieve_knowledge_node",
     decide_after_knowledge,
+    {
+        "proactive_surface": "proactive_surface_check_node",
+        "tool_execution": "tool_execution_node",
+        "semantic_extraction": "semantic_extraction_node",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
+    },
+)
+
+workflow.add_conditional_edges(
+    "retrieve_memory_and_knowledge_node",
+    decide_after_knowledge,
+    {
+        "proactive_surface": "proactive_surface_check_node",
+        "tool_execution": "tool_execution_node",
+        "semantic_extraction": "semantic_extraction_node",
+        "subagent_reasoning": "subagent_reasoning_node",
+        "response": "response_node",
+    },
+)
+
+workflow.add_conditional_edges(
+    "proactive_surface_check_node",
+    decide_after_proactive_surface,
     {
         "tool_execution": "tool_execution_node",
         "semantic_extraction": "semantic_extraction_node",
