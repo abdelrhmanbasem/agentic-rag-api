@@ -8,6 +8,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.46-root-regression-fixes-no-hardcoding-graph
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding-graph
 # Architecture patch: 6.49-runtime-debug-state-and-closing-route-no-hardcoding-graph
+# Architecture patch: 6.50-configured-completed-closing-direct-response-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -6720,6 +6721,82 @@ def maybe_policy_template_answer(state: AgentState) -> str:
     return render_policy_template_answer(state)
 
 
+def completed_flow_closing_response_from_config(state: AgentState) -> str:
+    """
+    Render a configured short closing response after a completed flow.
+
+    This is a generic safety bypass for completed-flow thanks/closing turns. It
+    reads completion paths, closing message sources, answer labels, and response
+    text from assistant config, then avoids sending completed operational facts
+    back through the response LLM where IDs/details can be repeated.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    message = last_user_message(state)
+
+    target = completed_flow_closing_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+    )
+    if not target:
+        return ""
+
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return ""
+
+    rule = guardrails.get("completed_flow_closing") or guardrails.get("completed_flow_closing_routing")
+    if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+        return ""
+
+    template = str(
+        rule.get("response_template")
+        or rule.get("deterministic_template")
+        or rule.get("safe_template")
+        or ""
+    ).strip()
+
+    answer_draft = str(
+        rule.get("answer_draft")
+        or rule.get("template_key")
+        or rule.get("answer_label")
+        or ""
+    ).strip()
+
+    if not template and answer_draft:
+        policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
+        if isinstance(policy, dict):
+            template = str(
+                policy.get("response_template")
+                or policy.get("deterministic_template")
+                or policy.get("safe_template")
+                or ""
+            ).strip()
+            if not template:
+                examples = policy.get("safe_examples", [])
+                if isinstance(examples, list):
+                    for example in examples:
+                        example_text = str(example or "").strip()
+                        if example_text:
+                            template = example_text
+                            break
+
+    if not template:
+        return ""
+
+    rendered = render_template(template, {
+        "variables": variables,
+        "manifest": state.get("manifest", {}) or {},
+        "tool_result": state.get("tool_result", {}) or {},
+        "latest_user_message": message,
+        "answer_draft": answer_draft,
+        "target_subagent_id": target,
+    }).strip()
+
+    return rendered
+
+
 
 def get_response_temperature(manifest: Dict[str, Any], tool_result: Dict[str, Any]) -> float:
     """
@@ -6910,6 +6987,32 @@ Smartness instructions:
 
 def response_node(state: AgentState):
     derived_last_offered_options = derive_last_offered_options_from_state(state)
+    configured_closing_answer = completed_flow_closing_response_from_config(state)
+
+    if configured_closing_answer:
+        configured_closing_answer = enforce_answer_safety(configured_closing_answer, state)
+        result = {
+            "messages": [AIMessage(content=configured_closing_answer)],
+            "final_answer": configured_closing_answer,
+            "quality": {
+                "node": "response_completed_flow_closing_template",
+                "pre_quality_guard": True,
+                "deterministic_template_used": True,
+            },
+        }
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=state.get("manifest", {}) or {},
+            funnel_stage=str(state.get("funnel_stage", "") or (state.get("manifest", {}) or {}).get("funnel_stage", "")),
+            last_offered_options=derived_last_offered_options,
+            agent_config=state.get("agent_config", {}) or {},
+        )
+        if mirrored_variables != (state.get("variables", {}) or {}):
+            result["variables"] = mirrored_variables
+        if derived_last_offered_options:
+            result["last_offered_options"] = derived_last_offered_options
+        return result
+
     deterministic_answer = maybe_policy_template_answer(state)
 
     if deterministic_answer:
