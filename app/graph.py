@@ -10,6 +10,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.49-runtime-debug-state-and-closing-route-no-hardcoding-graph
 # Architecture patch: 6.50-configured-completed-closing-direct-response-no-hardcoding-graph
 # Architecture patch: 6.51-help-gated-pattern-extraction-and-closing-id-skip-no-hardcoding-graph
+# Architecture patch: 6.52-configured-answer-draft-id-append-skip-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -7247,6 +7248,87 @@ Response guidance mode: {response_guidance.get('mode', 'layered_response_rules')
         result["last_offered_options"] = derived_last_offered_options
     return result
 
+def should_skip_confirmed_record_id_append(
+    state: AgentState,
+    answer: str,
+    agent_config: Dict[str, Any],
+    safety_config: Dict[str, Any],
+) -> bool:
+    """
+    Decide whether the confirmed-record ID appender should be suppressed.
+
+    The appender is useful for newly confirmed actions, but completed-flow
+    closings and other configured answer drafts must remain short. This helper
+    is fully config-driven: it reads answer-draft labels, template policy flags,
+    and completed-flow closing routing config instead of embedding domain labels
+    or phrases in Python.
+    """
+    tool_result = state.get("tool_result", {}) or {}
+    answer_draft = ""
+    if isinstance(tool_result, dict):
+        answer_draft = str(tool_result.get("answer_draft") or "").strip()
+
+    skip_label_keys = [
+        "do_not_append_visit_id_for_answer_drafts",
+        "do_not_append_record_id_for_answer_drafts",
+        "do_not_append_confirmed_record_id_for_answer_drafts",
+        "closing_answer_draft_labels",
+        "short_closing_answer_draft_labels",
+    ]
+
+    skip_labels: List[str] = []
+    for key in skip_label_keys:
+        skip_labels = append_unique(skip_labels, as_string_list(safety_config.get(key, [])))
+
+    if answer_draft and answer_draft in set(skip_labels):
+        return True
+
+    if bool(safety_config.get("do_not_append_confirmed_record_id_on_closing", False)):
+        closing_labels = set(as_string_list(safety_config.get("closing_answer_draft_labels", [])))
+        if answer_draft and answer_draft in closing_labels:
+            return True
+
+    if answer_draft:
+        policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
+        if isinstance(policy, dict):
+            policy_skip = bool(
+                policy.get("suppress_confirmed_record_id_append", False)
+                or policy.get("do_not_append_confirmed_record_id", False)
+                or policy.get("do_not_append_record_id", False)
+                or policy.get("do_not_append_visit_id", False)
+            )
+            if policy_skip:
+                return True
+
+            if policy.get("deterministic_response") is True and policy.get("force_template_answer") is True:
+                no_id_for_deterministic = bool(
+                    policy.get("completed_flow_short_closing", False)
+                    or policy.get("state") in {"completed_flow_short_closing", "short_closing"}
+                )
+                if no_id_for_deterministic:
+                    return True
+
+    # Existing completed-flow routing check remains as a generic fallback for
+    # configs that suppress IDs by completed state/message source rather than
+    # by answer-draft label.
+    closing_target = completed_flow_closing_subagent_id(
+        agent_config=agent_config,
+        variables=state.get("variables", {}) or {},
+        message=last_user_message(state),
+    )
+    if closing_target:
+        guardrails = agent_config.get("routing_guardrails", {}) or {}
+        closing_rule = {}
+        if isinstance(guardrails, dict):
+            raw_closing_rule = guardrails.get("completed_flow_closing") or guardrails.get("completed_flow_closing_routing")
+            if isinstance(raw_closing_rule, dict):
+                closing_rule = raw_closing_rule
+        suppress_id_append = closing_rule.get("suppress_confirmed_record_id_append", True)
+        if suppress_id_append is not False:
+            return True
+
+    return False
+
 def pre_response_guardrail_node(state: AgentState):
     """
     Lightweight config-driven post-response guardrail.
@@ -7272,24 +7354,8 @@ def pre_response_guardrail_node(state: AgentState):
     if not append_id:
         return {}
 
-    # v6.51: completed-flow closing messages can be configured to use a short
-    # deterministic response. Do not append confirmed record IDs to those
-    # closing replies unless the bundle explicitly opts back in.
-    closing_target = completed_flow_closing_subagent_id(
-        agent_config=agent_config,
-        variables=state.get("variables", {}) or {},
-        message=last_user_message(state),
-    )
-    if closing_target:
-        guardrails = agent_config.get("routing_guardrails", {}) or {}
-        closing_rule = {}
-        if isinstance(guardrails, dict):
-            raw_closing_rule = guardrails.get("completed_flow_closing") or guardrails.get("completed_flow_closing_routing")
-            if isinstance(raw_closing_rule, dict):
-                closing_rule = raw_closing_rule
-        suppress_id_append = closing_rule.get("suppress_confirmed_record_id_append", True)
-        if suppress_id_append is not False:
-            return {}
+    if should_skip_confirmed_record_id_append(state, answer, agent_config, safety_config):
+        return {}
 
     if not create_booking_confirmed(state):
         return {}
