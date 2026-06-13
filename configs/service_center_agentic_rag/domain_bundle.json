@@ -1659,10 +1659,19 @@
             "when_missing": "customer_profile.plate_number"
           },
           {
-            "variable": "customer_profile.car_model_year",
-            "regex": "(?<!\\d)(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)?\\s*[:：\\-–—ـ]?\\s*((?:19|20)[\\d٠-٩۰-۹]{2})(?![\\d٠-٩۰-۹])",
+            "regex": "(?:^|[،,.!?؟]|\\sو)(?:العربية|العربيه)\\s+(?:هي\\s+)?([^\\s،,.!?؟]+)(?=\\s+(?:النترا|ألنترا|الفئة|الفئه|فئة|فئه|موديل|سنة)|[\\n،,.!?؟]|$)",
             "group": 1,
-            "when_missing": "customer_profile.car_model_year"
+            "variable": "customer_profile.car_brand",
+            "when_missing": "customer_profile.car_brand",
+            "enabled": true,
+            "note": "Configured brand capture from explicit car-detail phrase; Python does not embed this wording."
+          },
+          {
+            "variable": "customer_profile.car_model_year",
+            "regex": "(?:موديل العربية|موديل العربيه|موديل السنة|سنة الموديل|موديل|سنة|model year|year model|car year)\\s*[:：\\-–—ـ]?\\s*([12][0-9٠-٩۰-۹]{3})",
+            "group": 1,
+            "when_missing": "customer_profile.car_model_year",
+            "note": "Marker-required model-year capture to avoid copying appointment dates."
           },
           {
             "variable": "customer_profile.plate_number",
@@ -1706,7 +1715,9 @@
             "variable": "customer_profile.plate_number",
             "regex": "^\\s*(\\d{2,8})\\s*$",
             "group": 1,
-            "when_missing": "customer_profile.plate_number"
+            "when_missing": "customer_profile.plate_number",
+            "enabled": false,
+            "note": "Disabled: configured plate values require at least one letter and one digit."
           },
           {
             "variable": "customer_profile.full_name",
@@ -2446,7 +2457,8 @@
             "هاي لاين",
             "trim",
             "class",
-            "brand"
+            "brand",
+            "model"
           ],
           "customer_marker_exceptions": [
             "اسمي",
@@ -2517,7 +2529,8 @@
             "سنة",
             "model year",
             "year model",
-            "car year"
+            "car year",
+            "نوع"
           ],
           "min_name_parts": 2,
           "max_name_parts": 6,
@@ -2578,7 +2591,22 @@
             "موعد",
             "ميعاد",
             "معاد",
-            "فرع"
+            "فرع",
+            "العربية",
+            "العربيه",
+            "ماركة",
+            "ماركه",
+            "نوع",
+            "فئة",
+            "فئه",
+            "الفئة",
+            "الفئه",
+            "موديل",
+            "سنة",
+            "brand",
+            "class",
+            "trim",
+            "model"
           ],
           "require_digit": true,
           "require_letter_or_digit": true,
@@ -2605,9 +2633,12 @@
             }
           ],
           "marker_capture_max_chars": 40,
-          "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+          "marker_capture_stop_pattern": "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model|brand|class|trim)\\b|[\\n،,.!?؟]+",
           "prefer_marker_remainder": true,
-          "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$"
+          "validation_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+          "require_letter": true,
+          "min_digit_count": 1,
+          "min_letter_count": 1
         },
         "branch_inference_stopwords": [
           "انا",
@@ -3125,7 +3156,20 @@
                   "confirmed",
                   "yes",
                   "ok",
-                  "okay"
+                  "okay",
+                  "ماركة",
+                  "ماركه",
+                  "نوع",
+                  "فئة",
+                  "فئه",
+                  "الفئة",
+                  "الفئه",
+                  "موديل",
+                  "سنة",
+                  "brand",
+                  "class",
+                  "trim",
+                  "model"
                 ],
                 "min_parts": 2,
                 "max_parts": 6,
@@ -3267,7 +3311,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "capture_patterns": [
@@ -3293,7 +3339,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "patterns": [
@@ -3319,7 +3367,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "blocklist": [
@@ -3333,7 +3383,22 @@
                   "موعد",
                   "ميعاد",
                   "معاد",
-                  "فرع"
+                  "فرع",
+                  "العربية",
+                  "العربيه",
+                  "ماركة",
+                  "ماركه",
+                  "نوع",
+                  "فئة",
+                  "فئه",
+                  "الفئة",
+                  "الفئه",
+                  "موديل",
+                  "سنة",
+                  "brand",
+                  "class",
+                  "trim",
+                  "model"
                 ],
                 "require_digit": true,
                 "require_letter_or_digit": true,
@@ -3343,10 +3408,13 @@
                 "cleanup_patterns": [
                   "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
                 ],
-                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+                "validation_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
                 "marker_capture_max_chars": 40,
-                "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
-                "prefer_marker_remainder": true
+                "marker_capture_stop_pattern": "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model|brand|class|trim)\\b|[\\n،,.!?؟]+",
+                "prefer_marker_remainder": true,
+                "require_letter": true,
+                "min_digit_count": 1,
+                "min_letter_count": 1
               },
               "required": true,
               "label": "plate number"
@@ -3383,10 +3451,16 @@
                 "brand",
                 "car brand",
                 "make",
-                "car make"
+                "car make",
+                "العربية",
+                "العربيه"
               ],
               "extraction": {
                 "capture_patterns": [
+                  {
+                    "regex": "(?:^|[،,.!?؟]|\\sو)(?:العربية|العربيه)\\s+(?:هي\\s+)?([^\\s،,.!?؟]+)(?=\\s+(?:النترا|ألنترا|الفئة|الفئه|فئة|فئه|موديل|سنة)|[\\n،,.!?؟]|$)",
+                    "group": 1
+                  },
                   {
                     "regex": "(?:ماركة العربية|ماركه العربيه|ماركة|ماركه|نوع العربية|نوع العربيه|brand|car brand|make|car make)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
                     "group": 1
@@ -3525,13 +3599,16 @@
                   },
                   {
                     "regex": "\\b([12][0-9٠-٩۰-۹]{3})\\b",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: bare years can be appointment dates; model year requires configured marker or active field context."
                   }
                 ],
                 "cleanup_patterns": [],
                 "validation_regex": "^\\s*(?:19|20)\\d{2}\\s*$",
                 "min_length": 4,
-                "max_length": 4
+                "max_length": 4,
+                "require_marker_for_unlabelled_capture": true
               },
               "required": true,
               "label": "car model year"
@@ -3776,7 +3853,20 @@
                 "confirmed",
                 "yes",
                 "ok",
-                "okay"
+                "okay",
+                "ماركة",
+                "ماركه",
+                "نوع",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "موديل",
+                "سنة",
+                "brand",
+                "class",
+                "trim",
+                "model"
               ],
               "min_parts": 2,
               "max_parts": 6,
@@ -3961,7 +4051,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "capture_patterns": [
@@ -3999,7 +4091,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "patterns": [
@@ -4033,7 +4127,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "blocklist": [
@@ -4047,7 +4143,22 @@
                 "موعد",
                 "ميعاد",
                 "معاد",
-                "فرع"
+                "فرع",
+                "العربية",
+                "العربيه",
+                "ماركة",
+                "ماركه",
+                "نوع",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "موديل",
+                "سنة",
+                "brand",
+                "class",
+                "trim",
+                "model"
               ],
               "require_digit": true,
               "require_letter_or_digit": true,
@@ -4058,11 +4169,13 @@
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*",
                 "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model).*$"
               ],
-              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+              "validation_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
               "marker_capture_max_chars": 40,
-              "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
+              "marker_capture_stop_pattern": "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model|brand|class|trim)\\b|[\\n،,.!?؟]+",
               "prefer_marker_remainder": true,
-              "require_letter": true
+              "require_letter": true,
+              "min_digit_count": 1,
+              "min_letter_count": 1
             },
             "required": true
           },
@@ -4098,10 +4211,16 @@
               "brand",
               "car brand",
               "make",
-              "car make"
+              "car make",
+              "العربية",
+              "العربيه"
             ],
             "extraction": {
               "capture_patterns": [
+                {
+                  "regex": "(?:^|[،,.!?؟]|\\sو)(?:العربية|العربيه)\\s+(?:هي\\s+)?([^\\s،,.!?؟]+)(?=\\s+(?:النترا|ألنترا|الفئة|الفئه|فئة|فئه|موديل|سنة)|[\\n،,.!?؟]|$)",
+                  "group": 1
+                },
                 {
                   "regex": "(?:ماركة العربية|ماركه العربيه|ماركة|ماركه|نوع العربية|نوع العربيه|brand|car brand|make|car make)\\s*[:：\\-–—ـ]?\\s*([^\\n،,.!?؟]{2,40})",
                   "group": 1
@@ -4242,7 +4361,9 @@
                 },
                 {
                   "regex": "\\b([12][0-9٠-٩۰-۹]{3})\\b",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: bare years can be appointment dates; model year requires configured marker or active field context."
                 }
               ],
               "cleanup_patterns": [],
@@ -4251,7 +4372,8 @@
               "max_length": 4,
               "reject_if_regex": [
                 "^\\s*(?:19|20)\\d{3,}\\s*$"
-              ]
+              ],
+              "require_marker_for_unlabelled_capture": true
             },
             "required": true,
             "label": "car model year",
@@ -4337,7 +4459,20 @@
                 "confirmed",
                 "yes",
                 "ok",
-                "okay"
+                "okay",
+                "ماركة",
+                "ماركه",
+                "نوع",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "موديل",
+                "سنة",
+                "brand",
+                "class",
+                "trim",
+                "model"
               ],
               "min_parts": 2,
               "max_parts": 6,
@@ -4522,7 +4657,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "capture_patterns": [
@@ -4556,7 +4693,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "patterns": [
@@ -4590,7 +4729,9 @@
                 },
                 {
                   "regex": "^\\s*(\\d{2,8})\\s*$",
-                  "group": 1
+                  "group": 1,
+                  "enabled": false,
+                  "note": "Disabled: configured plate values require at least one letter and one digit."
                 }
               ],
               "blocklist": [
@@ -4604,7 +4745,22 @@
                 "موعد",
                 "ميعاد",
                 "معاد",
-                "فرع"
+                "فرع",
+                "العربية",
+                "العربيه",
+                "ماركة",
+                "ماركه",
+                "نوع",
+                "فئة",
+                "فئه",
+                "الفئة",
+                "الفئه",
+                "موديل",
+                "سنة",
+                "brand",
+                "class",
+                "trim",
+                "model"
               ],
               "require_digit": true,
               "require_letter_or_digit": true,
@@ -4614,10 +4770,13 @@
               "cleanup_patterns": [
                 "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
               ],
-              "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+              "validation_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
               "marker_capture_max_chars": 40,
-              "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
-              "prefer_marker_remainder": true
+              "marker_capture_stop_pattern": "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model|brand|class|trim)\\b|[\\n،,.!?؟]+",
+              "prefer_marker_remainder": true,
+              "require_letter": true,
+              "min_digit_count": 1,
+              "min_letter_count": 1
             },
             "required": true
           }
@@ -4704,7 +4863,20 @@
                   "confirmed",
                   "yes",
                   "ok",
-                  "okay"
+                  "okay",
+                  "ماركة",
+                  "ماركه",
+                  "نوع",
+                  "فئة",
+                  "فئه",
+                  "الفئة",
+                  "الفئه",
+                  "موديل",
+                  "سنة",
+                  "brand",
+                  "class",
+                  "trim",
+                  "model"
                 ],
                 "min_parts": 2,
                 "max_parts": 6,
@@ -4889,7 +5061,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "capture_patterns": [
@@ -4923,7 +5097,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "patterns": [
@@ -4957,7 +5133,9 @@
                   },
                   {
                     "regex": "^\\s*(\\d{2,8})\\s*$",
-                    "group": 1
+                    "group": 1,
+                    "enabled": false,
+                    "note": "Disabled: configured plate values require at least one letter and one digit."
                   }
                 ],
                 "blocklist": [
@@ -4971,7 +5149,22 @@
                   "موعد",
                   "ميعاد",
                   "معاد",
-                  "فرع"
+                  "فرع",
+                  "العربية",
+                  "العربيه",
+                  "ماركة",
+                  "ماركه",
+                  "نوع",
+                  "فئة",
+                  "فئه",
+                  "الفئة",
+                  "الفئه",
+                  "موديل",
+                  "سنة",
+                  "brand",
+                  "class",
+                  "trim",
+                  "model"
                 ],
                 "require_digit": true,
                 "require_letter_or_digit": true,
@@ -4981,10 +5174,13 @@
                 "cleanup_patterns": [
                   "^\\s*(?:رقم العربية|نمر العربية|نمرة العربية|رقم اللوحه|رقم اللوحة|اللوحه|اللوحة|لوحتي|لوحتى|plate)\\s*[:：\\-]?\\s*"
                 ],
-                "validation_regex": "^(?=.*\\d)[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
+                "validation_regex": "^(?=.*\\d)(?=.*[A-Za-z\\u0600-\\u06FF])[A-Za-z0-9\\u0600-\\u06FF\\s\\-]{2,40}$",
                 "marker_capture_max_chars": 40,
-                "marker_capture_stop_pattern": "[\\n،,.!?؟]+",
-                "prefer_marker_remainder": true
+                "marker_capture_stop_pattern": "\\s+(?:و\\s*)?(?:العربية|العربيه|ماركة|ماركه|نوع|فئة|فئه|الفئة|الفئه|موديل|سنة|model\\s+year|year\\s+model|brand|class|trim)\\b|[\\n،,.!?؟]+",
+                "prefer_marker_remainder": true,
+                "require_letter": true,
+                "min_digit_count": 1,
+                "min_letter_count": 1
               },
               "required": true
             }
@@ -5496,6 +5692,13 @@
             "^[\\s:：\\-–—ـ]+",
             "[\\s،,.!?؟:;]+$"
           ]
+        },
+        "runtime_detail_safety_version": "6.47-runtime-detail-safety-config-no-hardcoding",
+        "configured_detail_validation_tightening_version": "6.48-configured-detail-validation-tightening-no-hardcoding",
+        "configured_detail_validation_notes": {
+          "plate_number": "Requires at least one digit and one letter by configured validation; pure digit fallback patterns disabled.",
+          "car_model_year": "Bare appointment years are not accepted as model year unless captured through configured model-year field rules.",
+          "customer_details": "Field validators and markers are config-owned; Python applies them generically."
         }
       },
       "troubleshooting": {
@@ -7690,7 +7893,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -8367,7 +8570,8 @@
           ],
           "min_digit_count": 4,
           "blocked_message_regex": [
-            "\\b(?:19|20)\\d{2}-\\d{1,2}-\\d{1,2}\\b"
+            "\\b(?:19|20)\\d{2}-\\d{1,2}-\\d{1,2}\\b",
+            "^\\s*(?:19|20)\\d{2}[/-]\\d{1,2}[/-]\\d{1,2}\\s*$"
           ]
         }
       ],
@@ -8382,6 +8586,14 @@
           "paths": [
             "customer_detail_markers.hold_or_delay_markers"
           ]
+        },
+        {
+          "subagent_id": "booking",
+          "paths": [
+            "confirmation_phrases",
+            "duplicate_confirmation_phrases",
+            "customer_detail_guards.control_only_terms"
+          ]
         }
       ],
       "blocked_message_regex": [
@@ -8395,7 +8607,9 @@
       "6.42-breathtaking-smartness-config-no-hardcoding",
       "6.43-deterministic-vehicle-detail-correction-no-hardcoding",
       "6.44-semantic-detail-safety-no-hardcoding",
-      "6.45-code-expert-cost-smartness-config-no-hardcoding"
+      "6.45-code-expert-cost-smartness-config-no-hardcoding",
+      "6.47-runtime-detail-safety-config-no-hardcoding",
+      "6.48-configured-detail-validation-tightening-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
