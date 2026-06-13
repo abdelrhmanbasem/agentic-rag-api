@@ -27,6 +27,7 @@ from app.subagents.base import (
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding
 # Architecture patch: 6.48-configured-detail-validation-tightening-no-hardcoding
+# Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
 
 class BookingSubagent:
     """
@@ -5628,6 +5629,10 @@ class BookingSubagent:
         config: Dict[str, Any],
         normalization: Dict[str, Any]
     ) -> str:
+        extraction_config = field_config.get("extraction", {})
+        if isinstance(extraction_config, dict) and extraction_config.get("marker_remainder_enabled", True) is False:
+            return ""
+
         """
         Direct configured-marker capture fallback.
 
@@ -6466,14 +6471,17 @@ class BookingSubagent:
         # Marker-remainder fallback:
         # If a configured field has markers and the message contains a marker,
         # capture the text after the marker up to punctuation/newline. This is
-        # what prevents broad domain regexes from losing meaningful tokens.
-        marker_candidates = self.extract_configured_marker_remainder_candidates(
-            message=normalized_digits,
-            field_config=field_config,
-            config=config,
-            normalization=normalization
-        )
-        candidates.extend(marker_candidates)
+        # controlled by field config because some fields require the marker/label
+        # to remain part of the stored value, or require strict configured
+        # capture patterns only.
+        if extraction_config.get("marker_remainder_enabled", True) is not False:
+            marker_candidates = self.extract_configured_marker_remainder_candidates(
+                message=normalized_digits,
+                field_config=field_config,
+                config=config,
+                normalization=normalization
+            )
+            candidates.extend(marker_candidates)
 
         if not candidates:
             return ""
