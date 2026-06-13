@@ -8173,7 +8173,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -9374,15 +9374,6 @@
           {
             "enabled": true,
             "memory_type": "preference",
-            "memory_contains": "nasr city",
-            "set_variable": "preferred_branch",
-            "set_value": "Nasr City",
-            "only_if_missing": true,
-            "min_confidence": 0.75
-          },
-          {
-            "enabled": true,
-            "memory_type": "preference",
             "memory_contains": "مدينة نصر",
             "set_variable": "preferred_branch",
             "set_value": "Nasr City",
@@ -9410,15 +9401,6 @@
           {
             "enabled": true,
             "memory_type": "preference",
-            "memory_contains": "maadi",
-            "set_variable": "preferred_branch",
-            "set_value": "Maadi",
-            "only_if_missing": true,
-            "min_confidence": 0.75
-          },
-          {
-            "enabled": true,
-            "memory_type": "preference",
             "memory_contains": "المعادي",
             "set_variable": "preferred_branch",
             "set_value": "Maadi",
@@ -9431,15 +9413,6 @@
             "memory_contains": "معادي",
             "set_variable": "preferred_branch",
             "set_value": "Maadi",
-            "only_if_missing": true,
-            "min_confidence": 0.75
-          },
-          {
-            "enabled": true,
-            "memory_type": "preference",
-            "memory_contains": "dokki",
-            "set_variable": "preferred_branch",
-            "set_value": "Dokki",
             "only_if_missing": true,
             "min_confidence": 0.75
           },
@@ -9503,15 +9476,6 @@
             "memory_contains": "اكتوبر",
             "set_variable": "preferred_branch",
             "set_value": "6th October",
-            "only_if_missing": true,
-            "min_confidence": 0.75
-          },
-          {
-            "enabled": true,
-            "memory_type": "preference",
-            "memory_contains": "alexandria",
-            "set_variable": "preferred_branch",
-            "set_value": "Alexandria",
             "only_if_missing": true,
             "min_confidence": 0.75
           },
@@ -10295,15 +10259,6 @@
         {
           "enabled": true,
           "memory_type": "preference",
-          "memory_contains": "nasr city",
-          "set_variable": "preferred_branch",
-          "set_value": "Nasr City",
-          "only_if_missing": true,
-          "min_confidence": 0.75
-        },
-        {
-          "enabled": true,
-          "memory_type": "preference",
           "memory_contains": "مدينة نصر",
           "set_variable": "preferred_branch",
           "set_value": "Nasr City",
@@ -10331,15 +10286,6 @@
         {
           "enabled": true,
           "memory_type": "preference",
-          "memory_contains": "maadi",
-          "set_variable": "preferred_branch",
-          "set_value": "Maadi",
-          "only_if_missing": true,
-          "min_confidence": 0.75
-        },
-        {
-          "enabled": true,
-          "memory_type": "preference",
           "memory_contains": "المعادي",
           "set_variable": "preferred_branch",
           "set_value": "Maadi",
@@ -10352,15 +10298,6 @@
           "memory_contains": "معادي",
           "set_variable": "preferred_branch",
           "set_value": "Maadi",
-          "only_if_missing": true,
-          "min_confidence": 0.75
-        },
-        {
-          "enabled": true,
-          "memory_type": "preference",
-          "memory_contains": "dokki",
-          "set_variable": "preferred_branch",
-          "set_value": "Dokki",
           "only_if_missing": true,
           "min_confidence": 0.75
         },
@@ -10424,15 +10361,6 @@
           "memory_contains": "اكتوبر",
           "set_variable": "preferred_branch",
           "set_value": "6th October",
-          "only_if_missing": true,
-          "min_confidence": 0.75
-        },
-        {
-          "enabled": true,
-          "memory_type": "preference",
-          "memory_contains": "alexandria",
-          "set_variable": "preferred_branch",
-          "set_value": "Alexandria",
           "only_if_missing": true,
           "min_confidence": 0.75
         },
@@ -10793,7 +10721,22 @@
       "max_workers": 2,
       "timeout_seconds": 20,
       "fallback_to_individual_empty_results": true
-    }
+    },
+    "known_branch_paths": [
+      "selected_branch",
+      "location_branch",
+      "nearest_branch",
+      "appointment_branch",
+      "booking.pending.branch"
+    ],
+    "quality_guard_known_variable_labels": [
+      "الاسم",
+      "الموبايل",
+      "الفرع",
+      "التاريخ",
+      "الموعد",
+      "رقم العربية"
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
@@ -11125,14 +11068,7 @@
       "Version 6.20 adds assistant persona, emotion_response_guidance, and proactive_nudge so response voice and tone are config-driven per assistant.",
       "Version 6.20 pairs with graph human-readable response sections and variable-awareness quality guard.",
       "Version 6.24 fixes Arabic car-plate detail capture by moving spelling variants for configured plate markers into domain_bundle.json, including العربية/العربيه forms. No Python domain hardcoding is required."
-    ],
-    "semantic_variable_extraction": {
-      "enabled": true,
-      "notes": [
-        "Configured fields describe what to extract, when they are required, the target path, output format, validation, examples, and ask-if-missing text.",
-        "Python should not know car-specific fields; it reads semantic_variable_extraction.fields declaratively."
-      ]
-    }
+    ]
   },
   "metadata": {}
 }
