@@ -18,6 +18,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.58-explicit-smartness-policy-enabled-no-hardcoding-graph
 # Architecture patch: 6.59-configured-booking-executor-lock-recovery-no-hardcoding-graph
 # Architecture patch: 6.61-code-expert-completion-no-hardcoding-graph
+# Architecture patch: 6.62-code-expert-final-gap-closure-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -1530,11 +1531,29 @@ def append_unique(values: List[str], additions: List[str]) -> List[str]:
     return output
 
 
-def has_known_branch(variables: Dict[str, Any]) -> bool:
-    return bool(
-        deep_get(variables, "selected_branch", "")
-        or deep_get(variables, "location_branch", "")
-        or deep_get(variables, "nearest_branch", "")
+def has_known_branch(
+    variables: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Return whether a location/branch-like context is already known.
+
+    The checked paths are configured per assistant so non-service-center
+    assistants can use their own location/property/store variables without
+    changing Python.
+    """
+    agent_config = agent_config or {}
+    paths = as_string_list(agent_config.get("known_branch_paths", []))
+
+    # Backward-compatible default for existing configs; future assistants should
+    # set known_branch_paths explicitly in their bundle.
+    if not paths:
+        paths = ["selected_branch", "location_branch", "nearest_branch"]
+
+    return any(
+        is_present(deep_get(variables, path, ""))
+        for path in paths
+        if str(path or "").strip()
     )
 
 
@@ -1664,7 +1683,7 @@ def apply_routing_guardrails(
     if not has_configured_visit_intent(message, agent_config, variables):
         return patched
 
-    known_branch = has_known_branch(variables)
+    known_branch = has_known_branch(variables, agent_config)
 
     patched["simple_response_mode"] = False
     patched["needs_tool"] = True
@@ -5388,6 +5407,9 @@ def decide_after_memory(state: AgentState) -> str:
     if manifest.get("needs_knowledge") or manifest_has_knowledge_queries(manifest):
         return "retrieve_knowledge"
 
+    if should_run_proactive_surface_check(state):
+        return "proactive_surface"
+
     if should_route_to_semantic_extraction(state):
         return "semantic_extraction"
 
@@ -6499,7 +6521,7 @@ def post_subagent_chain_rule_matches(
     if isinstance(target_config, dict) and target_config.get("enabled", True) is False:
         return False
 
-    if rule.get("requires_known_branch", False) and not has_known_branch(variables):
+    if rule.get("requires_known_branch", False) and not has_known_branch(variables, agent_config):
         return False
 
     required_variable_paths = rule.get("required_variable_paths", [])
@@ -8352,6 +8374,11 @@ def quality_guard_node(state: AgentState):
     latest_user = last_user_message(state)
     agent_config = state.get("agent_config", {}) or {}
     manifest = state.get("manifest", {}) or {}
+    known_variable_labels = ", ".join(
+        as_string_list(agent_config.get("quality_guard_known_variable_labels", []))
+    )
+    if not known_variable_labels:
+        known_variable_labels = "known user and workflow variables"
 
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -8368,7 +8395,7 @@ def quality_guard_node(state: AgentState):
             "starts with 'Sure/Certainly/Of course', uses overly formal language, "
             "or lists facts mechanically instead of speaking naturally? Rewrite if yes.\n\n"
             "5. VARIABLE AWARENESS — Asks for something already in the known variables "
-            "(name, phone, branch, date, appointment, customer details)? "
+            f"({known_variable_labels})? "
             "Rewrite to use the known value instead of asking again.\n\n"
             "6. ONE QUESTION — Does the response ask more than one question, even "
             "phrased indirectly? Rewrite to ask only the single most important thing. "
@@ -8600,6 +8627,7 @@ workflow.add_conditional_edges(
     decide_after_memory,
     {
         "retrieve_knowledge": "retrieve_knowledge_node",
+        "proactive_surface": "proactive_surface_check_node",
         "tool_execution": "tool_execution_node",
         "semantic_extraction": "semantic_extraction_node",
         "subagent_reasoning": "subagent_reasoning_node",
