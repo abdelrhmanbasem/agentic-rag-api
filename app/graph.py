@@ -15,6 +15,7 @@ from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 # Architecture patch: 6.54-active-flow-stage-union-and-emotion-mirror-no-hardcoding-graph
 # Architecture patch: 6.55-mirror-variable-changes-to-debug-state-no-hardcoding-graph
 # Architecture patch: 6.57-configured-smart-clarification-fallback-no-hardcoding-graph
+# Architecture patch: 6.58-explicit-smartness-policy-enabled-no-hardcoding-graph
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import operator
@@ -926,12 +927,16 @@ def configured_response_compaction(agent_config: Dict[str, Any]) -> Dict[str, An
     for key in ["response_compaction", "response_context_compaction"]:
         value = agent_config.get(key)
         if isinstance(value, dict):
+            if get_config_bool({"policy": value}, "policy.enabled", True) is False:
+                return {}
             return value
 
     smartness = agent_config.get("smartness", {})
     if isinstance(smartness, dict):
         value = smartness.get("response_compaction")
         if isinstance(value, dict):
+            if get_config_bool({"policy": value}, "policy.enabled", True) is False:
+                return {}
             return value
 
     return {}
@@ -1414,6 +1419,9 @@ def should_run_quality_guard(state: AgentState) -> bool:
             smartness = agent_config.get("smartness", {})
             if isinstance(smartness, dict) and isinstance(smartness.get("quality_guard_policy"), dict):
                 policy = smartness.get("quality_guard_policy")
+
+    if policy and get_config_bool({"policy": policy}, "policy.enabled", True) is False:
+        return False
 
     def policy_bool(key: str, default: bool = True) -> bool:
         value = policy.get(key, default)
