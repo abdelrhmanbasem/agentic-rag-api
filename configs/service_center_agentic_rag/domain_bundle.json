@@ -8173,7 +8173,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -9660,8 +9660,22 @@
           "examples": [
             "بدل ما نسأل نفس السؤال تاني، ممكن نبدأ بأقرب فرع ليك؟",
             "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
-          ]
-        }
+          ],
+          "variable_stall_suggestion": "try_different_collection_approach"
+        },
+        "variable_stall_enabled": true,
+        "variable_stall_turns": 3,
+        "variable_stall_signal_key": "__variable_stall__",
+        "required_progress_paths": [
+          "customer_profile.full_name",
+          "customer_profile.phone",
+          "customer_profile.plate_number",
+          "appointment_date",
+          "booking.pending.date",
+          "booking.pending.time",
+          "booking.pending.branch"
+        ],
+        "variable_stall_suggestion": "try_different_collection_approach"
       },
       "response_compaction": {
         "max_variable_items": 42,
@@ -9710,7 +9724,7 @@
       },
       "response_model_routing": {
         "enabled": true,
-        "default_model": "gpt-4o",
+        "default_model": "gpt-4o-mini",
         "simple_model": "gpt-4o-mini",
         "simple_min_confidence": 0.82,
         "never_use_simple_model_when": {
@@ -9741,7 +9755,13 @@
         "enabled": true
       },
       "completed_closing_and_class_boundary_version": "6.50-completed-closing-and-class-boundary-config-no-hardcoding",
-      "create_required_contract_alignment_version": "6.60-create-required-contract-alignment-no-hardcoding"
+      "create_required_contract_alignment_version": "6.60-create-required-contract-alignment-no-hardcoding",
+      "parallel_memory_knowledge_retrieval": {
+        "enabled": true,
+        "max_workers": 2,
+        "timeout_seconds": 20,
+        "fallback_to_individual_empty_results": true
+      }
     },
     "emotion_arc_guidance": {
       "persistently_frustrated": "Start with genuine empathy for the repeated difficulty. Give the simplest next step or resolution path. Do not ask more than one question.",
@@ -10533,8 +10553,22 @@
         "examples": [
           "بدل ما نسأل نفس السؤال تاني، ممكن نبدأ بأقرب فرع ليك؟",
           "خلينا نسهّلها: اختار يوم من دول، وأنا أشوفلك المتاح."
-        ]
-      }
+        ],
+        "variable_stall_suggestion": "try_different_collection_approach"
+      },
+      "variable_stall_enabled": true,
+      "variable_stall_turns": 3,
+      "variable_stall_signal_key": "__variable_stall__",
+      "required_progress_paths": [
+        "customer_profile.full_name",
+        "customer_profile.phone",
+        "customer_profile.plate_number",
+        "appointment_date",
+        "booking.pending.date",
+        "booking.pending.time",
+        "booking.pending.branch"
+      ],
+      "variable_stall_suggestion": "try_different_collection_approach"
     },
     "vehicle_detail_correction": {
       "enabled": true,
@@ -10658,7 +10692,7 @@
     },
     "response_model_routing": {
       "enabled": true,
-      "default_model": "gpt-4o",
+      "default_model": "gpt-4o-mini",
       "simple_model": "gpt-4o-mini",
       "simple_min_confidence": 0.82,
       "never_use_simple_model_when": {
@@ -10750,6 +10784,15 @@
       "active_flow_stage_union_emotion_mirror_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
       "active_flow_stage_union_emotion_mirror_slot_change_vehicle_swap": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
       "booking_executor_lock_required_create_alignment": "6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding"
+    },
+    "version_registry": {
+      "code_expert_completion": "6.61-code-expert-completion-no-hardcoding"
+    },
+    "parallel_memory_knowledge_retrieval": {
+      "enabled": true,
+      "max_workers": 2,
+      "timeout_seconds": 20,
+      "fallback_to_individual_empty_results": true
     }
   },
   "schema": {
