@@ -8107,7 +8107,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -8872,7 +8872,8 @@
       "6.48-configured-detail-validation-tightening-no-hardcoding",
       "6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding",
       "6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding",
-      "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding"
+      "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
+      "6.57-configured-smart-clarification-fallback-no-hardcoding"
     ],
     "smartness": {
       "smart_clarification": {
@@ -8890,6 +8891,24 @@
             "تقصد إنك عايز أقرب فرع وبعدها نشوف مواعيد بكرة؟",
             "أفهم من كلامك إنك عايز تغيّر المعاد للأحد، مظبوط؟"
           ]
+        },
+        "fallback_hypothesis": {
+          "enabled": true,
+          "source_paths": [
+            "user_expectation",
+            "response_brief.next_move",
+            "requested_tool_name",
+            "selected_subagent_id",
+            "chained_subagent_id"
+          ],
+          "templates": [
+            "{{manifest.user_expectation}}",
+            "{{manifest.response_brief.next_move}}",
+            "{{manifest.requested_tool_name}}"
+          ],
+          "min_chars": 3,
+          "max_chars": 160,
+          "version": "6.57-configured-smart-clarification-fallback-no-hardcoding"
         }
       },
       "message_length_mirroring": {
@@ -9853,6 +9872,24 @@
           "تقصد إنك عايز أقرب فرع وبعدها نشوف مواعيد بكرة؟",
           "أفهم من كلامك إنك عايز تغيّر المعاد للأحد، مظبوط؟"
         ]
+      },
+      "fallback_hypothesis": {
+        "enabled": true,
+        "source_paths": [
+          "user_expectation",
+          "response_brief.next_move",
+          "requested_tool_name",
+          "selected_subagent_id",
+          "chained_subagent_id"
+        ],
+        "templates": [
+          "{{manifest.user_expectation}}",
+          "{{manifest.response_brief.next_move}}",
+          "{{manifest.requested_tool_name}}"
+        ],
+        "min_chars": 3,
+        "max_chars": 160,
+        "version": "6.57-configured-smart-clarification-fallback-no-hardcoding"
       }
     },
     "message_length_mirroring": {
