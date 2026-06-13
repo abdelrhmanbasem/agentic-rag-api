@@ -8107,7 +8107,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -9638,7 +9638,8 @@
               "booking_status"
             ]
           }
-        ]
+        ],
+        "enabled": true
       },
       "response_model_routing": {
         "enabled": true,
@@ -9669,7 +9670,8 @@
           "medium",
           "high"
         ],
-        "long_answer_chars": 700
+        "long_answer_chars": 700,
+        "enabled": true
       },
       "completed_closing_and_class_boundary_version": "6.50-completed-closing-and-class-boundary-config-no-hardcoding"
     },
@@ -10646,7 +10648,8 @@
             "booking_status"
           ]
         }
-      ]
+      ],
+      "enabled": true
     },
     "quality_guard_policy": {
       "run_on_style_repair": true,
@@ -10659,7 +10662,8 @@
         "medium",
         "high"
       ],
-      "long_answer_chars": 700
+      "long_answer_chars": 700,
+      "enabled": true
     },
     "subagent_reasoning_policy": {
       "skip_on_clean_executor_result": true,
