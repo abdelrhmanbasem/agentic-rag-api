@@ -187,17 +187,24 @@
               "tone": "natural professional Egyptian Arabic",
               "language": "Egyptian Arabic",
               "reply_length": "short",
-              "next_move": "Ask for the customer's area or branch before checking availability.",
+              "next_move": "If a date is already known, acknowledge it and ask only for the branch or the customer's area before checking availability.",
               "must_do": [
                 "ask for branch or area",
                 "do not call the sheet",
-                "do not say no slots"
+                "do not say no slots",
+                "if date_text or appointment_date exists, acknowledge the date in the reply",
+                "ask only for branch or area",
+                "do not ask for the date again when it is already known",
+                "use natural Egyptian Arabic"
               ],
               "must_not_do": [
                 "do not invent a branch",
                 "do not invent slots",
-                "do not say availability was checked"
-              ]
+                "do not say availability was checked",
+                "do not ask for date again when appointment_date/date_text exists",
+                "do not sound like a debug prompt"
+              ],
+              "example_response_when_date_known": "تمام، يوم 7 يونيو. تحب أي فرع أو تقولي منطقتك عشان أجيبلك أقرب فرع؟"
             },
             "missing_date_response_brief": {
               "tone": "natural professional Egyptian Arabic",
@@ -236,6 +243,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ],
             "required_inputs": [
@@ -247,6 +257,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ],
             "required_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs"
@@ -514,7 +527,11 @@
       "If stuck_pattern is present, do not ask the same question again; use a different approach or offer a simple choice.",
       "If memory pre-populates a preference, use it as a soft preference, not as a confirmed booking choice unless the customer confirms.",
       "If progressive_display_context says there are more options, show the configured subset and mention more are available naturally.",
-      "Wrong-label vehicle detail corrections must stay config-driven: a year captured under class moves to model year, and non-year trim/class text captured under model markers moves to class."
+      "Wrong-label vehicle detail corrections must stay config-driven: a year captured under class moves to model year, and non-year trim/class text captured under model markers moves to class.",
+      "If an availability request includes a named-month date such as 7 يونيو or ٧ يونيو and branch/location is missing, acknowledge the date naturally and ask only for the branch or area. Do not ask for the date again.",
+      "For availability requests with a known date but missing branch, use wording like: تمام، يوم {date_text}. تحب أي فرع أو تقولي منطقتك عشان أجيبلك أقرب فرع؟",
+      "If car_brand, car_class, or car_model_year are configured as required create_booking inputs, collect them before create_booking and ask for them naturally together when missing.",
+      "Before final booking creation, if vehicle details are missing and configured as required, ask for ماركة العربية، الفئة/النسخة، وموديل السنة. Do not confirm booking until they are present."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -667,6 +684,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ],
             "optional": [
@@ -734,6 +754,9 @@
               "full_name",
               "phone",
               "plate_number",
+              "car_brand",
+              "car_class",
+              "car_model_year",
               "customer_confirmed_booking"
             ],
             "required_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs"
@@ -1456,6 +1479,9 @@
           "variables.customer_profile.full_name",
           "variables.customer_profile.phone",
           "variables.customer_profile.plate_number",
+          "variables.customer_profile.car_brand",
+          "variables.customer_profile.car_class",
+          "variables.customer_profile.car_model_year",
           "variables.customer_confirmed_booking"
         ],
         "field_labels": {
@@ -1558,6 +1584,12 @@
           {
             "regex": "(\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)",
             "group": 1
+          },
+          {
+            "regex": "([0-9٠-٩۰-۹]{1,2}\\s*(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر)(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "explicit_named_month_date",
+            "note": "Configured named-month date capture such as 7 يونيو / ٧ يونيو."
           },
           {
             "regex": "(\\d{1,2}\\s*(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر)(?:\\s+\\d{4})?)",
@@ -2825,6 +2857,10 @@
           },
           {
             "regex": "\\b(\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b",
+            "group": 1
+          },
+          {
+            "regex": "\\b([0-9٠-٩۰-۹]{1,2}\\s*(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يونيه|يوليو|يوليه|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر)(?:\\s+[0-9٠-٩۰-۹]{4})?)\\b",
             "group": 1
           },
           {
@@ -6717,6 +6753,9 @@
           "full_name",
           "phone",
           "plate_number",
+          "car_brand",
+          "car_class",
+          "car_model_year",
           "customer_confirmed_booking"
         ],
         "optional_inputs": [
@@ -6730,7 +6769,8 @@
           "booking"
         ],
         "source_of_truth": true,
-        "result_policy": "Never confirm booking unless ok=true. Always include visit_id when returned."
+        "result_policy": "Never confirm booking unless ok=true. Always include visit_id when returned.",
+        "required_contract_source": "assistant.tool_catalog.service_center_sheet.create_booking.required_inputs"
       }
     ],
     "tool_required_field_overrides": {
@@ -6752,6 +6792,9 @@
         "full_name",
         "phone",
         "plate_number",
+        "car_brand",
+        "car_class",
+        "car_model_year",
         "customer_confirmed_booking"
       ]
     },
@@ -8324,7 +8367,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
