@@ -8173,7 +8173,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -10726,8 +10726,8 @@
       "selected_branch",
       "location_branch",
       "nearest_branch",
-      "appointment_branch",
-      "booking.pending.branch"
+      "booking.pending.branch",
+      "appointment_branch"
     ],
     "quality_guard_known_variable_labels": [
       "الاسم",
@@ -10736,7 +10736,65 @@
       "التاريخ",
       "الموعد",
       "رقم العربية"
-    ]
+    ],
+    "legacy_tool_argument_operation_groups": {
+      "enabled": true,
+      "location_and_date_ops": [
+        "list_available_slots",
+        "check_availability",
+        "create_booking"
+      ],
+      "time_ops": [
+        "check_availability",
+        "create_booking"
+      ],
+      "create_ops": [
+        "create_booking"
+      ],
+      "version": "6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding"
+    },
+    "legacy_tool_argument_field_config": {
+      "enabled": true,
+      "branch_arg": "branch",
+      "date_arg": "date",
+      "date_argument_aliases": [
+        "appointment_date"
+      ],
+      "date_paths": [
+        "appointment_date",
+        "date",
+        "booking.pending.date"
+      ],
+      "date_text_arg": "date_text",
+      "date_text_paths": [
+        "date_text",
+        "booking.pending.date_text"
+      ],
+      "time_arg": "time",
+      "time_paths": [
+        "appointment_time",
+        "booking.pending.time"
+      ],
+      "pending_path": "booking.pending",
+      "pending_fields": [
+        "branch",
+        "date",
+        "date_text",
+        "time",
+        "section"
+      ],
+      "profile_path": "customer_profile",
+      "profile_field_map": {
+        "full_name": "full_name",
+        "phone": "phone",
+        "plate_number": "plate_number"
+      },
+      "confirmation_arg": "customer_confirmed_booking",
+      "confirmation_paths": [
+        "customer_confirmed_booking"
+      ],
+      "version": "6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding"
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
