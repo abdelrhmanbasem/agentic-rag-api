@@ -380,10 +380,15 @@
     "response_rules": [
       "The final user-facing answer must be written by the graph response node, not by subagent templates.",
       "Subagent template values are internal labels or grounded draft signals only.",
+      "When a troubleshooting answer offers inspection, ask only one next-step question. Do not combine it with diagnostic questions like هل فيه رعشة، هل الصوت بيزيد، أو إيه نوع الصوت.",
+      "For troubleshooting next-step wording in Egyptian Arabic, prefer: تحب أجيبلك أقرب فرع ومعاد مناسب؟ or تحب أرتبلك كشف قريب؟ Avoid formal wording and avoid stacked questions.",
+      "If the customer repeats a known symptom such as صفارة الفرامل or صوت صفارة, acknowledge it and move to the inspection/nearest-branch next step instead of asking what the sound is again.",
+      "Do not ask for car brand, model, or model year during troubleshooting unless the customer provides it voluntarily. Vehicle details are collected later in booking/customer-detail flow.",
       "Arabic replies must be natural Egyptian Arabic, not formal MSA. Avoid words like يرجى، هل، لديك، إذا كنت، معلومات، متاحة لدينا unless the customer is using formal Arabic.",
       "Use natural Egyptian Arabic phrasing like: ممكن، تمام، غالبًا، خليني، عشان، عندك، إيه، لو تحب.",
       "Do not use overly familiar words like حبيبي، يا باشا، يا معلم، يا صديقي.",
-      "For symptom cases, the first assistant response should mention the likely affected system and possible causes, then ask one useful diagnostic question.",
+      "For symptom cases, mention the likely affected system and possible causes briefly. Ask a diagnostic question only if the symptom is too vague to choose a safe next step.",
+      "For safety-related brake/noise symptoms with enough signal such as brake + squeak/noise/when braking, do not ask more diagnostic questions. Briefly explain likely causes, recommend inspection, and ask if the customer wants the nearest branch or a suitable visit time.",
       "After at least one diagnostic answer, explain the more likely reason and recommend inspection if appropriate.",
       "If the user clearly agrees to inspect/check the car after troubleshooting, treat that as visit intent and continue toward branch/date instead of asking more diagnostic questions.",
       "When troubleshooting.inspection_recommended is true or troubleshooting.stage is complete and the user says اه، أيوه، ياريت، تمام، ماشي with اطمن، اكشف، اوديها، اشوفها, do not continue diagnostics. Move to nearest branch / booking flow.",
@@ -5989,7 +5994,7 @@
         "enabled": true,
         "goal": "Classify vehicle symptoms into service categories and maintain lightweight diagnostic state for the final response LLM.",
         "when_to_use": "Use when the customer describes a vehicle problem, symptom, noise, warning, weak performance, or safety concern, and is not directly asking to book or agreeing to inspect the car.",
-        "instructions": "Do not write final diagnostic wording. Detect the problem category, update service_needed and troubleshooting metadata, store possible causes/recommended questions, and let the graph response node generate the natural explanation and next diagnostic question. If the user says they want to inspect/check the car, do not handle; let booking/location flow continue.",
+        "instructions": "Do not write final customer-facing wording. Detect the problem category, update service_needed and troubleshooting metadata, store possible causes and next-step guidance, and let the graph response node generate the natural explanation. For safety-related brake/noise symptoms with enough signal, mark inspection_recommended and do not push repeated diagnostic questions.",
         "allowed_actions": [
           "classify_symptom",
           "update_diagnostic_state",
@@ -6000,7 +6005,7 @@
         "selected_rule_path": "troubleshooting.selected_rule_id",
         "metadata_path": "troubleshooting",
         "inspection_recommended_path": "troubleshooting.inspection_recommended",
-        "max_diagnostic_turns_before_visit_offer": 2,
+        "max_diagnostic_turns_before_visit_offer": 1,
         "active_state": "active",
         "complete_state": "complete",
         "variable_scope": {
@@ -6107,11 +6112,7 @@
               "dust or debris around brake components",
               "caliper or hardware noise"
             ],
-            "recommended_questions": [
-              "Does the sound happen only while pressing the brakes?",
-              "Is there vibration or weak braking?",
-              "Does it happen more at low speed or after driving for a while?"
-            ],
+            "recommended_questions": [],
             "severity": "safety_related",
             "safety_note": "Brake issues can affect safety, so inspection is recommended if the sound is strong, repeated, or paired with vibration or weak braking.",
             "clear_variables": [
@@ -6122,7 +6123,43 @@
             ],
             "enabled": true,
             "all_required_phrases": [],
-            "templates": {}
+            "templates": {
+              "started": "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
+              "continued": "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
+              "complete": "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION",
+              "switched": "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION"
+            },
+            "inspection_recommended": true,
+            "max_diagnostic_turns_before_visit_offer": 1,
+            "customer_facing_possible_causes": [
+              "تيل الفرامل محتاج كشف أو تغيير",
+              "احتكاك أو تلميع/خشونة في الطنابير",
+              "أتربة أو شوائب حوالين أجزاء الفرامل",
+              "صوت من الكالبر أو أجزاء التثبيت"
+            ],
+            "response_guidance": {
+              "enabled": true,
+              "tone": "natural professional Egyptian Arabic",
+              "reply_length": "short",
+              "default_next_step_question": "تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+              "must_do": [
+                "acknowledge brake squeak/noise naturally",
+                "say likely causes briefly without certainty",
+                "recommend inspection because brakes are safety-related",
+                "ask only one next-step question about nearest branch/inspection visit"
+              ],
+              "must_not_do": [
+                "do not ask what sound it is if صفارة/noise is already stated",
+                "do not ask whether it happens while pressing brakes if the user already said مع الفرامل/بدوس عليها",
+                "do not ask for Hyundai/model/year as a diagnostic requirement",
+                "do not stack multiple questions",
+                "do not say the car is safe or unsafe with certainty"
+              ],
+              "safe_examples": [
+                "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+                "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
+              ]
+            }
           }
         ],
         "active_state_values": [
@@ -6135,27 +6172,47 @@
           "default": "default"
         },
         "phase_actions": {
-          "started": "ask_user",
-          "continued": "ask_user",
+          "started": "reply",
+          "continued": "reply",
           "complete": "reply",
-          "default": "ask_user",
-          "switched": "ask_user",
+          "default": "reply",
+          "switched": "reply",
           "visit_requested": "reply"
         },
         "default_action": "ask_user",
         "default_template_key": "default",
         "template_fallback_prefix": "TROUBLESHOOTING",
         "phase_updates": {
-          "started": {},
-          "continued": {},
+          "started": {
+            "troubleshooting.inspection_recommended": true,
+            "troubleshooting.next_step": "offer_nearest_branch_or_inspection_visit",
+            "troubleshooting.max_next_questions": 1,
+            "troubleshooting.prevent_repeated_diagnostic_questions": true
+          },
+          "continued": {
+            "troubleshooting.inspection_recommended": true,
+            "troubleshooting.next_step": "offer_nearest_branch_or_inspection_visit",
+            "troubleshooting.max_next_questions": 1,
+            "troubleshooting.prevent_repeated_diagnostic_questions": true
+          },
           "complete": {
-            "troubleshooting.inspection_recommended": true
+            "troubleshooting.inspection_recommended": true,
+            "troubleshooting.next_step": "offer_nearest_branch_or_inspection_visit",
+            "troubleshooting.max_next_questions": 1,
+            "troubleshooting.prevent_repeated_diagnostic_questions": true
           },
           "switched": {
-            "troubleshooting.rule_switched": true
+            "troubleshooting.rule_switched": true,
+            "troubleshooting.inspection_recommended": true,
+            "troubleshooting.next_step": "offer_nearest_branch_or_inspection_visit",
+            "troubleshooting.max_next_questions": 1,
+            "troubleshooting.prevent_repeated_diagnostic_questions": true
           },
           "visit_requested": {
-            "troubleshooting.inspection_recommended": true
+            "troubleshooting.inspection_recommended": true,
+            "troubleshooting.next_step": "offer_nearest_branch_or_inspection_visit",
+            "troubleshooting.max_next_questions": 1,
+            "troubleshooting.prevent_repeated_diagnostic_questions": true
           }
         },
         "metadata_update_mappings": {
@@ -6862,7 +6919,28 @@
       "visit_id_format": "{label}: {id}",
       "do_not_append_visit_id_for_answer_drafts": [
         "BOOKING_COMPLETED_CLOSING"
-      ]
+      ],
+      "troubleshooting_style_guard": {
+        "enabled": true,
+        "version": "6.66-natural-troubleshooting-inspection-first-config-no-hardcoding",
+        "when_paths": [
+          "troubleshooting.inspection_recommended",
+          "troubleshooting.severity"
+        ],
+        "avoid_question_phrases_when_inspection_recommended": [
+          "هل الصوت",
+          "هل فيه رعشة",
+          "هل الفرامل ضعيفة",
+          "إيه نوع الصوت",
+          "ما نوع الصوت",
+          "العربية نوعها إيه",
+          "موديل كام"
+        ],
+        "preferred_next_step_questions": [
+          "تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تحب أرتبلك أقرب فرع للكشف؟"
+        ]
+      }
     },
     "private_structured_analysis_policy": {
       "enabled": true,
@@ -7319,17 +7397,30 @@
       "TROUBLESHOOTING_READY_TO_RECOMMEND_INSPECTION": {
         "state": "inspection_recommended",
         "must_do": [
-          "acknowledge the symptom naturally",
-          "recommend inspection in a helpful non-pushy way",
-          "offer the next step if proactive_nudge allows it"
+          "use the troubleshooting rule metadata from variables",
+          "respond in natural Egyptian Arabic if the customer writes Arabic",
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not diagnose with certainty",
-          "do not invent prices or availability"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
         ],
         "safe_examples": [
-          "من وصفك، الأفضل العربية تتكشف عشان نطمن على السبب بدقة. تحب أطلعلك أقرب فرع؟"
-        ]
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
+        ],
+        "deterministic_response": false,
+        "force_template_answer": false,
+        "must_use_grounded_template": false,
+        "llm_phrasing_allowed": true,
+        "reply_length": "short"
       },
       "BOOKING_MISSING_TIME": {
         "state": "collecting_time",
@@ -7533,12 +7624,24 @@
         "must_do": [
           "use the troubleshooting rule metadata from variables",
           "respond in natural Egyptian Arabic if the customer writes Arabic",
-          "do not invent causes outside configured rule metadata/knowledge",
-          "ask at most one useful next diagnostic question unless inspection is recommended"
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not continue troubleshooting after visit intent is clear",
-          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
+        ],
+        "state": "inspection_recommended",
+        "reply_length": "short",
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       },
       "TROUBLESHOOTING_CONTINUED": {
@@ -7549,12 +7652,24 @@
         "must_do": [
           "use the troubleshooting rule metadata from variables",
           "respond in natural Egyptian Arabic if the customer writes Arabic",
-          "do not invent causes outside configured rule metadata/knowledge",
-          "ask at most one useful next diagnostic question unless inspection is recommended"
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not continue troubleshooting after visit intent is clear",
-          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
+        ],
+        "state": "inspection_recommended",
+        "reply_length": "short",
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       },
       "TROUBLESHOOTING_COMPLETE": {
@@ -7565,12 +7680,24 @@
         "must_do": [
           "use the troubleshooting rule metadata from variables",
           "respond in natural Egyptian Arabic if the customer writes Arabic",
-          "do not invent causes outside configured rule metadata/knowledge",
-          "ask at most one useful next diagnostic question unless inspection is recommended"
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not continue troubleshooting after visit intent is clear",
-          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
+        ],
+        "state": "inspection_recommended",
+        "reply_length": "short",
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       },
       "TROUBLESHOOTING_SWITCHED": {
@@ -7581,12 +7708,24 @@
         "must_do": [
           "use the troubleshooting rule metadata from variables",
           "respond in natural Egyptian Arabic if the customer writes Arabic",
-          "do not invent causes outside configured rule metadata/knowledge",
-          "ask at most one useful next diagnostic question unless inspection is recommended"
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not continue troubleshooting after visit intent is clear",
-          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
+        ],
+        "state": "inspection_recommended",
+        "reply_length": "short",
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       },
       "TROUBLESHOOTING_VISIT_REQUESTED": {
@@ -7597,12 +7736,24 @@
         "must_do": [
           "use the troubleshooting rule metadata from variables",
           "respond in natural Egyptian Arabic if the customer writes Arabic",
-          "do not invent causes outside configured rule metadata/knowledge",
-          "ask at most one useful next diagnostic question unless inspection is recommended"
+          "mention likely causes briefly and without certainty",
+          "recommend inspection for safety-related brake symptoms",
+          "ask only one next-step question, preferably whether the customer wants nearest branch/visit help"
         ],
         "must_not_do": [
-          "do not continue troubleshooting after visit intent is clear",
-          "do not offer booking unless user asks for visit/inspection or policy says inspection_recommended"
+          "do not ask what type of sound if the customer already said صفارة or noise",
+          "do not ask whether it happens while pressing brakes if the customer already said مع الفرامل or أول ما بدوس عليها",
+          "do not ask for car brand/model/year during troubleshooting",
+          "do not ask multiple diagnostic questions",
+          "do not continue troubleshooting after inspection_recommended is true",
+          "do not invent causes outside configured rule metadata/knowledge",
+          "do not use formal MSA wording like هل ترغب or يرجى"
+        ],
+        "state": "inspection_recommended",
+        "reply_length": "short",
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       }
     },
@@ -8173,7 +8324,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -10794,6 +10945,42 @@
         "customer_confirmed_booking"
       ],
       "version": "6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding"
+    },
+    "troubleshooting_customer_experience_policy": {
+      "enabled": true,
+      "version": "6.66-natural-troubleshooting-inspection-first-config-no-hardcoding",
+      "goal": "Make symptom replies natural, short, inspection-oriented for safety-related brake issues, and avoid repetitive diagnostic questioning.",
+      "safety_related_symptom_policy": {
+        "enabled": true,
+        "severity_values": [
+          "safety_related"
+        ],
+        "enough_signal_examples": [
+          "فرامل + صفارة",
+          "brake + squeak",
+          "صوت مع الفرامل",
+          "noise while braking"
+        ],
+        "max_diagnostic_questions_after_enough_signal": 0,
+        "next_step_question": "تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+        "must_do": [
+          "acknowledge the symptom naturally",
+          "mention likely causes briefly without certainty",
+          "recommend inspection because brakes are safety-related",
+          "ask one next-step question about nearest branch/visit only"
+        ],
+        "must_not_do": [
+          "do not ask what type of sound if the user already said صفارة/noise",
+          "do not ask multiple diagnostic questions in one answer",
+          "do not ask for car make/model/year during troubleshooting",
+          "do not use formal MSA wording",
+          "do not offer slots unless the user asks for booking/availability or branch/date is known and booking intent is clear"
+        ],
+        "safe_examples": [
+          "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+          "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
+        ]
+      }
     }
   },
   "schema": {
