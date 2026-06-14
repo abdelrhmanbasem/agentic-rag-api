@@ -699,17 +699,71 @@ batch=(sem.get("batch_extraction") or {})
 assert batch.get("enabled") is True, batch
 
 booking=((assistant.get("subagents") or {}).get("booking") or {})
-required_before_create=booking.get("required_before_create") or []
-for p in [
-    "variables.customer_profile.full_name",
-    "variables.customer_profile.phone",
-    "variables.customer_profile.plate_number",
-    "variables.customer_profile.car_brand",
-    "variables.customer_profile.car_class",
-    "variables.customer_profile.car_model_year",
-    "variables.customer_confirmed_booking",
-]:
-    assert p in required_before_create, p
+
+# Scenario E root rule #3 optional vehicle contract:
+# create-blocking fields must match canonical create_booking.required_inputs.
+# Optional vehicle details may be extracted/schema-backed/help-backed, but must
+# not block create unless intentionally added to canonical tool required_inputs.
+def _as_list(value):
+    return [str(x) for x in value] if isinstance(value, list) else []
+
+def _normalize_required_path(value):
+    value = str(value or "").strip()
+    aliases = {
+        "variables.booking.pending.branch": "branch",
+        "variables.booking.pending.date": "date",
+        "variables.booking.pending.date_text": "date_text",
+        "variables.booking.pending.time": "time",
+        "variables.booking.pending.section": "section",
+        "variables.customer_profile.full_name": "full_name",
+        "variables.customer_profile.phone": "phone",
+        "variables.customer_profile.plate_number": "plate_number",
+        "variables.customer_confirmed_booking": "customer_confirmed_booking",
+        "booking.pending.branch": "branch",
+        "booking.pending.date": "date",
+        "booking.pending.date_text": "date_text",
+        "booking.pending.time": "time",
+        "booking.pending.section": "section",
+        "customer_profile.full_name": "full_name",
+        "customer_profile.phone": "phone",
+        "customer_profile.plate_number": "plate_number",
+    }
+    if value in aliases:
+        return aliases[value]
+    if "." in value:
+        return value.split(".")[-1]
+    return value
+
+canonical_required = None
+for entry in assistant.get("tool_catalog") or []:
+    if isinstance(entry, dict) and entry.get("operation") == "create_booking":
+        canonical_required = set(_as_list(entry.get("required_inputs")))
+        break
+
+assert canonical_required, "missing canonical create_booking.required_inputs"
+
+required_before_create_raw = booking.get("required_before_create") or []
+required_before_create = {
+    _normalize_required_path(x)
+    for x in _as_list(required_before_create_raw)
+}
+
+optional_vehicle = {"car_brand", "car_class", "car_model_year"}
+
+assert not (canonical_required & optional_vehicle), {
+    "optional_vehicle_in_canonical_required": sorted(canonical_required & optional_vehicle),
+    "canonical_required": sorted(canonical_required),
+}
+
+assert not (required_before_create & optional_vehicle), {
+    "optional_vehicle_in_required_before_create": sorted(required_before_create & optional_vehicle),
+    "required_before_create_raw": required_before_create_raw,
+}
+
+assert required_before_create == canonical_required, {
+    "required_before_create": sorted(required_before_create),
+    "canonical_required": sorted(canonical_required),
+}
 
 field_help=booking.get("field_help") or {}
 for p in [
