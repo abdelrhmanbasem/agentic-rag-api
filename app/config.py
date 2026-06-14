@@ -92,6 +92,10 @@ QDRANT_API_KEY = env_str("QDRANT_API_KEY", "")
 
 OPENAI_API_KEY = env_str("OPENAI_API_KEY", "")
 
+# Root rule #4: all chat/LLM role defaults must use GPT mini models only.
+# gpt-4o-mini is the safest/current cost-efficient default used across the app.
+DEFAULT_GPT_MINI_MODEL = env_str("DEFAULT_GPT_MINI_MODEL", "gpt-4o-mini")
+
 # LangGraph model roles:
 # - planner/manifest decides intent, subagent, tool need, and next move
 # - subagent produces private structured guidance only
@@ -99,15 +103,15 @@ OPENAI_API_KEY = env_str("OPENAI_API_KEY", "")
 # - extraction performs focused semantic variable extraction from field descriptions
 # - memory summarizes/writes useful long-term facts
 # - quality validates hallucination, tone, and required facts
-MODEL_PLANNER = env_str("MODEL_PLANNER", "gpt-4o")
-MODEL_SUBAGENT = env_str("MODEL_SUBAGENT", "gpt-4o-mini")
-MODEL_RESPONSE = env_str("MODEL_RESPONSE", "gpt-4o")
+MODEL_PLANNER = env_str("MODEL_PLANNER", DEFAULT_GPT_MINI_MODEL)
+MODEL_SUBAGENT = env_str("MODEL_SUBAGENT", DEFAULT_GPT_MINI_MODEL)
+MODEL_RESPONSE = env_str("MODEL_RESPONSE", DEFAULT_GPT_MINI_MODEL)
 # Optional deployment-wide default for low-risk/simple response routing.
 # Per-assistant routing decisions still belong in domain_bundle.json.
-MODEL_RESPONSE_SIMPLE = env_str("MODEL_RESPONSE_SIMPLE", "gpt-4o-mini")
-MODEL_EXTRACTION = env_str("MODEL_EXTRACTION", "gpt-4o-mini")
-MODEL_MEMORY = env_str("MODEL_MEMORY", "gpt-4o-mini")
-MODEL_QUALITY = env_str("MODEL_QUALITY", "gpt-4o-mini")
+MODEL_RESPONSE_SIMPLE = env_str("MODEL_RESPONSE_SIMPLE", DEFAULT_GPT_MINI_MODEL)
+MODEL_EXTRACTION = env_str("MODEL_EXTRACTION", DEFAULT_GPT_MINI_MODEL)
+MODEL_MEMORY = env_str("MODEL_MEMORY", DEFAULT_GPT_MINI_MODEL)
+MODEL_QUALITY = env_str("MODEL_QUALITY", DEFAULT_GPT_MINI_MODEL)
 
 EMBED_MODEL = env_str("EMBED_MODEL", "text-embedding-3-small")
 VECTOR_SIZE = env_int("VECTOR_SIZE", 1536)
@@ -119,6 +123,46 @@ try:
     TZ = ZoneInfo(APP_TIMEZONE)
 except Exception:
     TZ = ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def is_gpt_mini_model(model_name: str) -> bool:
+    """Return true only for GPT mini chat/LLM model IDs.
+
+    Accepts IDs like gpt-4o-mini, gpt-4.1-mini, or openai/gpt-4o-mini.
+    Embedding models are intentionally validated separately.
+    """
+    value = str(model_name or "").strip().lower()
+
+    if value.startswith("openai/"):
+        value = value.split("/", 1)[1]
+
+    return value.startswith("gpt") and "mini" in value
+
+
+def validate_gpt_mini_models_only() -> None:
+    """Enforce root rule #4 for every configured chat/LLM role."""
+    model_values = {
+        "DEFAULT_GPT_MINI_MODEL": DEFAULT_GPT_MINI_MODEL,
+        "MODEL_PLANNER": MODEL_PLANNER,
+        "MODEL_SUBAGENT": MODEL_SUBAGENT,
+        "MODEL_RESPONSE": MODEL_RESPONSE,
+        "MODEL_RESPONSE_SIMPLE": MODEL_RESPONSE_SIMPLE,
+        "MODEL_EXTRACTION": MODEL_EXTRACTION,
+        "MODEL_MEMORY": MODEL_MEMORY,
+        "MODEL_QUALITY": MODEL_QUALITY,
+    }
+
+    invalid = [
+        f"{name}={value}"
+        for name, value in model_values.items()
+        if not is_gpt_mini_model(value)
+    ]
+
+    if invalid:
+        raise RuntimeError(
+            "Root rule #4 violation: all chat/LLM models must be GPT mini models only. Invalid: "
+            + ", ".join(invalid)
+        )
 
 RECENT_MESSAGES_LIMIT = clamp_int(env_int("RECENT_MESSAGES_LIMIT", 14), 1, 200)
 SUMMARY_TRIGGER_MESSAGE_COUNT = clamp_int(env_int("SUMMARY_TRIGGER_MESSAGE_COUNT", 8), 2, 200)
@@ -277,6 +321,9 @@ def validate_runtime_config() -> None:
         if not value:
             missing.append(name)
 
+    # EMBED_MODEL can remain an embedding model; all chat/LLM roles must be GPT mini only.
+    validate_gpt_mini_models_only()
+
     token_values = {
         "MAX_OUTPUT_TOKENS": MAX_OUTPUT_TOKENS,
         "MAX_RESPONSE_TOKENS": MAX_RESPONSE_TOKENS,
@@ -327,6 +374,7 @@ def runtime_config_summary() -> dict:
         "qdrant_url": QDRANT_URL,
         "embed_model": EMBED_MODEL,
         "vector_size": VECTOR_SIZE,
+        "default_gpt_mini_model": DEFAULT_GPT_MINI_MODEL,
         "model_planner": MODEL_PLANNER,
         "model_subagent": MODEL_SUBAGENT,
         "model_response": MODEL_RESPONSE,
