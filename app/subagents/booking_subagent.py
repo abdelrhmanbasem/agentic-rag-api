@@ -30,6 +30,8 @@ from app.subagents.base import (
 # Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
 # Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
 # Architecture patch: 6.56-configured-date-candidate-priority-no-hardcoding
+# Architecture patch: 6.72-comprehensive-configured-date-resolution-no-hardcoding
+# Architecture patch: 6.71-configured-yearless-date-resolution-no-hardcoding
 
 class BookingSubagent:
     """
@@ -2823,6 +2825,8 @@ class BookingSubagent:
         default_order = [
             "explicit_pattern",
             "date_extraction_pattern",
+            "configured_natural_date",
+            "configured_word_numeric_date",
             "direct_term",
         ]
         output = {source: idx for idx, source in enumerate(default_order)}
@@ -3032,6 +3036,20 @@ class BookingSubagent:
 
                 add_candidate(value, "date_extraction_pattern", span[0], span[1])
 
+        for item in self.extract_configured_natural_date_candidates(
+            message=raw_message,
+            config=config,
+            normalization=normalization,
+        ):
+            if not isinstance(item, dict):
+                continue
+            add_candidate(
+                str(item.get("date_text") or ""),
+                str(item.get("source") or "configured_natural_date"),
+                int(item.get("start", 0) or 0),
+                int(item.get("end", 0) or 0),
+            )
+
         if not candidates:
             return []
 
@@ -3047,6 +3065,310 @@ class BookingSubagent:
 
             seen_terms.add(key)
             output.append(candidate)
+
+        return output
+
+
+    def get_date_resolution_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        config = config or {}
+        value = config.get("date_resolution", {})
+        return value if isinstance(value, dict) else {}
+
+    def configured_date_number_maps(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        keys: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        date_resolution = self.get_date_resolution_config(config)
+        keys = keys or [
+            "day_number_terms",
+            "ordinal_day_terms",
+            "number_terms",
+            "date_number_terms",
+        ]
+        maps: List[Dict[str, Any]] = []
+        for key in keys:
+            value = date_resolution.get(key, {})
+            if isinstance(value, dict):
+                maps.append(value)
+        return maps
+
+    def parse_configured_integer_token(
+        self,
+        token: Any,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+        min_value: int = 1,
+        max_value: int = 31,
+        keys: Optional[List[str]] = None,
+    ) -> Optional[int]:
+        """
+        Parse a numeric token using configured number/ordinal maps.
+
+        Python owns only the generic mechanics. Language words such as Arabic
+        or English cardinal/ordinal date terms live in domain_bundle.json.
+        """
+        normalization = normalization or {}
+        raw = normalize_digits(str(token or "").strip(), normalization.get("digit_map", {}))
+        if not raw:
+            return None
+
+        cleanup_patterns = self.get_date_resolution_config(config).get("date_number_cleanup_patterns", [])
+        if isinstance(cleanup_patterns, list):
+            for pattern in cleanup_patterns:
+                pattern_text = str(pattern or "").strip()
+                if not pattern_text:
+                    continue
+                try:
+                    raw = re.sub(pattern_text, "", raw, flags=re.IGNORECASE).strip()
+                except re.error:
+                    continue
+
+        normalized = normalize_text(raw, normalization)
+        normalized = re.sub(r"^[\s:：\-–—ـ]+|[\s،,.!?؟:;]+$", "", normalized).strip()
+        normalized = re.sub(r"\s+", " ", normalized)
+
+        digit_match = re.fullmatch(r"(\d{1,4})(?:st|nd|rd|th)?", normalized, flags=re.IGNORECASE)
+        if digit_match:
+            try:
+                value = int(digit_match.group(1))
+                if min_value <= value <= max_value:
+                    return value
+            except Exception:
+                pass
+
+        for value_map in self.configured_date_number_maps(config, keys=keys):
+            for number_key, terms in value_map.items():
+                try:
+                    numeric_value = int(str(number_key).strip())
+                except Exception:
+                    continue
+                if not (min_value <= numeric_value <= max_value):
+                    continue
+                term_values = terms if isinstance(terms, list) else [terms]
+                for term in term_values:
+                    normalized_term = normalize_text(str(term or ""), normalization)
+                    if normalized_term and normalized_term == normalized:
+                        return numeric_value
+
+        return None
+
+    def configured_month_terms(self, config: Optional[Dict[str, Any]] = None) -> Dict[int, List[str]]:
+        date_resolution = self.get_date_resolution_config(config)
+        month_config = (
+            date_resolution.get("month_terms")
+            if isinstance(date_resolution.get("month_terms"), dict)
+            else date_resolution.get("month_names", {})
+        )
+        output: Dict[int, List[str]] = {}
+        if not isinstance(month_config, dict):
+            return output
+        for key, value in month_config.items():
+            candidate_month = None
+            terms: List[Any] = []
+            try:
+                candidate_month = int(key)
+                terms = value if isinstance(value, list) else [value]
+            except Exception:
+                try:
+                    candidate_month = int(value)
+                    terms = [key]
+                except Exception:
+                    candidate_month = None
+                    terms = []
+            if candidate_month is None or not (1 <= candidate_month <= 12):
+                continue
+            output.setdefault(candidate_month, [])
+            for term in terms:
+                text = str(term or "").strip()
+                if text and text not in output[candidate_month]:
+                    output[candidate_month].append(text)
+        return output
+
+    def resolve_configured_month_token(
+        self,
+        token: Any,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        normalization = normalization or {}
+        normalized = normalize_text(str(token or "").strip(), normalization)
+        if not normalized:
+            return None
+        for month, terms in self.configured_month_terms(config).items():
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term and normalized_term == normalized:
+                    return month
+        return self.parse_configured_integer_token(
+            token=token,
+            config=config,
+            normalization=normalization,
+            min_value=1,
+            max_value=12,
+            keys=["month_number_terms", "number_terms", "date_number_terms"],
+        )
+
+    def configured_date_connector_tokens(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> set:
+        normalization = normalization or {}
+        date_resolution = self.get_date_resolution_config(config)
+        connectors = date_resolution.get("date_connector_terms", [])
+        if not isinstance(connectors, list):
+            connectors = []
+        return {
+            normalize_text(str(item or ""), normalization)
+            for item in connectors
+            if normalize_text(str(item or ""), normalization)
+        }
+
+    def configured_date_context_markers(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> set:
+        normalization = normalization or {}
+        date_resolution = self.get_date_resolution_config(config)
+        markers = date_resolution.get("date_context_markers", [])
+        if not isinstance(markers, list):
+            markers = []
+        return {
+            normalize_text(str(item or ""), normalization)
+            for item in markers
+            if normalize_text(str(item or ""), normalization)
+        }
+
+    def tokenize_date_text_with_spans(
+        self,
+        text: str,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        normalization = normalization or {}
+        normalized = normalize_text(
+            normalize_digits(str(text or ""), normalization.get("digit_map", {})),
+            normalization,
+        )
+        tokens: List[Dict[str, Any]] = []
+        for match in re.finditer(r"\d{1,4}(?:st|nd|rd|th)?|[A-Za-z\u0600-\u06FF]+", normalized, flags=re.IGNORECASE):
+            tokens.append({"text": match.group(0), "start": match.start(), "end": match.end()})
+        return tokens
+
+    def nearest_non_connector_token(
+        self,
+        tokens: List[Dict[str, Any]],
+        start_index: int,
+        direction: int,
+        connectors: set,
+        max_steps: int,
+    ) -> Optional[Dict[str, Any]]:
+        idx = start_index
+        steps = 0
+        while 0 <= idx < len(tokens) and steps <= max_steps:
+            text = str(tokens[idx].get("text") or "")
+            if text not in connectors:
+                return tokens[idx]
+            idx += direction
+            steps += 1
+        return None
+
+    def extract_configured_natural_date_candidates(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        normalization: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract broad natural date candidates using configured month and number
+        dictionaries. Covers forms like:
+        - 7 June / June 7 / 7th of June
+        - سبعة يونيو / السابع من يونيو / يونيو سبعة
+        - يوم سبعة ستة, when enabled in config
+
+        All language terms are configured in domain_bundle.json.
+        """
+        date_resolution = self.get_date_resolution_config(config)
+        natural_cfg = date_resolution.get("natural_date_candidate_extraction", {})
+        if isinstance(natural_cfg, dict) and natural_cfg.get("enabled", True) is False:
+            return []
+
+        tokens = self.tokenize_date_text_with_spans(message, normalization)
+        if not tokens:
+            return []
+
+        connectors = self.configured_date_connector_tokens(config, normalization)
+        context_markers = self.configured_date_context_markers(config, normalization)
+        month_terms_by_number = self.configured_month_terms(config)
+        month_token_to_number: Dict[str, int] = {}
+        for month, terms in month_terms_by_number.items():
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term:
+                    month_token_to_number[normalized_term] = month
+
+        try:
+            max_connector_steps = int(natural_cfg.get("max_connector_tokens", 3) or 3)
+        except Exception:
+            max_connector_steps = 3
+
+        output: List[Dict[str, Any]] = []
+
+        def add_candidate(parts: List[Dict[str, Any]], source: str):
+            real_parts = [part for part in parts if isinstance(part, dict)]
+            if len(real_parts) < 2:
+                return
+            start = min(int(part.get("start", 0) or 0) for part in real_parts)
+            end = max(int(part.get("end", 0) or 0) for part in real_parts)
+            date_text = " ".join(str(part.get("text") or "").strip() for part in real_parts if str(part.get("text") or "").strip())
+            if not date_text:
+                return
+            output.append({
+                "date_text": date_text,
+                "source": source,
+                "start": start,
+                "end": end,
+            })
+
+        for idx, token in enumerate(tokens):
+            token_text = str(token.get("text") or "")
+            month = month_token_to_number.get(token_text)
+            if not month:
+                continue
+
+            prev_token = self.nearest_non_connector_token(tokens, idx - 1, -1, connectors, max_connector_steps)
+            next_token = self.nearest_non_connector_token(tokens, idx + 1, 1, connectors, max_connector_steps)
+
+            prev_day = self.parse_configured_integer_token(prev_token.get("text") if prev_token else "", config, normalization, 1, 31)
+            next_day = self.parse_configured_integer_token(next_token.get("text") if next_token else "", config, normalization, 1, 31)
+
+            if prev_day is not None:
+                add_candidate([prev_token, token], "configured_natural_date")
+            if next_day is not None:
+                add_candidate([token, next_token], "configured_natural_date")
+
+        allow_word_numeric = bool(date_resolution.get("allow_word_numeric_dates", True))
+        if allow_word_numeric:
+            require_marker = bool(date_resolution.get("word_numeric_dates_require_context_marker", False))
+            has_marker = any(str(token.get("text") or "") in context_markers for token in tokens)
+            if not require_marker or has_marker:
+                for idx in range(len(tokens) - 1):
+                    first = tokens[idx]
+                    second = self.nearest_non_connector_token(tokens, idx + 1, 1, connectors, max_connector_steps)
+                    if not second:
+                        continue
+                    day = self.parse_configured_integer_token(first.get("text"), config, normalization, 1, 31)
+                    month = self.parse_configured_integer_token(
+                        second.get("text"),
+                        config,
+                        normalization,
+                        1,
+                        12,
+                        keys=["month_number_terms", "number_terms", "date_number_terms"],
+                    )
+                    if day is not None and month is not None:
+                        add_candidate([first, second], "configured_word_numeric_date")
 
         return output
 
@@ -3384,6 +3706,12 @@ class BookingSubagent:
         numeric = self.parse_numeric_date(raw, today, config=config)
         if numeric:
             return numeric
+
+        word_numeric = self.parse_word_numeric_date(
+            raw, today, config=config, normalization=normalization
+        )
+        if word_numeric:
+            return word_numeric
 
         # ── 5. Named month ───────────────────────────────────────────────────
         month_named = self.parse_named_month_date(
@@ -3730,6 +4058,120 @@ class BookingSubagent:
 
         return False
 
+
+    def yearless_date_candidate_years(
+        self,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> List[int]:
+        """
+        Return configured candidate years for dates that include day/month but
+        omit the year.
+
+        This is intentionally config-driven. A live scheduling assistant can
+        omit this config and keep the old "next future occurrence" behavior.
+        A sheet-backed/test assistant can declare the availability calendar
+        years it actually contains, so a phrase like "7 يونيو" resolves to a
+        real configured calendar year instead of silently rolling to next year.
+        """
+        config = config or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
+
+        nested = date_resolution.get("yearless_date_resolution", {})
+        if not isinstance(nested, dict):
+            nested = {}
+
+        candidate_values: List[Any] = []
+
+        for source in [nested, date_resolution, config]:
+            if not isinstance(source, dict):
+                continue
+            for key in [
+                "candidate_years",
+                "yearless_date_candidate_years",
+                "availability_candidate_years",
+                "availability_calendar_years",
+                "available_date_years",
+                "calendar_years",
+            ]:
+                value = source.get(key)
+                if isinstance(value, list):
+                    candidate_values.extend(value)
+                elif isinstance(value, str):
+                    candidate_values.extend(re.split(r"[,\s]+", value.strip()))
+                elif value is not None:
+                    candidate_values.append(value)
+
+        years: List[int] = []
+        for value in candidate_values:
+            try:
+                year = int(str(value).strip())
+            except Exception:
+                continue
+            if 1900 <= year <= 2200 and year not in years:
+                years.append(year)
+
+        return years
+
+    def resolve_yearless_day_month_date(
+        self,
+        day: int,
+        month: int,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+        source: str = "",
+    ) -> str:
+        """
+        Resolve a day/month expression with no year.
+
+        Default behavior is backward compatible: use current year and roll to
+        next year if the date has passed. If the assistant config declares
+        candidate availability/calendar years, prefer those configured years in
+        order. This keeps the behavior multi-tenant and avoids hardcoded dates.
+        """
+        config = config or {}
+        date_resolution = config.get("date_resolution", {})
+        if not isinstance(date_resolution, dict):
+            date_resolution = {}
+
+        nested = date_resolution.get("yearless_date_resolution", {})
+        if not isinstance(nested, dict):
+            nested = {}
+
+        candidate_years = self.yearless_date_candidate_years(today, config)
+
+        if candidate_years:
+            for year in candidate_years:
+                try:
+                    return datetime(year, month, day).date().isoformat()
+                except ValueError:
+                    continue
+            return ""
+
+        # Backward-compatible live scheduling behavior when no candidate year
+        # is configured for this assistant.
+        try:
+            candidate = datetime(today.year, month, day).date()
+        except ValueError:
+            return ""
+
+        rollover = nested.get(
+            "roll_to_next_year_when_past",
+            date_resolution.get("roll_yearless_dates_to_future_when_past", True),
+        )
+        if isinstance(rollover, str):
+            rollover = rollover.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        if rollover is not False and candidate < today:
+            try:
+                candidate = datetime(today.year + 1, month, day).date()
+            except ValueError:
+                return ""
+
+        return candidate.isoformat()
+
     def parse_iso_date(self, raw: str) -> str:
         match = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", raw)
 
@@ -3766,7 +4208,7 @@ class BookingSubagent:
             if year < 100:
                 year += 2000
         else:
-            year = today.year
+            year = None
 
         date_resolution = config.get("date_resolution", {})
         if not isinstance(date_resolution, dict):
@@ -3791,18 +4233,74 @@ class BookingSubagent:
             else:
                 day, month = first, second
 
-            try:
-                candidate = datetime(year, month, day).date()
-            except ValueError:
-                continue
-
-            if not year_text and candidate < today:
+            if year_text:
                 try:
-                    candidate = datetime(year + 1, month, day).date()
+                    candidate = datetime(year, month, day).date()
                 except ValueError:
                     continue
+                return candidate.isoformat()
 
-            return candidate.isoformat()
+            resolved = self.resolve_yearless_day_month_date(
+                day=day,
+                month=month,
+                today=today,
+                config=config,
+                source="numeric_date",
+            )
+            if resolved:
+                return resolved
+
+        return ""
+
+
+    def parse_word_numeric_date(
+        self,
+        raw: str,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = self.get_date_resolution_config(config)
+        if not bool(date_resolution.get("allow_word_numeric_dates", True)):
+            return ""
+
+        tokens = self.tokenize_date_text_with_spans(raw, normalization)
+        if len(tokens) < 2:
+            return ""
+
+        connectors = self.configured_date_connector_tokens(config, normalization)
+        try:
+            max_connector_steps = int(date_resolution.get("word_numeric_max_connector_tokens", 3) or 3)
+        except Exception:
+            max_connector_steps = 3
+
+        for idx in range(len(tokens) - 1):
+            first = tokens[idx]
+            second = self.nearest_non_connector_token(tokens, idx + 1, 1, connectors, max_connector_steps)
+            if not second:
+                continue
+            day = self.parse_configured_integer_token(first.get("text"), config, normalization, 1, 31)
+            month = self.parse_configured_integer_token(
+                second.get("text"),
+                config,
+                normalization,
+                1,
+                12,
+                keys=["month_number_terms", "number_terms", "date_number_terms"],
+            )
+            if day is None or month is None:
+                continue
+            resolved = self.resolve_yearless_day_month_date(
+                day=day,
+                month=month,
+                today=today,
+                config=config,
+                source="configured_word_numeric_date",
+            )
+            if resolved:
+                return resolved
 
         return ""
 
@@ -3900,9 +4398,20 @@ class BookingSubagent:
                 continue
 
             try:
-                day = int(match.group(int(item.get("day_group", 1))))
+                day_text = match.group(int(item.get("day_group", 1)))
                 month_text = match.group(int(item.get("month_group", 2)))
             except Exception:
+                continue
+
+            day = self.parse_configured_integer_token(
+                token=day_text,
+                config=config,
+                normalization=normalization,
+                min_value=1,
+                max_value=31,
+            )
+
+            if day is None:
                 continue
 
             year_text = ""
@@ -3914,24 +4423,28 @@ class BookingSubagent:
                 year_text = ""
 
             month = resolve_month(month_text)
+            if not month:
+                month = self.resolve_configured_month_token(month_text, config, normalization)
 
             if not month:
                 continue
 
-            year = int(year_text) if str(year_text or "").strip() else today.year
-
-            try:
-                candidate = datetime(year, month, day).date()
-            except ValueError:
-                continue
-
-            if not year_text and candidate < today:
+            if str(year_text or "").strip():
                 try:
-                    candidate = datetime(year + 1, month, day).date()
+                    candidate = datetime(int(year_text), month, day).date()
                 except ValueError:
                     continue
+                return candidate.isoformat()
 
-            return candidate.isoformat()
+            resolved = self.resolve_yearless_day_month_date(
+                day=day,
+                month=month,
+                today=today,
+                config=config,
+                source="named_month_date",
+            )
+            if resolved:
+                return resolved
 
         return ""
 
