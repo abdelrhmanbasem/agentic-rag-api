@@ -568,7 +568,8 @@
       "If car_brand, car_class, or car_model_year are configured as required create_booking inputs, collect them before create_booking and ask for them naturally together when missing.",
       "Before final booking creation, if vehicle details are missing and configured as required, ask for ماركة العربية، الفئة/النسخة، وموديل السنة. Do not confirm booking until they are present.",
       "For yearless named-month dates like 7 يونيو or ٧ يونيو, booking.date_resolution.yearless_date_resolution.candidate_years controls which year to use before rolling to next year. For this assistant, prefer the configured availability calendar year so 7 يونيو resolves to 2026-06-07 instead of a future year with no sheet rows.",
-      "Date understanding must support configured Arabic/English natural date forms: digits, Arabic digits, named months, English month names/abbreviations, day-month/month-day order, ordinal suffixes like 7th, Arabic/English number words, and word-numeric day/month forms when configured. Python must read these forms from date_resolution config, not hardcode demo dates."
+      "Date understanding must support configured Arabic/English natural date forms: digits, Arabic digits, named months, English month names/abbreviations, day-month/month-day order, ordinal suffixes like 7th, Arabic/English number words, and word-numeric day/month forms when configured. Python must read these forms from date_resolution config, not hardcode demo dates.",
+      "If a customer provides a configured word-based named-month date such as سبعة يونيو or السابع من يونيو during awaiting_date, normalize it to appointment_date and check availability for the known branch instead of asking for the date again."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -3213,7 +3214,7 @@
           ],
           "yearless_date_resolution": {
             "enabled": true,
-            "version": "6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding",
+            "version": "6.74-token-named-month-date-resolution-no-hardcoding",
             "description": "For day/month dates with no explicit year, prefer configured availability/calendar years before rolling to next year. This keeps sheet-backed assistants aligned with their real configured availability horizon while future assistants can omit the setting for live future-only behavior.",
             "candidate_years": [
               2026
@@ -3230,7 +3231,7 @@
           "availability_calendar_years": [
             2026
           ],
-          "version": "6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding",
+          "version": "6.74-token-named-month-date-resolution-no-hardcoding",
           "natural_date_candidate_extraction": {
             "enabled": true,
             "description": "Extract date candidates from configured month names plus configured number/ordinal terms, covering digit and word dates in Arabic and English without Python hardcoding language phrases.",
@@ -4481,6 +4482,13 @@
               "twelfth",
               "twelve"
             ]
+          },
+          "token_named_month_resolution": {
+            "enabled": true,
+            "version": "6.74-token-named-month-date-resolution-no-hardcoding",
+            "description": "Resolve configured token-based named-month dates such as configured number/ordinal + configured month, configured month + configured number/ordinal, with configured connector tokens. Language terms remain in config; Python only handles generic token mechanics.",
+            "max_connector_tokens": 3,
+            "max_year_connector_tokens": 2
           }
         },
         "missing_template_by_paths": {
