@@ -31,6 +31,7 @@ from app.subagents.base import (
 # Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
 # Architecture patch: 6.56-configured-date-candidate-priority-no-hardcoding
 # Architecture patch: 6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding
+# Architecture patch: 6.74-token-named-month-date-resolution-no-hardcoding
 # Architecture patch: 6.72-comprehensive-configured-date-resolution-no-hardcoding
 # Architecture patch: 6.71-configured-yearless-date-resolution-no-hardcoding
 
@@ -4305,6 +4306,216 @@ class BookingSubagent:
 
         return ""
 
+    def parse_year_token(
+        self,
+        token: Any,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        """
+        Parse a configured date year token generically.
+
+        This method only recognizes explicit 4-digit years. It does not encode
+        any domain date, month, or language phrase.
+        """
+        normalization = normalization or {}
+        raw = normalize_digits(str(token or "").strip(), normalization.get("digit_map", {}))
+        normalized = normalize_text(raw, normalization)
+        normalized = re.sub(r"^[\s:：\-–—ـ]+|[\s،,.!?؟:;]+$", "", normalized).strip()
+
+        if not re.fullmatch(r"\d{4}", normalized):
+            return None
+
+        try:
+            year = int(normalized)
+        except Exception:
+            return None
+
+        if 1900 <= year <= 2200:
+            return year
+
+        return None
+
+    def first_year_token_near_date_tokens(
+        self,
+        tokens: List[Dict[str, Any]],
+        indexes: List[int],
+        connectors: set,
+        normalization: Optional[Dict[str, Any]] = None,
+        max_steps: int = 2,
+    ) -> Optional[int]:
+        """
+        Find an explicit 4-digit year next to a detected day/month token pair.
+
+        The logic is positional and generic. It skips configured connector
+        tokens such as "of", "من", or "the", then accepts only a 4-digit year.
+        """
+        normalization = normalization or {}
+        if not tokens or not indexes:
+            return None
+
+        left = min(indexes)
+        right = max(indexes)
+
+        for start, direction in [(right + 1, 1), (left - 1, -1)]:
+            token = self.nearest_non_connector_token(
+                tokens=tokens,
+                start_index=start,
+                direction=direction,
+                connectors=connectors,
+                max_steps=max_steps,
+            )
+            if not token:
+                continue
+            year = self.parse_year_token(token.get("text"), normalization)
+            if year:
+                return year
+
+        return None
+
+    def resolve_day_month_with_optional_year(
+        self,
+        day: int,
+        month: int,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+        source: str = "configured_token_named_month_date",
+        year: Optional[int] = None,
+    ) -> str:
+        """
+        Resolve a day/month pair with an optional explicit year.
+
+        If no year is present, defer to the configured yearless resolver so
+        sheet-backed assistants can use configured availability years and live
+        assistants can keep the normal next-future-occurrence behavior.
+        """
+        if year is not None:
+            try:
+                return datetime(int(year), int(month), int(day)).date().isoformat()
+            except Exception:
+                return ""
+
+        return self.resolve_yearless_day_month_date(
+            day=day,
+            month=month,
+            today=today,
+            config=config,
+            source=source,
+        )
+
+    def parse_named_month_date_from_configured_tokens(
+        self,
+        raw: str,
+        today,
+        config: Optional[Dict[str, Any]] = None,
+        normalization: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Resolve configured token-based named-month dates.
+
+        This is the root fix for word dates such as:
+        - configured-number + configured-month
+        - configured-ordinal + connector + configured-month
+        - configured-month + configured-number / ordinal
+
+        The language is entirely supplied by domain_bundle.json through
+        month_terms, number_terms, ordinal_day_terms, and date_connector_terms.
+        Python only provides generic token mechanics.
+        """
+        config = config or {}
+        normalization = normalization or {}
+        date_resolution = self.get_date_resolution_config(config)
+
+        token_cfg = date_resolution.get("token_named_month_resolution", {})
+        if isinstance(token_cfg, dict) and token_cfg.get("enabled", True) is False:
+            return ""
+
+        tokens = self.tokenize_date_text_with_spans(raw, normalization)
+        if not tokens:
+            return ""
+
+        connectors = self.configured_date_connector_tokens(config, normalization)
+        month_terms_by_number = self.configured_month_terms(config)
+        month_token_to_number: Dict[str, int] = {}
+        for month, terms in month_terms_by_number.items():
+            for term in terms:
+                normalized_term = normalize_text(str(term or ""), normalization)
+                if normalized_term:
+                    month_token_to_number[normalized_term] = month
+
+        try:
+            max_connector_steps = int(
+                token_cfg.get(
+                    "max_connector_tokens",
+                    date_resolution.get("word_numeric_max_connector_tokens", 3),
+                ) or 3
+            )
+        except Exception:
+            max_connector_steps = 3
+
+        try:
+            max_year_steps = int(token_cfg.get("max_year_connector_tokens", 2) or 2)
+        except Exception:
+            max_year_steps = 2
+
+        for month_index, token in enumerate(tokens):
+            month_text = str(token.get("text") or "")
+            month = month_token_to_number.get(month_text)
+            if not month:
+                month = self.resolve_configured_month_token(month_text, config, normalization)
+
+            if not month:
+                continue
+
+            directions = [-1, 1]
+            for direction in directions:
+                day_token = self.nearest_non_connector_token(
+                    tokens=tokens,
+                    start_index=month_index + direction,
+                    direction=direction,
+                    connectors=connectors,
+                    max_steps=max_connector_steps,
+                )
+                if not day_token:
+                    continue
+
+                day = self.parse_configured_integer_token(
+                    token=day_token.get("text"),
+                    config=config,
+                    normalization=normalization,
+                    min_value=1,
+                    max_value=31,
+                )
+
+                if day is None:
+                    continue
+
+                try:
+                    day_index = tokens.index(day_token)
+                except ValueError:
+                    day_index = month_index + direction
+
+                year = self.first_year_token_near_date_tokens(
+                    tokens=tokens,
+                    indexes=[month_index, day_index],
+                    connectors=connectors,
+                    normalization=normalization,
+                    max_steps=max_year_steps,
+                )
+
+                resolved = self.resolve_day_month_with_optional_year(
+                    day=day,
+                    month=month,
+                    today=today,
+                    config=config,
+                    source="configured_token_named_month_date",
+                    year=year,
+                )
+
+                if resolved:
+                    return resolved
+
+        return ""
+
     def parse_named_month_date(
         self,
         raw: str,
@@ -4328,6 +4539,16 @@ class BookingSubagent:
             return ""
 
         normalized = normalize_text(raw, normalization)
+
+        token_resolved = self.parse_named_month_date_from_configured_tokens(
+            raw=raw,
+            today=today,
+            config=config,
+            normalization=normalization
+        )
+
+        if token_resolved:
+            return token_resolved
 
         def resolve_month(month_value: Any) -> Optional[int]:
             month_name = normalize_text(str(month_value or ""), normalization)
