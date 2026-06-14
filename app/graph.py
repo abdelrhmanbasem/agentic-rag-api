@@ -1,3 +1,4 @@
+# Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
@@ -1538,17 +1539,12 @@ def has_known_branch(
     """
     Return whether a location/branch-like context is already known.
 
-    The checked paths are configured per assistant so non-service-center
-    assistants can use their own location/property/store variables without
-    changing Python.
+    The checked paths are configured per assistant. If an assistant does not
+    declare known_branch_paths, this helper returns False instead of assuming a
+    service-center field schema.
     """
     agent_config = agent_config or {}
     paths = as_string_list(agent_config.get("known_branch_paths", []))
-
-    # Backward-compatible default for existing configs; future assistants should
-    # set known_branch_paths explicitly in their bundle.
-    if not paths:
-        paths = ["selected_branch", "location_branch", "nearest_branch"]
 
     return any(
         is_present(deep_get(variables, path, ""))
@@ -5754,12 +5750,29 @@ def first_present(*values: Any) -> Any:
     return ""
 
 
-def get_known_branch_from_variables(variables: Dict[str, Any]) -> str:
-    return str(first_present(
-        deep_get(variables, "selected_branch", ""),
-        deep_get(variables, "location_branch", ""),
-        deep_get(variables, "nearest_branch", ""),
-    ) or "").strip()
+def get_known_branch_from_variables(
+    variables: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Return the first configured location/branch-like value.
+
+    Uses assistant.known_branch_paths, so future assistants can use their own
+    location/property/store paths without Python changes. If no paths are
+    configured, no branch value is guessed.
+    """
+    agent_config = agent_config or {}
+    paths = as_string_list(agent_config.get("known_branch_paths", []))
+
+    for path in paths:
+        clean_path = str(path or "").strip()
+        if not clean_path:
+            continue
+        value = deep_get(variables, clean_path, "")
+        if is_present(value):
+            return str(value).strip()
+
+    return ""
 
 
 def normalize_direct_tool_arguments(
@@ -5868,63 +5881,93 @@ def normalize_direct_tool_arguments(
     if applied_config_rule:
         return args
 
-    if op in {"list_available_slots", "check_availability", "create_booking"}:
-        branch = first_present(
-            args.get("branch"),
-            get_known_branch_from_variables(variables),
-        )
+    legacy_groups = agent_config.get("legacy_tool_argument_operation_groups", {})
+    legacy_fields = agent_config.get("legacy_tool_argument_field_config", {})
+    if not isinstance(legacy_groups, dict) or legacy_groups.get("enabled") is not True:
+        return args
+    if not isinstance(legacy_fields, dict) or legacy_fields.get("enabled") is not True:
+        return args
 
-        if branch:
-            args["branch"] = branch
+    location_and_date_ops = set(as_string_list(legacy_groups.get("location_and_date_ops", [])))
+    time_ops = set(as_string_list(legacy_groups.get("time_ops", [])))
+    create_ops = set(as_string_list(legacy_groups.get("create_ops", [])))
 
-        date_value = first_present(
-            args.get("date"),
-            args.get("appointment_date"),
-            deep_get(variables, "appointment_date", ""),
-            deep_get(variables, "date", ""),
-        )
+    if op in location_and_date_ops:
+        branch_arg = str(legacy_fields.get("branch_arg") or "").strip()
+        if branch_arg:
+            branch = first_present(
+                args.get(branch_arg),
+                get_known_branch_from_variables(variables, agent_config),
+            )
+            if is_present(branch):
+                args[branch_arg] = branch
 
-        if date_value:
-            args["date"] = date_value
+        date_arg = str(legacy_fields.get("date_arg") or "").strip()
+        date_paths = as_string_list(legacy_fields.get("date_paths", []))
+        date_argument_aliases = as_string_list(legacy_fields.get("date_argument_aliases", []))
+        if date_arg:
+            date_value = first_present(
+                args.get(date_arg),
+                *[args.get(alias) for alias in date_argument_aliases if alias],
+                *[deep_get(variables, path, "") for path in date_paths if path],
+            )
+            if is_present(date_value):
+                args[date_arg] = date_value
 
-        date_text = first_present(
-            args.get("date_text"),
-            deep_get(variables, "date_text", ""),
-        )
+        date_text_arg = str(legacy_fields.get("date_text_arg") or "").strip()
+        date_text_paths = as_string_list(legacy_fields.get("date_text_paths", []))
+        if date_text_arg:
+            date_text = first_present(
+                args.get(date_text_arg),
+                *[deep_get(variables, path, "") for path in date_text_paths if path],
+            )
+            if is_present(date_text):
+                args[date_text_arg] = date_text
 
-        if date_text:
-            args["date_text"] = date_text
+    if op in time_ops:
+        time_arg = str(legacy_fields.get("time_arg") or "").strip()
+        time_paths = as_string_list(legacy_fields.get("time_paths", []))
+        if time_arg:
+            time_value = first_present(
+                args.get(time_arg),
+                *[deep_get(variables, path, "") for path in time_paths if path],
+            )
+            if is_present(time_value):
+                args[time_arg] = time_value
 
-    if op in {"check_availability", "create_booking"}:
-        time_value = first_present(
-            args.get("time"),
-            deep_get(variables, "appointment_time", ""),
-            deep_get(variables, "booking.pending.time", ""),
-        )
-
-        if time_value:
-            args["time"] = time_value
-
-    if op == "create_booking":
-        pending = deep_get(variables, "booking.pending", {})
+    if op in create_ops:
+        pending_path = str(legacy_fields.get("pending_path") or "").strip()
+        pending_fields = as_string_list(legacy_fields.get("pending_fields", []))
+        pending = deep_get(variables, pending_path, {}) if pending_path else {}
         if isinstance(pending, dict):
-            for key in ["branch", "date", "date_text", "time", "section"]:
-                if not is_present(args.get(key)) and is_present(pending.get(key)):
-                    args[key] = pending.get(key)
+            for field in pending_fields:
+                field_name = str(field or "").strip()
+                if field_name and not is_present(args.get(field_name)) and is_present(pending.get(field_name)):
+                    args[field_name] = pending.get(field_name)
 
-        profile = deep_get(variables, "customer_profile", {})
-        if isinstance(profile, dict):
-            if not is_present(args.get("full_name")) and is_present(profile.get("full_name")):
-                args["full_name"] = profile.get("full_name")
-            if not is_present(args.get("phone")) and is_present(profile.get("phone")):
-                args["phone"] = profile.get("phone")
-            if not is_present(args.get("plate_number")) and is_present(profile.get("plate_number")):
-                args["plate_number"] = profile.get("plate_number")
+        profile_path = str(legacy_fields.get("profile_path") or "").strip()
+        profile_field_map = legacy_fields.get("profile_field_map", {})
+        profile = deep_get(variables, profile_path, {}) if profile_path else {}
+        if isinstance(profile, dict) and isinstance(profile_field_map, dict):
+            for arg_name, source_path in profile_field_map.items():
+                arg_name = str(arg_name or "").strip()
+                source_path = str(source_path or "").strip()
+                if not arg_name or not source_path or is_present(args.get(arg_name)):
+                    continue
+                value = deep_get(profile, source_path, "") if "." in source_path else profile.get(source_path)
+                if is_present(value):
+                    args[arg_name] = value
 
-        if not is_present(args.get("customer_confirmed_booking")):
-            confirmed = deep_get(variables, "customer_confirmed_booking", None)
-            if confirmed is not None:
-                args["customer_confirmed_booking"] = confirmed
+        confirmation_arg = str(legacy_fields.get("confirmation_arg") or "").strip()
+        confirmation_paths = as_string_list(legacy_fields.get("confirmation_paths", []))
+        if confirmation_arg and not is_present(args.get(confirmation_arg)):
+            confirmed = first_present(*[
+                deep_get(variables, path, "")
+                for path in confirmation_paths
+                if path
+            ])
+            if is_present(confirmed) or confirmed is False:
+                args[confirmation_arg] = confirmed
 
     return args
 
