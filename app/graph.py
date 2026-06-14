@@ -1,5 +1,5 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
-# Architecture patch: 6.69-post-tool-required-input-continuation-no-hardcoding-graph
+# Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
@@ -3240,6 +3240,13 @@ def get_active_configured_flow_subagent_id(
     )
     if closing_target:
         return closing_target
+
+    continuation_target = get_active_post_tool_required_input_continuation_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+    )
+    if continuation_target:
+        return continuation_target
 
     if booking_pending_requires_executor(
         agent_config=agent_config,
@@ -6964,6 +6971,111 @@ def get_operation_missing_input_response_brief(
     return {}
 
 
+
+
+def configured_post_tool_continuation_state_paths(agent_config: Dict[str, Any]) -> List[str]:
+    """
+    Generic internal continuation-state paths.
+
+    These paths are not domain concepts; they store a paused downstream action
+    after a prior executor completed and a configured required input was still
+    missing. Future assistants may override the path list in config.
+    """
+    if not isinstance(agent_config, dict):
+        return ["post_tool_required_input_continuation"]
+
+    cfg = agent_config.get("post_tool_required_input_continuation_state")
+    if not isinstance(cfg, dict):
+        cfg = agent_config.get("post_required_input_continuation_state")
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    paths = as_string_list(cfg.get("state_paths", []))
+    if paths:
+        return paths
+
+    single_path = str(cfg.get("state_path") or "").strip()
+    if single_path:
+        return [single_path]
+
+    return ["post_tool_required_input_continuation"]
+
+
+def build_post_tool_continuation_state_payload(
+    rule: Dict[str, Any],
+    source_subagent_id: str,
+    target_subagent_id: str,
+    tool_name: str,
+    operation: str,
+    arguments: Dict[str, Any],
+    missing_inputs: List[str],
+) -> Dict[str, Any]:
+    return {
+        "enabled": True,
+        "rule_id": str(rule.get("id") or ""),
+        "source_subagent_id": source_subagent_id,
+        "target_subagent_id": target_subagent_id,
+        "tool_name": tool_name,
+        "operation": operation,
+        "arguments": dict(arguments or {}),
+        "missing_inputs": [str(item) for item in missing_inputs or [] if str(item or "").strip()],
+    }
+
+
+def get_active_post_tool_required_input_continuation_subagent_id(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+) -> str:
+    """
+    Route a follow-up turn back into the downstream executor that previously
+    paused because required inputs were missing.
+
+    The stored continuation is generic and config/path driven. It is intentionally
+    not tied to service centers, bookings, dates, branches, or any specific
+    assistant. The target executor is used only while the configured operation
+    still has missing inputs after normal argument injection from current state.
+    """
+    if not isinstance(variables, dict):
+        return ""
+
+    for state_path in configured_post_tool_continuation_state_paths(agent_config):
+        state_value = deep_get(variables, str(state_path or "").strip(), None)
+        if not isinstance(state_value, dict) or state_value.get("enabled") is False:
+            continue
+
+        target_id = unify_subagent_id(str(state_value.get("target_subagent_id") or "").strip())
+        if not target_id or target_id not in SUBAGENT_EXECUTORS:
+            continue
+
+        target_config = get_subagent_config(agent_config, target_id)
+        if isinstance(target_config, dict) and target_config.get("enabled", True) is False:
+            continue
+
+        operation = str(state_value.get("operation") or "").strip()
+        tool_name = str(state_value.get("tool_name") or "").strip()
+        arguments = state_value.get("arguments") if isinstance(state_value.get("arguments"), dict) else {}
+
+        if not operation:
+            return target_id
+        if not tool_name:
+            tool_name = find_tool_name_for_operation(agent_config, operation)
+        if not tool_name:
+            return target_id
+
+        validation = validate_direct_tool_request(
+            tool_name=tool_name,
+            operation=operation,
+            arguments=arguments,
+            variables=variables,
+            agent_config=agent_config,
+        )
+
+        if validation.get("missing_inputs"):
+            return target_id
+
+    return ""
+
+
 def merge_response_briefs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(base or {}) if isinstance(base, dict) else {}
     if not isinstance(override, dict):
@@ -7031,9 +7143,27 @@ def build_post_tool_missing_input_continuation(
     if rule.get("requires_missing_inputs", True) is False:
         return {}
 
+    variable_updates = dict(validation.get("variable_updates", {}) or {})
+
+    continuation_state = build_post_tool_continuation_state_payload(
+        rule=rule,
+        source_subagent_id=source_subagent_id,
+        target_subagent_id=target_subagent_id,
+        tool_name=tool_name,
+        operation=operation,
+        arguments=validation.get("arguments", initial_arguments),
+        missing_inputs=missing_inputs,
+    )
+
+    continuation_state_path = str(rule.get("continuation_state_path") or "").strip()
+    if not continuation_state_path:
+        continuation_state_path = configured_post_tool_continuation_state_paths(agent_config)[0]
+    if continuation_state_path:
+        variable_updates[continuation_state_path] = continuation_state
+
     updated_variables = apply_subagent_variable_patch(
         variables,
-        validation.get("variable_updates", {}) or {},
+        variable_updates,
         [],
         assistant_config=agent_config,
     )
