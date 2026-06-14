@@ -30,6 +30,7 @@ from app.subagents.base import (
 # Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
 # Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
 # Architecture patch: 6.56-configured-date-candidate-priority-no-hardcoding
+# Architecture patch: 6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding
 # Architecture patch: 6.72-comprehensive-configured-date-resolution-no-hardcoding
 # Architecture patch: 6.71-configured-yearless-date-resolution-no-hardcoding
 
