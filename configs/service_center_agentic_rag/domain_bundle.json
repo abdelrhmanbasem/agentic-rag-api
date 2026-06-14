@@ -566,7 +566,9 @@
       "If an availability request includes a named-month date such as 7 يونيو or ٧ يونيو and branch/location is missing, acknowledge the date naturally and ask only for the branch or area. Do not ask for the date again.",
       "For availability requests with a known date but missing branch, use wording like: تمام، يوم {date_text}. تحب أي فرع أو تقولي منطقتك عشان أجيبلك أقرب فرع؟",
       "If car_brand, car_class, or car_model_year are configured as required create_booking inputs, collect them before create_booking and ask for them naturally together when missing.",
-      "Before final booking creation, if vehicle details are missing and configured as required, ask for ماركة العربية، الفئة/النسخة، وموديل السنة. Do not confirm booking until they are present."
+      "Before final booking creation, if vehicle details are missing and configured as required, ask for ماركة العربية، الفئة/النسخة، وموديل السنة. Do not confirm booking until they are present.",
+      "For yearless named-month dates like 7 يونيو or ٧ يونيو, booking.date_resolution.yearless_date_resolution.candidate_years controls which year to use before rolling to next year. For this assistant, prefer the configured availability calendar year so 7 يونيو resolves to 2026-06-07 instead of a future year with no sheet rows.",
+      "Date understanding must support configured Arabic/English natural date forms: digits, Arabic digits, named months, English month names/abbreviations, day-month/month-day order, ordinal suffixes like 7th, Arabic/English number words, and word-numeric day/month forms when configured. Python must read these forms from date_resolution config, not hardcode demo dates."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -1612,6 +1614,36 @@
           "this week sunday"
         ],
         "date_extraction_patterns": [
+          {
+            "regex": "([0-9٠-٩۰-۹]{1,2}(?:st|nd|rd|th)?\\s*(?:من|of|the|شهر)?\\s*(?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_digit_named_month_date",
+            "note": "v6.72 broad digit day + configured month name/abbr."
+          },
+          {
+            "regex": "((?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)\\s*(?:the|من|of)?\\s*[0-9٠-٩۰-۹]{1,2}(?:st|nd|rd|th)?(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_month_digit_date",
+            "note": "v6.72 broad configured month name/abbr + digit day."
+          },
+          {
+            "regex": "([A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3}\\s*(?:من|of|the|شهر)?\\s*(?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_word_day_named_month_date",
+            "note": "v6.72 word/ordinal day + configured month name/abbr."
+          },
+          {
+            "regex": "((?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)\\s*(?:the|من|of)?\\s*[A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3}(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_month_word_day_date",
+            "note": "v6.72 configured month name/abbr + word/ordinal day."
+          },
+          {
+            "regex": "((?:يوم|تاريخ|بتاريخ|date|on|for)\\s+[A-Za-z\\u0600-\\u06FF0-9٠-٩۰-۹]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF0-9٠-٩۰-۹]+){0,3})",
+            "group": 1,
+            "priority": "comprehensive_contextual_word_numeric_date",
+            "note": "v6.72 context marker plus word/numeric day-month."
+          },
           {
             "regex": "(\\d{4}-\\d{1,2}-\\d{1,2})",
             "group": 1
@@ -2887,6 +2919,30 @@
         },
         "explicit_date_patterns": [
           {
+            "regex": "([0-9٠-٩۰-۹]{1,2}(?:st|nd|rd|th)?\\s*(?:من|of|the|شهر)?\\s*(?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_digit_named_month_date",
+            "note": "v6.72 broad digit day + configured month name/abbr."
+          },
+          {
+            "regex": "((?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)\\s*(?:the|من|of)?\\s*[0-9٠-٩۰-۹]{1,2}(?:st|nd|rd|th)?(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_month_digit_date",
+            "note": "v6.72 broad configured month name/abbr + digit day."
+          },
+          {
+            "regex": "([A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3}\\s*(?:من|of|the|شهر)?\\s*(?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_word_day_named_month_date",
+            "note": "v6.72 word/ordinal day + configured month name/abbr."
+          },
+          {
+            "regex": "((?:يناير|january|jan|jan\\.|فبراير|february|feb|feb\\.|مارس|march|mar|mar\\.|ابريل|أبريل|إبريل|april|apr|apr\\.|مايو|may|يونيو|يونيه|جوان|june|jun|jun\\.|يوليو|يوليه|جويلية|july|jul|jul\\.|اغسطس|أغسطس|اوغسطس|أوغسطس|august|aug|aug\\.|سبتمبر|september|sept|sep|sep\\.|اكتوبر|أكتوبر|إكتوبر|october|oct|oct\\.|نوفمبر|november|nov|nov\\.|ديسمبر|december|dec|dec\\.)\\s*(?:the|من|of)?\\s*[A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3}(?:\\s+[0-9٠-٩۰-۹]{4})?)",
+            "group": 1,
+            "priority": "comprehensive_month_word_day_date",
+            "note": "v6.72 configured month name/abbr + word/ordinal day."
+          },
+          {
             "regex": "\\b(\\d{4}-\\d{1,2}-\\d{1,2})\\b",
             "group": 1
           },
@@ -3049,23 +3105,28 @@
             "1": [
               "يناير",
               "january",
-              "jan"
+              "jan",
+              "jan."
             ],
             "2": [
               "فبراير",
               "february",
-              "feb"
+              "feb",
+              "feb."
             ],
             "3": [
               "مارس",
               "march",
-              "mar"
+              "mar",
+              "mar."
             ],
             "4": [
               "ابريل",
               "أبريل",
               "april",
-              "apr"
+              "apr",
+              "إبريل",
+              "apr."
             ],
             "5": [
               "مايو",
@@ -3075,56 +3136,1352 @@
               "يونيو",
               "يونيه",
               "june",
-              "jun"
+              "jun",
+              "جوان",
+              "jun."
             ],
             "7": [
               "يوليو",
               "يوليه",
               "july",
-              "jul"
+              "jul",
+              "جويلية",
+              "jul."
             ],
             "8": [
               "اغسطس",
               "أغسطس",
               "august",
-              "aug"
+              "aug",
+              "اوغسطس",
+              "أوغسطس",
+              "aug."
             ],
             "9": [
               "سبتمبر",
               "september",
-              "sep"
+              "sep",
+              "sept",
+              "sep."
             ],
             "10": [
               "اكتوبر",
               "أكتوبر",
               "october",
-              "oct"
+              "oct",
+              "إكتوبر",
+              "oct."
             ],
             "11": [
               "نوفمبر",
               "november",
-              "nov"
+              "nov",
+              "nov."
             ],
             "12": [
               "ديسمبر",
               "december",
-              "dec"
+              "dec",
+              "dec."
             ]
           },
           "named_month_patterns": [
             {
-              "regex": "\\b(\\d{1,2})\\s+([^\\s\\d]+)(?:\\s+(\\d{4}))?\\b",
+              "regex": "\\b(\\d{1,2}(?:st|nd|rd|th)?)\\s*(?:من|of|the|شهر)?\\s*([^\\s\\d،,.!?؟]+)(?:\\s*,?\\s*(\\d{4}))?\\b",
               "day_group": 1,
               "month_group": 2,
               "year_group": 3
             },
             {
-              "regex": "\\b([^\\s\\d]+)\\s+(\\d{1,2})(?:\\s+(\\d{4}))?\\b",
+              "regex": "\\b([^\\s\\d،,.!?؟]+)\\s*(?:the|من|of)?\\s*(\\d{1,2}(?:st|nd|rd|th)?)(?:\\s*,?\\s*(\\d{4}))?\\b",
+              "day_group": 2,
+              "month_group": 1,
+              "year_group": 3
+            },
+            {
+              "regex": "\\b([A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3})\\s*(?:من|of|the|شهر)?\\s*([^\\s\\d،,.!?؟]+)(?:\\s*,?\\s*(\\d{4}))?\\b",
+              "day_group": 1,
+              "month_group": 2,
+              "year_group": 3
+            },
+            {
+              "regex": "\\b([^\\s\\d،,.!?؟]+)\\s*(?:the|من|of)?\\s*([A-Za-z\\u0600-\\u06FF]+(?:\\s+(?:و\\s*)?[A-Za-z\\u0600-\\u06FF]+){0,3})(?:\\s*,?\\s*(\\d{4}))?\\b",
               "day_group": 2,
               "month_group": 1,
               "year_group": 3
             }
-          ]
+          ],
+          "yearless_date_resolution": {
+            "enabled": true,
+            "version": "6.72-comprehensive-configured-date-resolution-no-hardcoding",
+            "description": "For day/month dates with no explicit year, prefer configured availability/calendar years before rolling to next year. This keeps sheet-backed assistants aligned with their real configured availability horizon while future assistants can omit the setting for live future-only behavior.",
+            "candidate_years": [
+              2026
+            ],
+            "applies_to": [
+              "named_month_date",
+              "numeric_date"
+            ],
+            "fallback_when_no_candidate_years": "next_future_occurrence"
+          },
+          "yearless_date_candidate_years": [
+            2026
+          ],
+          "availability_calendar_years": [
+            2026
+          ],
+          "version": "6.72-comprehensive-configured-date-resolution-no-hardcoding",
+          "natural_date_candidate_extraction": {
+            "enabled": true,
+            "description": "Extract date candidates from configured month names plus configured number/ordinal terms, covering digit and word dates in Arabic and English without Python hardcoding language phrases.",
+            "max_connector_tokens": 3
+          },
+          "allow_word_numeric_dates": true,
+          "word_numeric_dates_require_context_marker": false,
+          "word_numeric_max_connector_tokens": 3,
+          "date_connector_terms": [
+            "من",
+            "في",
+            "شهر",
+            "بتاريخ",
+            "يوم",
+            "تاريخ",
+            "on",
+            "for",
+            "of",
+            "the",
+            "at",
+            "date"
+          ],
+          "date_context_markers": [
+            "يوم",
+            "تاريخ",
+            "بتاريخ",
+            "موعد",
+            "معاد",
+            "مواعيد",
+            "المواعيد",
+            "date",
+            "on",
+            "for",
+            "appointment",
+            "appointments",
+            "slots",
+            "availability"
+          ],
+          "number_terms": {
+            "1": [
+              "1",
+              "واحد",
+              "واحدة",
+              "واحده",
+              "اول",
+              "أول",
+              "الأول",
+              "الاول",
+              "اولي",
+              "أولى",
+              "first",
+              "one"
+            ],
+            "2": [
+              "2",
+              "اتنين",
+              "اثنين",
+              "إثنين",
+              "اثنان",
+              "تاني",
+              "ثاني",
+              "التاني",
+              "الثاني",
+              "second",
+              "two"
+            ],
+            "3": [
+              "3",
+              "تلاتة",
+              "تلاته",
+              "تلات",
+              "ثلاثة",
+              "ثلاثه",
+              "ثالث",
+              "التالت",
+              "الثالث",
+              "third",
+              "three"
+            ],
+            "4": [
+              "4",
+              "اربعة",
+              "اربعه",
+              "أربعة",
+              "رابع",
+              "الرابع",
+              "fourth",
+              "four"
+            ],
+            "5": [
+              "5",
+              "خمسة",
+              "خمسه",
+              "خامس",
+              "الخامس",
+              "fifth",
+              "five"
+            ],
+            "6": [
+              "6",
+              "ستة",
+              "سته",
+              "سادس",
+              "السادس",
+              "sixth",
+              "six"
+            ],
+            "7": [
+              "7",
+              "سبعة",
+              "سبعه",
+              "سبع",
+              "سابع",
+              "السابع",
+              "seventh",
+              "seven"
+            ],
+            "8": [
+              "8",
+              "تمنية",
+              "تمانيه",
+              "تمانية",
+              "ثمانية",
+              "ثامنة",
+              "ثامن",
+              "الثامن",
+              "eighth",
+              "eight"
+            ],
+            "9": [
+              "9",
+              "تسعة",
+              "تسعه",
+              "تاسع",
+              "التاسع",
+              "ninth",
+              "nine"
+            ],
+            "10": [
+              "10",
+              "عشرة",
+              "عشره",
+              "عاشر",
+              "العاشر",
+              "tenth",
+              "ten"
+            ],
+            "11": [
+              "11",
+              "حداشر",
+              "احداشر",
+              "أحداشر",
+              "احدى عشر",
+              "إحدى عشر",
+              "احد عشر",
+              "أحد عشر",
+              "الحادي عشر",
+              "حادي عشر",
+              "eleventh",
+              "eleven"
+            ],
+            "12": [
+              "12",
+              "اتناشر",
+              "اثناشر",
+              "اثني عشر",
+              "إثني عشر",
+              "اثنى عشر",
+              "الثاني عشر",
+              "ثاني عشر",
+              "twelfth",
+              "twelve"
+            ],
+            "13": [
+              "13",
+              "تلتاشر",
+              "ثلاثة عشر",
+              "ثالث عشر",
+              "الثالث عشر",
+              "thirteenth",
+              "thirteen"
+            ],
+            "14": [
+              "14",
+              "اربعتاشر",
+              "أربعتاشر",
+              "اربعة عشر",
+              "أربعة عشر",
+              "رابع عشر",
+              "الرابع عشر",
+              "fourteenth",
+              "fourteen"
+            ],
+            "15": [
+              "15",
+              "خمستاشر",
+              "خمسة عشر",
+              "خامس عشر",
+              "الخامس عشر",
+              "fifteenth",
+              "fifteen"
+            ],
+            "16": [
+              "16",
+              "ستاشر",
+              "ستة عشر",
+              "سادس عشر",
+              "السادس عشر",
+              "sixteenth",
+              "sixteen"
+            ],
+            "17": [
+              "17",
+              "سبعتاشر",
+              "سبعة عشر",
+              "سابع عشر",
+              "السابع عشر",
+              "seventeenth",
+              "seventeen"
+            ],
+            "18": [
+              "18",
+              "تمنتاشر",
+              "تمانتاشر",
+              "ثمانية عشر",
+              "ثامن عشر",
+              "الثامن عشر",
+              "eighteenth",
+              "eighteen"
+            ],
+            "19": [
+              "19",
+              "تسعتاشر",
+              "تسعة عشر",
+              "تاسع عشر",
+              "التاسع عشر",
+              "nineteenth",
+              "nineteen"
+            ],
+            "20": [
+              "20",
+              "عشرين",
+              "العشرين",
+              "twentieth",
+              "twenty"
+            ],
+            "21": [
+              "21",
+              "واحد وعشرين",
+              "واحد و عشرين",
+              "واحده وعشرين",
+              "واحده و عشرين",
+              "واحدة وعشرين",
+              "واحدة و عشرين",
+              "حادي وعشرين",
+              "حادي و عشرين",
+              "الواحد وعشرين",
+              "الواحد و عشرين",
+              "الحادي وعشرين",
+              "الحادي و عشرين",
+              "twenty one",
+              "twenty-one",
+              "twenty first",
+              "twenty-first"
+            ],
+            "22": [
+              "22",
+              "اتنين وعشرين",
+              "اتنين و عشرين",
+              "اثنين وعشرين",
+              "اثنين و عشرين",
+              "ثاني وعشرين",
+              "ثاني و عشرين",
+              "الثاني وعشرين",
+              "الثاني و عشرين",
+              "twenty two",
+              "twenty-two",
+              "twenty second",
+              "twenty-second"
+            ],
+            "23": [
+              "23",
+              "تلاتة وعشرين",
+              "تلاتة و عشرين",
+              "ثلاثة وعشرين",
+              "ثلاثة و عشرين",
+              "ثالث وعشرين",
+              "ثالث و عشرين",
+              "الثالث وعشرين",
+              "الثالث و عشرين",
+              "twenty three",
+              "twenty-three",
+              "twenty third",
+              "twenty-third"
+            ],
+            "24": [
+              "24",
+              "اربعة وعشرين",
+              "اربعة و عشرين",
+              "أربعة وعشرين",
+              "أربعة و عشرين",
+              "رابع وعشرين",
+              "رابع و عشرين",
+              "الرابع وعشرين",
+              "الرابع و عشرين",
+              "twenty four",
+              "twenty-four",
+              "twenty fourth",
+              "twenty-fourth"
+            ],
+            "25": [
+              "25",
+              "خمسة وعشرين",
+              "خمسة و عشرين",
+              "خامس وعشرين",
+              "خامس و عشرين",
+              "الخامس وعشرين",
+              "الخامس و عشرين",
+              "twenty five",
+              "twenty-five",
+              "twenty fifth",
+              "twenty-fifth"
+            ],
+            "26": [
+              "26",
+              "ستة وعشرين",
+              "ستة و عشرين",
+              "سادس وعشرين",
+              "سادس و عشرين",
+              "السادس وعشرين",
+              "السادس و عشرين",
+              "twenty six",
+              "twenty-six",
+              "twenty sixth",
+              "twenty-sixth"
+            ],
+            "27": [
+              "27",
+              "سبعة وعشرين",
+              "سبعة و عشرين",
+              "سابع وعشرين",
+              "سابع و عشرين",
+              "السابع وعشرين",
+              "السابع و عشرين",
+              "twenty seven",
+              "twenty-seven",
+              "twenty seventh",
+              "twenty-seventh"
+            ],
+            "28": [
+              "28",
+              "تمانية وعشرين",
+              "تمانية و عشرين",
+              "ثمانية وعشرين",
+              "ثمانية و عشرين",
+              "ثامن وعشرين",
+              "ثامن و عشرين",
+              "الثامن وعشرين",
+              "الثامن و عشرين",
+              "twenty eight",
+              "twenty-eight",
+              "twenty eighth",
+              "twenty-eighth"
+            ],
+            "29": [
+              "29",
+              "تسعة وعشرين",
+              "تسعة و عشرين",
+              "تاسع وعشرين",
+              "تاسع و عشرين",
+              "التاسع وعشرين",
+              "التاسع و عشرين",
+              "twenty nine",
+              "twenty-nine",
+              "twenty ninth",
+              "twenty-ninth"
+            ],
+            "30": [
+              "30",
+              "تلاتين",
+              "ثلاثين",
+              "الثلاثين",
+              "thirtieth",
+              "thirty"
+            ],
+            "31": [
+              "31",
+              "واحد وتلاتين",
+              "واحد وثلاثين",
+              "الواحد والثلاثين",
+              "حادي وثلاثين",
+              "الحادي والثلاثين",
+              "thirty one",
+              "thirty first",
+              "thirty-first"
+            ]
+          },
+          "day_number_terms": {
+            "1": [
+              "1",
+              "واحد",
+              "واحدة",
+              "واحده",
+              "اول",
+              "أول",
+              "الأول",
+              "الاول",
+              "اولي",
+              "أولى",
+              "first",
+              "one"
+            ],
+            "2": [
+              "2",
+              "اتنين",
+              "اثنين",
+              "إثنين",
+              "اثنان",
+              "تاني",
+              "ثاني",
+              "التاني",
+              "الثاني",
+              "second",
+              "two"
+            ],
+            "3": [
+              "3",
+              "تلاتة",
+              "تلاته",
+              "تلات",
+              "ثلاثة",
+              "ثلاثه",
+              "ثالث",
+              "التالت",
+              "الثالث",
+              "third",
+              "three"
+            ],
+            "4": [
+              "4",
+              "اربعة",
+              "اربعه",
+              "أربعة",
+              "رابع",
+              "الرابع",
+              "fourth",
+              "four"
+            ],
+            "5": [
+              "5",
+              "خمسة",
+              "خمسه",
+              "خامس",
+              "الخامس",
+              "fifth",
+              "five"
+            ],
+            "6": [
+              "6",
+              "ستة",
+              "سته",
+              "سادس",
+              "السادس",
+              "sixth",
+              "six"
+            ],
+            "7": [
+              "7",
+              "سبعة",
+              "سبعه",
+              "سبع",
+              "سابع",
+              "السابع",
+              "seventh",
+              "seven"
+            ],
+            "8": [
+              "8",
+              "تمنية",
+              "تمانيه",
+              "تمانية",
+              "ثمانية",
+              "ثامنة",
+              "ثامن",
+              "الثامن",
+              "eighth",
+              "eight"
+            ],
+            "9": [
+              "9",
+              "تسعة",
+              "تسعه",
+              "تاسع",
+              "التاسع",
+              "ninth",
+              "nine"
+            ],
+            "10": [
+              "10",
+              "عشرة",
+              "عشره",
+              "عاشر",
+              "العاشر",
+              "tenth",
+              "ten"
+            ],
+            "11": [
+              "11",
+              "حداشر",
+              "احداشر",
+              "أحداشر",
+              "احدى عشر",
+              "إحدى عشر",
+              "احد عشر",
+              "أحد عشر",
+              "الحادي عشر",
+              "حادي عشر",
+              "eleventh",
+              "eleven"
+            ],
+            "12": [
+              "12",
+              "اتناشر",
+              "اثناشر",
+              "اثني عشر",
+              "إثني عشر",
+              "اثنى عشر",
+              "الثاني عشر",
+              "ثاني عشر",
+              "twelfth",
+              "twelve"
+            ],
+            "13": [
+              "13",
+              "تلتاشر",
+              "ثلاثة عشر",
+              "ثالث عشر",
+              "الثالث عشر",
+              "thirteenth",
+              "thirteen"
+            ],
+            "14": [
+              "14",
+              "اربعتاشر",
+              "أربعتاشر",
+              "اربعة عشر",
+              "أربعة عشر",
+              "رابع عشر",
+              "الرابع عشر",
+              "fourteenth",
+              "fourteen"
+            ],
+            "15": [
+              "15",
+              "خمستاشر",
+              "خمسة عشر",
+              "خامس عشر",
+              "الخامس عشر",
+              "fifteenth",
+              "fifteen"
+            ],
+            "16": [
+              "16",
+              "ستاشر",
+              "ستة عشر",
+              "سادس عشر",
+              "السادس عشر",
+              "sixteenth",
+              "sixteen"
+            ],
+            "17": [
+              "17",
+              "سبعتاشر",
+              "سبعة عشر",
+              "سابع عشر",
+              "السابع عشر",
+              "seventeenth",
+              "seventeen"
+            ],
+            "18": [
+              "18",
+              "تمنتاشر",
+              "تمانتاشر",
+              "ثمانية عشر",
+              "ثامن عشر",
+              "الثامن عشر",
+              "eighteenth",
+              "eighteen"
+            ],
+            "19": [
+              "19",
+              "تسعتاشر",
+              "تسعة عشر",
+              "تاسع عشر",
+              "التاسع عشر",
+              "nineteenth",
+              "nineteen"
+            ],
+            "20": [
+              "20",
+              "عشرين",
+              "العشرين",
+              "twentieth",
+              "twenty"
+            ],
+            "21": [
+              "21",
+              "واحد وعشرين",
+              "واحد و عشرين",
+              "واحده وعشرين",
+              "واحده و عشرين",
+              "واحدة وعشرين",
+              "واحدة و عشرين",
+              "حادي وعشرين",
+              "حادي و عشرين",
+              "الواحد وعشرين",
+              "الواحد و عشرين",
+              "الحادي وعشرين",
+              "الحادي و عشرين",
+              "twenty one",
+              "twenty-one",
+              "twenty first",
+              "twenty-first"
+            ],
+            "22": [
+              "22",
+              "اتنين وعشرين",
+              "اتنين و عشرين",
+              "اثنين وعشرين",
+              "اثنين و عشرين",
+              "ثاني وعشرين",
+              "ثاني و عشرين",
+              "الثاني وعشرين",
+              "الثاني و عشرين",
+              "twenty two",
+              "twenty-two",
+              "twenty second",
+              "twenty-second"
+            ],
+            "23": [
+              "23",
+              "تلاتة وعشرين",
+              "تلاتة و عشرين",
+              "ثلاثة وعشرين",
+              "ثلاثة و عشرين",
+              "ثالث وعشرين",
+              "ثالث و عشرين",
+              "الثالث وعشرين",
+              "الثالث و عشرين",
+              "twenty three",
+              "twenty-three",
+              "twenty third",
+              "twenty-third"
+            ],
+            "24": [
+              "24",
+              "اربعة وعشرين",
+              "اربعة و عشرين",
+              "أربعة وعشرين",
+              "أربعة و عشرين",
+              "رابع وعشرين",
+              "رابع و عشرين",
+              "الرابع وعشرين",
+              "الرابع و عشرين",
+              "twenty four",
+              "twenty-four",
+              "twenty fourth",
+              "twenty-fourth"
+            ],
+            "25": [
+              "25",
+              "خمسة وعشرين",
+              "خمسة و عشرين",
+              "خامس وعشرين",
+              "خامس و عشرين",
+              "الخامس وعشرين",
+              "الخامس و عشرين",
+              "twenty five",
+              "twenty-five",
+              "twenty fifth",
+              "twenty-fifth"
+            ],
+            "26": [
+              "26",
+              "ستة وعشرين",
+              "ستة و عشرين",
+              "سادس وعشرين",
+              "سادس و عشرين",
+              "السادس وعشرين",
+              "السادس و عشرين",
+              "twenty six",
+              "twenty-six",
+              "twenty sixth",
+              "twenty-sixth"
+            ],
+            "27": [
+              "27",
+              "سبعة وعشرين",
+              "سبعة و عشرين",
+              "سابع وعشرين",
+              "سابع و عشرين",
+              "السابع وعشرين",
+              "السابع و عشرين",
+              "twenty seven",
+              "twenty-seven",
+              "twenty seventh",
+              "twenty-seventh"
+            ],
+            "28": [
+              "28",
+              "تمانية وعشرين",
+              "تمانية و عشرين",
+              "ثمانية وعشرين",
+              "ثمانية و عشرين",
+              "ثامن وعشرين",
+              "ثامن و عشرين",
+              "الثامن وعشرين",
+              "الثامن و عشرين",
+              "twenty eight",
+              "twenty-eight",
+              "twenty eighth",
+              "twenty-eighth"
+            ],
+            "29": [
+              "29",
+              "تسعة وعشرين",
+              "تسعة و عشرين",
+              "تاسع وعشرين",
+              "تاسع و عشرين",
+              "التاسع وعشرين",
+              "التاسع و عشرين",
+              "twenty nine",
+              "twenty-nine",
+              "twenty ninth",
+              "twenty-ninth"
+            ],
+            "30": [
+              "30",
+              "تلاتين",
+              "ثلاثين",
+              "الثلاثين",
+              "thirtieth",
+              "thirty"
+            ],
+            "31": [
+              "31",
+              "واحد وتلاتين",
+              "واحد وثلاثين",
+              "الواحد والثلاثين",
+              "حادي وثلاثين",
+              "الحادي والثلاثين",
+              "thirty one",
+              "thirty first",
+              "thirty-first"
+            ]
+          },
+          "ordinal_day_terms": {
+            "1": [
+              "1",
+              "واحد",
+              "واحدة",
+              "واحده",
+              "اول",
+              "أول",
+              "الأول",
+              "الاول",
+              "اولي",
+              "أولى",
+              "first",
+              "one"
+            ],
+            "2": [
+              "2",
+              "اتنين",
+              "اثنين",
+              "إثنين",
+              "اثنان",
+              "تاني",
+              "ثاني",
+              "التاني",
+              "الثاني",
+              "second",
+              "two"
+            ],
+            "3": [
+              "3",
+              "تلاتة",
+              "تلاته",
+              "تلات",
+              "ثلاثة",
+              "ثلاثه",
+              "ثالث",
+              "التالت",
+              "الثالث",
+              "third",
+              "three"
+            ],
+            "4": [
+              "4",
+              "اربعة",
+              "اربعه",
+              "أربعة",
+              "رابع",
+              "الرابع",
+              "fourth",
+              "four"
+            ],
+            "5": [
+              "5",
+              "خمسة",
+              "خمسه",
+              "خامس",
+              "الخامس",
+              "fifth",
+              "five"
+            ],
+            "6": [
+              "6",
+              "ستة",
+              "سته",
+              "سادس",
+              "السادس",
+              "sixth",
+              "six"
+            ],
+            "7": [
+              "7",
+              "سبعة",
+              "سبعه",
+              "سبع",
+              "سابع",
+              "السابع",
+              "seventh",
+              "seven"
+            ],
+            "8": [
+              "8",
+              "تمنية",
+              "تمانيه",
+              "تمانية",
+              "ثمانية",
+              "ثامنة",
+              "ثامن",
+              "الثامن",
+              "eighth",
+              "eight"
+            ],
+            "9": [
+              "9",
+              "تسعة",
+              "تسعه",
+              "تاسع",
+              "التاسع",
+              "ninth",
+              "nine"
+            ],
+            "10": [
+              "10",
+              "عشرة",
+              "عشره",
+              "عاشر",
+              "العاشر",
+              "tenth",
+              "ten"
+            ],
+            "11": [
+              "11",
+              "حداشر",
+              "احداشر",
+              "أحداشر",
+              "احدى عشر",
+              "إحدى عشر",
+              "احد عشر",
+              "أحد عشر",
+              "الحادي عشر",
+              "حادي عشر",
+              "eleventh",
+              "eleven"
+            ],
+            "12": [
+              "12",
+              "اتناشر",
+              "اثناشر",
+              "اثني عشر",
+              "إثني عشر",
+              "اثنى عشر",
+              "الثاني عشر",
+              "ثاني عشر",
+              "twelfth",
+              "twelve"
+            ],
+            "13": [
+              "13",
+              "تلتاشر",
+              "ثلاثة عشر",
+              "ثالث عشر",
+              "الثالث عشر",
+              "thirteenth",
+              "thirteen"
+            ],
+            "14": [
+              "14",
+              "اربعتاشر",
+              "أربعتاشر",
+              "اربعة عشر",
+              "أربعة عشر",
+              "رابع عشر",
+              "الرابع عشر",
+              "fourteenth",
+              "fourteen"
+            ],
+            "15": [
+              "15",
+              "خمستاشر",
+              "خمسة عشر",
+              "خامس عشر",
+              "الخامس عشر",
+              "fifteenth",
+              "fifteen"
+            ],
+            "16": [
+              "16",
+              "ستاشر",
+              "ستة عشر",
+              "سادس عشر",
+              "السادس عشر",
+              "sixteenth",
+              "sixteen"
+            ],
+            "17": [
+              "17",
+              "سبعتاشر",
+              "سبعة عشر",
+              "سابع عشر",
+              "السابع عشر",
+              "seventeenth",
+              "seventeen"
+            ],
+            "18": [
+              "18",
+              "تمنتاشر",
+              "تمانتاشر",
+              "ثمانية عشر",
+              "ثامن عشر",
+              "الثامن عشر",
+              "eighteenth",
+              "eighteen"
+            ],
+            "19": [
+              "19",
+              "تسعتاشر",
+              "تسعة عشر",
+              "تاسع عشر",
+              "التاسع عشر",
+              "nineteenth",
+              "nineteen"
+            ],
+            "20": [
+              "20",
+              "عشرين",
+              "العشرين",
+              "twentieth",
+              "twenty"
+            ],
+            "21": [
+              "21",
+              "واحد وعشرين",
+              "واحد و عشرين",
+              "واحده وعشرين",
+              "واحده و عشرين",
+              "واحدة وعشرين",
+              "واحدة و عشرين",
+              "حادي وعشرين",
+              "حادي و عشرين",
+              "الواحد وعشرين",
+              "الواحد و عشرين",
+              "الحادي وعشرين",
+              "الحادي و عشرين",
+              "twenty one",
+              "twenty-one",
+              "twenty first",
+              "twenty-first"
+            ],
+            "22": [
+              "22",
+              "اتنين وعشرين",
+              "اتنين و عشرين",
+              "اثنين وعشرين",
+              "اثنين و عشرين",
+              "ثاني وعشرين",
+              "ثاني و عشرين",
+              "الثاني وعشرين",
+              "الثاني و عشرين",
+              "twenty two",
+              "twenty-two",
+              "twenty second",
+              "twenty-second"
+            ],
+            "23": [
+              "23",
+              "تلاتة وعشرين",
+              "تلاتة و عشرين",
+              "ثلاثة وعشرين",
+              "ثلاثة و عشرين",
+              "ثالث وعشرين",
+              "ثالث و عشرين",
+              "الثالث وعشرين",
+              "الثالث و عشرين",
+              "twenty three",
+              "twenty-three",
+              "twenty third",
+              "twenty-third"
+            ],
+            "24": [
+              "24",
+              "اربعة وعشرين",
+              "اربعة و عشرين",
+              "أربعة وعشرين",
+              "أربعة و عشرين",
+              "رابع وعشرين",
+              "رابع و عشرين",
+              "الرابع وعشرين",
+              "الرابع و عشرين",
+              "twenty four",
+              "twenty-four",
+              "twenty fourth",
+              "twenty-fourth"
+            ],
+            "25": [
+              "25",
+              "خمسة وعشرين",
+              "خمسة و عشرين",
+              "خامس وعشرين",
+              "خامس و عشرين",
+              "الخامس وعشرين",
+              "الخامس و عشرين",
+              "twenty five",
+              "twenty-five",
+              "twenty fifth",
+              "twenty-fifth"
+            ],
+            "26": [
+              "26",
+              "ستة وعشرين",
+              "ستة و عشرين",
+              "سادس وعشرين",
+              "سادس و عشرين",
+              "السادس وعشرين",
+              "السادس و عشرين",
+              "twenty six",
+              "twenty-six",
+              "twenty sixth",
+              "twenty-sixth"
+            ],
+            "27": [
+              "27",
+              "سبعة وعشرين",
+              "سبعة و عشرين",
+              "سابع وعشرين",
+              "سابع و عشرين",
+              "السابع وعشرين",
+              "السابع و عشرين",
+              "twenty seven",
+              "twenty-seven",
+              "twenty seventh",
+              "twenty-seventh"
+            ],
+            "28": [
+              "28",
+              "تمانية وعشرين",
+              "تمانية و عشرين",
+              "ثمانية وعشرين",
+              "ثمانية و عشرين",
+              "ثامن وعشرين",
+              "ثامن و عشرين",
+              "الثامن وعشرين",
+              "الثامن و عشرين",
+              "twenty eight",
+              "twenty-eight",
+              "twenty eighth",
+              "twenty-eighth"
+            ],
+            "29": [
+              "29",
+              "تسعة وعشرين",
+              "تسعة و عشرين",
+              "تاسع وعشرين",
+              "تاسع و عشرين",
+              "التاسع وعشرين",
+              "التاسع و عشرين",
+              "twenty nine",
+              "twenty-nine",
+              "twenty ninth",
+              "twenty-ninth"
+            ],
+            "30": [
+              "30",
+              "تلاتين",
+              "ثلاثين",
+              "الثلاثين",
+              "thirtieth",
+              "thirty"
+            ],
+            "31": [
+              "31",
+              "واحد وتلاتين",
+              "واحد وثلاثين",
+              "الواحد والثلاثين",
+              "حادي وثلاثين",
+              "الحادي والثلاثين",
+              "thirty one",
+              "thirty first",
+              "thirty-first"
+            ]
+          },
+          "month_number_terms": {
+            "1": [
+              "1",
+              "واحد",
+              "واحدة",
+              "واحده",
+              "اول",
+              "أول",
+              "الأول",
+              "الاول",
+              "اولي",
+              "أولى",
+              "first",
+              "one"
+            ],
+            "2": [
+              "2",
+              "اتنين",
+              "اثنين",
+              "إثنين",
+              "اثنان",
+              "تاني",
+              "ثاني",
+              "التاني",
+              "الثاني",
+              "second",
+              "two"
+            ],
+            "3": [
+              "3",
+              "تلاتة",
+              "تلاته",
+              "تلات",
+              "ثلاثة",
+              "ثلاثه",
+              "ثالث",
+              "التالت",
+              "الثالث",
+              "third",
+              "three"
+            ],
+            "4": [
+              "4",
+              "اربعة",
+              "اربعه",
+              "أربعة",
+              "رابع",
+              "الرابع",
+              "fourth",
+              "four"
+            ],
+            "5": [
+              "5",
+              "خمسة",
+              "خمسه",
+              "خامس",
+              "الخامس",
+              "fifth",
+              "five"
+            ],
+            "6": [
+              "6",
+              "ستة",
+              "سته",
+              "سادس",
+              "السادس",
+              "sixth",
+              "six"
+            ],
+            "7": [
+              "7",
+              "سبعة",
+              "سبعه",
+              "سبع",
+              "سابع",
+              "السابع",
+              "seventh",
+              "seven"
+            ],
+            "8": [
+              "8",
+              "تمنية",
+              "تمانيه",
+              "تمانية",
+              "ثمانية",
+              "ثامنة",
+              "ثامن",
+              "الثامن",
+              "eighth",
+              "eight"
+            ],
+            "9": [
+              "9",
+              "تسعة",
+              "تسعه",
+              "تاسع",
+              "التاسع",
+              "ninth",
+              "nine"
+            ],
+            "10": [
+              "10",
+              "عشرة",
+              "عشره",
+              "عاشر",
+              "العاشر",
+              "tenth",
+              "ten"
+            ],
+            "11": [
+              "11",
+              "حداشر",
+              "احداشر",
+              "أحداشر",
+              "احدى عشر",
+              "إحدى عشر",
+              "احد عشر",
+              "أحد عشر",
+              "الحادي عشر",
+              "حادي عشر",
+              "eleventh",
+              "eleven"
+            ],
+            "12": [
+              "12",
+              "اتناشر",
+              "اثناشر",
+              "اثني عشر",
+              "إثني عشر",
+              "اثنى عشر",
+              "الثاني عشر",
+              "ثاني عشر",
+              "twelfth",
+              "twelve"
+            ]
+          }
         },
         "missing_template_by_paths": {
           "variables.date_text": "missing_date",
@@ -6008,10 +7365,12 @@
         "pending_booking_executor_stage_union_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
         "slot_change_preempts_hold_version": "6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding",
         "date_candidate_priority": {
-          "version": "6.56-configured-date-candidate-priority-no-hardcoding",
+          "version": "6.72-comprehensive-configured-date-resolution-no-hardcoding",
           "source_order": [
             "explicit_pattern",
             "date_extraction_pattern",
+            "configured_natural_date",
+            "configured_word_numeric_date",
             "direct_term"
           ],
           "default_priority": 100,
@@ -11094,7 +12453,10 @@
           "تمام، صفارة الفرامل غالبًا محتاجة كشف على التيل والطنابير. تحب أرتبلك أقرب فرع للكشف؟"
         ]
       }
-    }
+    },
+    "implementation_notes": [
+      "6.71 adds config-driven yearless date resolution. BookingSubagent must read date_resolution.yearless_date_resolution / yearless_date_candidate_years and must not hardcode demo dates in Python."
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
