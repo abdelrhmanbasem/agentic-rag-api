@@ -1,4 +1,5 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
+# Architecture patch: 6.69-post-tool-required-input-continuation-no-hardcoding-graph
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
@@ -6653,6 +6654,445 @@ def append_post_chain_strategy_to_manifest(
     return patched
 
 
+
+def get_post_tool_required_input_continuation_rules(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return config-driven rules for post-tool/subagent required-input checks.
+
+    Purpose:
+    A first executor can complete successfully and make a downstream action
+    partially possible, while a required downstream input is still missing. In
+    that case the graph should not stop with the first executor's generic
+    answer. It should ask only for the missing downstream input using configured
+    operation policies.
+
+    Preferred config keys:
+    - post_tool_required_input_continuation_rules
+    - post_required_input_continuation_rules
+    - post_execution_required_input_rules
+
+    The compatibility rule is derived only from configured subagent/tool
+    metadata. Domain phrases, field names, dates, branches, and user examples
+    stay in domain_bundle.json.
+    """
+    raw = agent_config.get("post_tool_required_input_continuation_rules")
+    if not isinstance(raw, list):
+        raw = agent_config.get("post_required_input_continuation_rules")
+    if not isinstance(raw, list):
+        raw = agent_config.get("post_execution_required_input_rules")
+
+    rules = [item for item in (raw or []) if isinstance(item, dict)] if isinstance(raw, list) else []
+    if rules:
+        return rules
+
+    derived_enabled = get_config_bool(
+        agent_config,
+        "routing_guardrails.derive_post_tool_required_input_continuation_from_subagent_config",
+        True,
+    )
+    if not derived_enabled:
+        return []
+
+    location_config = get_subagent_config(agent_config, "location")
+    booking_config = get_subagent_config(agent_config, "booking")
+    if not location_config or not booking_config:
+        return []
+
+    operations = booking_config.get("operations", {}) if isinstance(booking_config.get("operations"), dict) else {}
+    target_operation = str(operations.get("list_slots") or "").strip()
+    if not target_operation:
+        return []
+
+    target_tool_name = str(booking_config.get("tool_name") or "").strip()
+    if not target_tool_name:
+        return []
+
+    return [{
+        "id": "derived_post_location_booking_required_inputs",
+        "enabled": True,
+        "source_subagent_id": "location",
+        "target_subagent_id": "booking",
+        "target_tool_name": target_tool_name,
+        "target_operation": target_operation,
+        "target_argument_mapping_key": "list_slots_arguments",
+        "only_when_target_not_already_run": True,
+        "only_when_no_configured_chain_executed": True,
+        "requires_known_branch": True,
+        "requires_missing_inputs": True,
+        "requires_any_message_phrase_sources": [
+            {
+                "subagent_id": "booking",
+                "paths": [
+                    "availability_request_terms",
+                    "trigger_phrases",
+                ],
+            }
+        ],
+        "response_strategy_append": (
+            "After the configured primary executor completes, the same user turn still "
+            "contains a configured downstream operation request. Validate the downstream "
+            "operation from configured required inputs. If inputs are missing, ask only "
+            "for those missing inputs and do not stop with the primary executor answer."
+        ),
+        "response_brief": {
+            "must_do": [
+                "use the completed primary executor result as context",
+                "ask only for the configured missing downstream input",
+                "do not claim the downstream operation was executed",
+            ],
+            "must_not_do": [
+                "do not stop with only the primary executor result when a downstream input is missing",
+                "do not invent downstream tool results",
+            ],
+        },
+    }]
+
+
+def post_tool_required_input_rule_matches(
+    rule: Dict[str, Any],
+    source_subagent_id: str,
+    already_run: set,
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    configured_chain_executed: bool,
+) -> bool:
+    if not isinstance(rule, dict) or rule.get("enabled", True) is False:
+        return False
+
+    source_id = unify_subagent_id(str(rule.get("source_subagent_id") or rule.get("primary_subagent_id") or "").strip())
+    target_id = unify_subagent_id(str(rule.get("target_subagent_id") or rule.get("chained_subagent_id") or "").strip())
+
+    if not source_id or not target_id:
+        return False
+    if unify_subagent_id(source_subagent_id) != source_id:
+        return False
+    if rule.get("only_when_target_not_already_run", True) and target_id in already_run:
+        return False
+    if rule.get("only_when_no_configured_chain_executed", True) and configured_chain_executed:
+        return False
+    if target_id not in SUBAGENT_EXECUTORS:
+        return False
+
+    target_config = get_subagent_config(agent_config, target_id)
+    if isinstance(target_config, dict) and target_config.get("enabled", True) is False:
+        return False
+
+    if rule.get("requires_known_branch", False) and not has_known_branch(variables, agent_config):
+        return False
+
+    required_variable_paths = rule.get("required_variable_paths", [])
+    if isinstance(required_variable_paths, list):
+        for path in required_variable_paths:
+            path_text = str(path or "").strip()
+            if path_text and not is_present(deep_get(variables, path_text, "")):
+                return False
+
+    blocked_stage_values = {
+        str(item or "").strip()
+        for item in (rule.get("blocked_stage_values", []) or [])
+        if str(item or "").strip()
+    }
+    stage_paths = rule.get("stage_paths", [])
+    if blocked_stage_values and isinstance(stage_paths, list):
+        for path in stage_paths:
+            value = str(deep_get(variables, str(path or "").strip(), "") or "").strip()
+            if value and value in blocked_stage_values:
+                return False
+
+    normalization = agent_config.get("normalization", {}) or {}
+    intent_labels = rule.get("requires_any_intent_labels", [])
+    if isinstance(intent_labels, list) and intent_labels:
+        if not manifest_matches_any_intent_label(manifest, intent_labels, normalization):
+            return False
+
+    all_sources = rule.get("requires_all_message_phrase_sources", [])
+    if isinstance(all_sources, list):
+        for source in all_sources:
+            if not isinstance(source, dict):
+                continue
+            if not message_matches_phrase_source(message, agent_config, source):
+                return False
+
+    any_sources = rule.get("requires_any_message_phrase_sources", [])
+    if isinstance(any_sources, list) and any_sources:
+        if not any(
+            isinstance(source, dict) and message_matches_phrase_source(message, agent_config, source)
+            for source in any_sources
+        ):
+            return False
+
+    return True
+
+
+def find_tool_name_for_operation(agent_config: Dict[str, Any], operation: str) -> str:
+    op = str(operation or "").strip()
+    if not op:
+        return ""
+
+    for tool in agent_config.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        operations = tool.get("operations") or {}
+        if isinstance(operations, dict) and op in operations:
+            return str(tool.get("name") or "").strip()
+
+    return ""
+
+
+def get_tool_operation_config(agent_config: Dict[str, Any], tool_name: str, operation: str) -> Dict[str, Any]:
+    for tool in agent_config.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        if tool_name and str(tool.get("name") or "") != str(tool_name):
+            continue
+        operations = tool.get("operations") or {}
+        if isinstance(operations, dict) and isinstance(operations.get(operation), dict):
+            return operations.get(operation) or {}
+    return {}
+
+
+def resolve_argument_mapping_value(source: Any, variables: Dict[str, Any]) -> Any:
+    if not isinstance(source, str):
+        return source
+
+    source_text = source.strip()
+    if not source_text:
+        return ""
+
+    if source_text.startswith("variables."):
+        return deep_get(variables, source_text[len("variables."):], "")
+
+    if source_text.startswith("literal:"):
+        return source_text[len("literal:"):]
+
+    return deep_get(variables, source_text, "")
+
+
+def build_post_tool_continuation_arguments(
+    rule: Dict[str, Any],
+    target_config: Dict[str, Any],
+    operation: str,
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    args: Dict[str, Any] = {}
+
+    explicit_args = rule.get("target_arguments") or rule.get("arguments")
+    if isinstance(explicit_args, dict):
+        args.update(explicit_args)
+
+    mapping = rule.get("target_argument_mapping") or rule.get("argument_mapping")
+    mapping_key = str(rule.get("target_argument_mapping_key") or rule.get("argument_mapping_key") or "").strip()
+
+    if not isinstance(mapping, dict) and mapping_key and isinstance(target_config, dict):
+        configured_mapping = target_config.get(mapping_key)
+        if isinstance(configured_mapping, dict):
+            mapping = configured_mapping
+
+    operation_argument_maps = target_config.get("operation_arguments") if isinstance(target_config, dict) else None
+    if not isinstance(mapping, dict) and isinstance(operation_argument_maps, dict):
+        configured_mapping = operation_argument_maps.get(operation)
+        if isinstance(configured_mapping, dict):
+            mapping = configured_mapping
+
+    if isinstance(mapping, dict):
+        for arg_name, source in mapping.items():
+            arg_text = str(arg_name or "").strip()
+            if not arg_text or is_present(args.get(arg_text)):
+                continue
+            value = resolve_argument_mapping_value(source, variables)
+            if is_present(value) or value is False:
+                args[arg_text] = value
+
+    return args
+
+
+def get_operation_missing_input_response_brief(
+    agent_config: Dict[str, Any],
+    operation: str,
+    missing_inputs: List[str],
+) -> Dict[str, Any]:
+    operation = str(operation or "").strip()
+    if not operation:
+        return {}
+
+    candidates: List[Dict[str, Any]] = []
+
+    # Common guardrail location used by service-center and future assistants.
+    guardrails = agent_config.get("routing_guardrails", {})
+    if isinstance(guardrails, dict):
+        for guardrail in guardrails.values():
+            if not isinstance(guardrail, dict):
+                continue
+            operations = guardrail.get("operations")
+            if not isinstance(operations, dict):
+                continue
+            op_cfg = operations.get(operation)
+            if isinstance(op_cfg, dict):
+                candidates.append(op_cfg)
+
+    # Tool operation config can also carry missing-input response briefs.
+    tool_name = find_tool_name_for_operation(agent_config, operation)
+    op_cfg = get_tool_operation_config(agent_config, tool_name, operation)
+    if op_cfg:
+        candidates.append(op_cfg)
+
+    for missing_input in missing_inputs or []:
+        key = str(missing_input or "").strip()
+        if not key:
+            continue
+        specific_keys = [
+            f"missing_{key}_response_brief",
+            f"missing_{key}_brief",
+        ]
+        for candidate in candidates:
+            for brief_key in specific_keys:
+                brief = candidate.get(brief_key)
+                if isinstance(brief, dict) and brief:
+                    return brief
+            for map_key in ["missing_input_response_briefs", "response_brief_by_missing_input", "missing_input_briefs"]:
+                brief_map = candidate.get(map_key)
+                if isinstance(brief_map, dict) and isinstance(brief_map.get(key), dict):
+                    return brief_map.get(key) or {}
+
+    for candidate in candidates:
+        brief = candidate.get("missing_required_response_brief") or candidate.get("missing_inputs_response_brief")
+        if isinstance(brief, dict) and brief:
+            return brief
+
+    return {}
+
+
+def merge_response_briefs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(base or {}) if isinstance(base, dict) else {}
+    if not isinstance(override, dict):
+        return result
+
+    for key in ["tone", "language", "reply_length", "next_move"]:
+        value = override.get(key)
+        if value not in [None, "", [], {}]:
+            result[key] = value
+
+    result["must_do"] = append_unique(
+        result.get("must_do", []),
+        [str(item) for item in override.get("must_do", []) or [] if str(item or "").strip()],
+    )
+    result["must_not_do"] = append_unique(
+        result.get("must_not_do", []),
+        [str(item) for item in override.get("must_not_do", []) or [] if str(item or "").strip()],
+    )
+    return result
+
+
+def build_post_tool_missing_input_continuation(
+    rule: Dict[str, Any],
+    source_subagent_id: str,
+    target_subagent_id: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    target_config = get_subagent_config(agent_config, target_subagent_id)
+    operation = str(rule.get("target_operation") or rule.get("operation") or "").strip()
+    if not operation and isinstance(target_config, dict):
+        operations = target_config.get("operations") if isinstance(target_config.get("operations"), dict) else {}
+        operation = str(operations.get(str(rule.get("target_operation_key") or "")) or "").strip()
+    if not operation:
+        return {}
+
+    tool_name = str(rule.get("target_tool_name") or rule.get("tool_name") or "").strip()
+    if not tool_name and isinstance(target_config, dict):
+        tool_name = str(target_config.get("tool_name") or "").strip()
+    if not tool_name:
+        tool_name = find_tool_name_for_operation(agent_config, operation)
+    if not tool_name:
+        return {}
+
+    initial_arguments = build_post_tool_continuation_arguments(
+        rule=rule,
+        target_config=target_config if isinstance(target_config, dict) else {},
+        operation=operation,
+        variables=variables,
+    )
+
+    validation = validate_direct_tool_request(
+        tool_name=tool_name,
+        operation=operation,
+        arguments=initial_arguments,
+        variables=variables,
+        agent_config=agent_config,
+    )
+
+    missing_inputs = validation.get("missing_inputs", []) or []
+    if not missing_inputs:
+        return {}
+
+    if rule.get("requires_missing_inputs", True) is False:
+        return {}
+
+    updated_variables = apply_subagent_variable_patch(
+        variables,
+        validation.get("variable_updates", {}) or {},
+        [],
+        assistant_config=agent_config,
+    )
+
+    tool_result = dict(validation.get("tool_result", {}) or {})
+    op_brief = get_operation_missing_input_response_brief(agent_config, operation, missing_inputs)
+    if op_brief:
+        tool_result["response_brief"] = merge_response_briefs(tool_result.get("response_brief", {}) or {}, op_brief)
+
+    rule_brief = rule.get("response_brief")
+    if isinstance(rule_brief, dict) and rule_brief:
+        tool_result["response_brief"] = merge_response_briefs(tool_result.get("response_brief", {}) or {}, rule_brief)
+
+    tool_result.update({
+        "ok": True,
+        "blocked_tool_call": True,
+        "post_tool_required_input_continuation": True,
+        "source_subagent_id": source_subagent_id,
+        "target_subagent_id": target_subagent_id,
+        "tool_name": tool_name,
+        "operation": operation,
+        "arguments": validation.get("arguments", initial_arguments),
+        "missing_inputs": missing_inputs,
+        "answer_draft": str(tool_result.get("answer_draft") or "MISSING_REQUIRED_FIELDS"),
+        "action": str(tool_result.get("action") or "ask_user"),
+        "notes": str(
+            tool_result.get("notes")
+            or "Downstream operation was safely paused because configured required inputs are missing."
+        ),
+    })
+
+    observation = {
+        "subagent": target_subagent_id,
+        "tool_name": tool_name,
+        "operation": operation,
+        "arguments": tool_result.get("arguments", {}),
+        "result": tool_result,
+    }
+
+    executed_result = {
+        "intent_id": str(rule.get("id") or "post_required_input_continuation"),
+        "subagent": target_subagent_id,
+        "action": tool_result.get("action", "ask_user"),
+        "answer_draft": tool_result.get("answer_draft", "MISSING_REQUIRED_FIELDS"),
+        "notes": tool_result.get("notes", ""),
+        "tool_calls_used": 0,
+        "observations": [observation],
+        "response_brief": tool_result.get("response_brief", {}) if isinstance(tool_result.get("response_brief"), dict) else {},
+        "target_tool_result": tool_result,
+    }
+
+    return {
+        "variables": updated_variables,
+        "tool_result": tool_result,
+        "executed_result": executed_result,
+        "observation": observation,
+    }
+
+
 def tool_execution_node(state: AgentState):
     manifest = state.get("manifest", {}) or {}
     agent_config = state.get("agent_config", {}) or {}
@@ -6782,6 +7222,60 @@ def tool_execution_node(state: AgentState):
                         "observations": obs2,
                     })
 
+            for continuation_rule in get_post_tool_required_input_continuation_rules(agent_config):
+                if not post_tool_required_input_rule_matches(
+                    rule=continuation_rule,
+                    source_subagent_id=selected_id,
+                    already_run=already_run,
+                    manifest=manifest,
+                    message=message,
+                    agent_config=agent_config,
+                    variables=variables,
+                    configured_chain_executed=configured_chain_executed,
+                ):
+                    continue
+
+                target_id = unify_subagent_id(
+                    str(
+                        continuation_rule.get("target_subagent_id")
+                        or continuation_rule.get("chained_subagent_id")
+                        or ""
+                    ).strip()
+                )
+
+                if not target_id or target_id in already_run:
+                    continue
+
+                continuation = build_post_tool_missing_input_continuation(
+                    rule=continuation_rule,
+                    source_subagent_id=selected_id,
+                    target_subagent_id=target_id,
+                    agent_config=agent_config,
+                    variables=variables,
+                    manifest=manifest,
+                )
+
+                if not continuation:
+                    continue
+
+                variables = continuation.get("variables", variables)
+                observation = continuation.get("observation")
+                if isinstance(observation, dict):
+                    all_observations.append(observation)
+
+                executed = continuation.get("executed_result")
+                if isinstance(executed, dict):
+                    executed_results.append(executed)
+
+                already_run.add(target_id)
+                manifest = append_post_chain_strategy_to_manifest(
+                    manifest=manifest,
+                    rule=continuation_rule,
+                    source_subagent_id=selected_id,
+                    target_subagent_id=target_id,
+                )
+                break
+
             for post_rule in get_post_subagent_chain_rules(agent_config):
                 if not post_subagent_chain_rule_matches(
                     rule=post_rule,
@@ -6884,6 +7378,21 @@ def tool_execution_node(state: AgentState):
             "tool_calls_used": total_calls,
             "notes": f"Executed {len(executed_results)} subagent intent(s).",
         }
+
+        latest_executed = executed_results[-1] if executed_results else {}
+        if isinstance(latest_executed, dict):
+            latest_response_brief = latest_executed.get("response_brief")
+            if isinstance(latest_response_brief, dict) and latest_response_brief:
+                tool_result["response_brief"] = latest_response_brief
+
+            latest_target_tool_result = latest_executed.get("target_tool_result")
+            if isinstance(latest_target_tool_result, dict) and latest_target_tool_result:
+                tool_result["target_tool_result"] = latest_target_tool_result
+                if latest_target_tool_result.get("blocked_tool_call"):
+                    tool_result["blocked_tool_call"] = True
+                    tool_result["missing_inputs"] = latest_target_tool_result.get("missing_inputs", [])
+                    tool_result["operation"] = latest_target_tool_result.get("operation", "")
+                    tool_result["tool_name"] = latest_target_tool_result.get("tool_name", "")
 
         if primary_result and chained_result and chained_result.handled:
             tool_result.update({
