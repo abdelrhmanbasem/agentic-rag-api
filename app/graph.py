@@ -2,6 +2,7 @@
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
 # Architecture patch: 6.83-final-answer-operational-fact-repairs-no-hardcoding
 # Architecture patch: 6.85-completed-response-canonical-completion-paths-no-hardcoding
+# Architecture patch: 6.86-terminal-final-answer-boundary-no-hardcoding
 # Architecture patch: 6.84-final-completed-response-boundary-no-hardcoding
 # Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
@@ -8384,19 +8385,27 @@ def completed_flow_value_from_variables_or_state(variables: Dict[str, Any], stat
 def current_user_message_for_direct_response(state: AgentState) -> str:
     """
     Return the current user message for deterministic post-completion response
-    rules. Some late graph nodes may not have a full messages list available,
-    so this reads the normal message history first and then generic state fields.
-    No domain-specific wording is encoded here.
+    rules.
+
+    v6.86: never fall back to an assistant message. In late graph nodes the
+    state messages list may contain only the generated AIMessage update, and
+    the previous implementation could accidentally treat that assistant answer
+    as the current user message. Post-completion routing must be based only on
+    HumanMessage content or explicitly persisted user-message fields.
     """
-    message = str(last_user_message(state) or "").strip()
-    if message:
-        return message
-    for key in ["latest_user_message", "user_message", "message", "input"]:
+    for msg in reversed(state.get("messages", []) or []):
+        if isinstance(msg, HumanMessage):
+            message = str(getattr(msg, "content", "") or "").strip()
+            if message:
+                return message
+
+    for key in ["latest_user_message", "user_message", "message", "input", "current_user_message"]:
         value = str(state.get(key, "") or "").strip()
         if value:
             return value
+
     manifest = state.get("manifest", {}) if isinstance(state.get("manifest", {}), dict) else {}
-    for key in ["latest_user_message", "user_message", "message"]:
+    for key in ["latest_user_message", "user_message", "message", "current_user_message"]:
         value = str(manifest.get(key, "") or "").strip()
         if value:
             return value
@@ -10639,6 +10648,107 @@ def compact_graph_messages_for_memory(messages: Sequence[BaseMessage], limit: in
     return output
 
 
+def final_answer_matches_completed_repeat_regex_from_config(text: str, rule: Dict[str, Any]) -> bool:
+    """Config-driven terminal detector for verbose repeated completed-action answers."""
+    if not isinstance(rule, dict):
+        return False
+    repair = rule.get("final_answer_repair", {}) if isinstance(rule.get("final_answer_repair", {}), dict) else {}
+    regexes: List[str] = []
+    for key in [
+        "terminal_repeat_answer_regex",
+        "repeat_answer_regex",
+        "completed_repeat_answer_regex",
+        "force_when_current_answer_regex",
+    ]:
+        value = repair.get(key, [])
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            regexes.extend([str(item or "").strip() for item in value if str(item or "").strip()])
+    return bool(regexes and regex_list_matches(str(text or ""), regexes))
+
+
+def terminal_completed_flow_response_from_config(state: AgentState) -> str:
+    """
+    Last user-facing boundary for completed workflows.
+
+    This runs after response, handoff, and quality generation paths. It is
+    stronger than the earlier direct-response checks: when configured completion
+    evidence exists, it can replace a verbose final answer if either the current
+    user message matches the post-completion rule OR the generated answer itself
+    matches configured repeat/detail patterns. This prevents upstream LLM/handoff
+    text from re-expanding an already-confirmed action.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    current_answer = str(state.get("final_answer", "") or "").strip()
+    if not current_answer:
+        return ""
+
+    for rule in completed_flow_rules_from_config(agent_config):
+        if completed_flow_rule_skip_for_answer_draft(rule, state):
+            continue
+        if not final_answer_completed_rule_is_satisfied(rule, variables, state):
+            continue
+
+        message_matches = completed_flow_rule_matches_current_message(rule, state, agent_config)
+        detail_repeat_matches = final_answer_repeats_configured_detail_groups(current_answer, rule, variables, state, agent_config)
+        regex_repeat_matches = final_answer_matches_completed_repeat_regex_from_config(current_answer, rule)
+
+        if not (message_matches or detail_repeat_matches or regex_repeat_matches):
+            continue
+
+        rendered = render_completed_flow_response_template(rule, variables, state, current_answer)
+        if rendered:
+            return rendered.strip()
+
+    return ""
+
+
+def final_answer_boundary_node(state: AgentState):
+    """
+    Terminal answer boundary.
+
+    This is intentionally placed after quality_guard_node and before
+    memory_writer_node so no generation, handoff, or quality layer can reintroduce
+    operational fact leaks or verbose repeat confirmations after the last safety
+    pass.
+    """
+    current_answer = str(state.get("final_answer", "") or "").strip()
+    if not current_answer:
+        return {}
+
+    terminal_answer = terminal_completed_flow_response_from_config(state)
+    if terminal_answer:
+        terminal_answer = enforce_answer_safety(terminal_answer, state)
+        return {
+            "messages": [AIMessage(content=terminal_answer)],
+            "final_answer": terminal_answer,
+            "final_answer_boundary": {
+                "node": "terminal_completed_flow_direct_response",
+                "deterministic_template_used": True,
+            },
+        }
+
+    repaired = enforce_answer_safety(current_answer, state)
+    if repaired and repaired != current_answer:
+        return {
+            "messages": [AIMessage(content=repaired)],
+            "final_answer": repaired,
+            "final_answer_boundary": {
+                "node": "terminal_answer_safety_repair",
+                "deterministic_template_used": False,
+            },
+        }
+
+    return {
+        "final_answer_boundary": {
+            "node": "terminal_answer_safety_passed",
+            "deterministic_template_used": False,
+        }
+    }
+
+
 def memory_writer_node(state: AgentState):
     """
     Best-effort post-turn memory maintenance node.
@@ -10725,6 +10835,7 @@ workflow.add_node("response_node", response_node)
 workflow.add_node("quality_guard_node", quality_guard_node)
 workflow.add_node("pre_response_guardrail_node", pre_response_guardrail_node)
 workflow.add_node("memory_writer_node", memory_writer_node)
+workflow.add_node("final_answer_boundary_node", final_answer_boundary_node)
 
 workflow.set_entry_point("manifest_node")
 
@@ -10807,7 +10918,8 @@ workflow.add_edge("subagent_reasoning_node", "response_node")
 workflow.add_edge("response_node", "pre_response_guardrail_node")
 workflow.add_edge("simple_response_node", "pre_response_guardrail_node")
 workflow.add_edge("pre_response_guardrail_node", "quality_guard_node")
-workflow.add_edge("quality_guard_node", "memory_writer_node")
+workflow.add_edge("quality_guard_node", "final_answer_boundary_node")
+workflow.add_edge("final_answer_boundary_node", "memory_writer_node")
 workflow.add_edge("memory_writer_node", END)
 
 app_graph = workflow.compile()
