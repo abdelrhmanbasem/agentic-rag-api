@@ -1,6 +1,7 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
 # Architecture patch: 6.83-final-answer-operational-fact-repairs-no-hardcoding
+# Architecture patch: 6.84-final-completed-response-boundary-no-hardcoding
 # Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
@@ -8379,6 +8380,88 @@ def completed_flow_value_from_variables_or_state(variables: Dict[str, Any], stat
     return default
 
 
+def current_user_message_for_direct_response(state: AgentState) -> str:
+    """
+    Return the current user message for deterministic post-completion response
+    rules. Some late graph nodes may not have a full messages list available,
+    so this reads the normal message history first and then generic state fields.
+    No domain-specific wording is encoded here.
+    """
+    message = str(last_user_message(state) or "").strip()
+    if message:
+        return message
+    for key in ["latest_user_message", "user_message", "message", "input"]:
+        value = str(state.get(key, "") or "").strip()
+        if value:
+            return value
+    manifest = state.get("manifest", {}) if isinstance(state.get("manifest", {}), dict) else {}
+    for key in ["latest_user_message", "user_message", "message"]:
+        value = str(manifest.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def completed_flow_rule_matches_current_message(rule: Dict[str, Any], state: AgentState, agent_config: Dict[str, Any]) -> bool:
+    message = current_user_message_for_direct_response(state)
+    if not message:
+        return False
+    sources = rule.get("message_sources") or []
+    regexes = rule.get("message_regex") or []
+    if sources and semantic_sources_match(message, agent_config, sources):
+        return True
+    if regexes and regex_list_matches(message, regexes):
+        return True
+    return False
+
+
+def completed_flow_rule_skip_for_answer_draft(rule: Dict[str, Any], state: AgentState) -> bool:
+    answer_draft = get_tool_answer_draft(state)
+    repair = rule.get("final_answer_repair", {}) if isinstance(rule.get("final_answer_repair", {}), dict) else {}
+    skip_drafts = as_string_list(repair.get("skip_when_answer_draft_in", []) or rule.get("skip_when_answer_draft_in", []))
+    return bool(answer_draft and answer_draft in skip_drafts)
+
+
+def completed_flow_template_from_rule_or_policy(rule: Dict[str, Any], state: AgentState) -> str:
+    template = str(
+        (rule or {}).get("response_template")
+        or (rule or {}).get("deterministic_template")
+        or (rule or {}).get("safe_template")
+        or ""
+    ).strip()
+    answer_draft = str(
+        (rule or {}).get("answer_draft")
+        or (rule or {}).get("template_key")
+        or (rule or {}).get("answer_label")
+        or ""
+    ).strip()
+    if not template and answer_draft:
+        policy = get_template_policy_for_answer_draft(state.get("agent_config", {}) or {}, answer_draft)
+        if isinstance(policy, dict):
+            template = str(policy.get("response_template") or policy.get("deterministic_template") or policy.get("safe_template") or "").strip()
+            if not template:
+                examples = policy.get("safe_examples", [])
+                if isinstance(examples, list):
+                    for example in examples:
+                        example_text = str(example or "").strip()
+                        if example_text:
+                            template = example_text
+                            break
+    return template
+
+
+def completed_flow_rules_from_config(agent_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return []
+    rules = guardrails.get("completed_flow_direct_responses", [])
+    if isinstance(rules, dict):
+        rules = list(rules.values())
+    if not isinstance(rules, list):
+        return []
+    return [rule for rule in rules if isinstance(rule, dict) and rule.get("enabled", False) is not False]
+
+
 def completed_flow_template_variables_from_config(
     variables: Dict[str, Any],
     state: AgentState,
@@ -8432,7 +8515,7 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
     """
     agent_config = state.get("agent_config", {}) or {}
     variables = state.get("variables", {}) or {}
-    message = last_user_message(state)
+    message = current_user_message_for_direct_response(state)
 
     guardrails = agent_config.get("routing_guardrails", {})
     if not isinstance(guardrails, dict):
@@ -8474,48 +8557,16 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
         if not completed:
             continue
 
-        sources = rule.get("message_sources") or []
-        regexes = rule.get("message_regex") or []
-        if sources and semantic_sources_match(message, agent_config, sources):
-            matched = True
-        elif regexes and regex_list_matches(message, regexes):
-            matched = True
-        else:
-            matched = False
-        if not matched:
+        if not completed_flow_rule_matches_current_message(rule, state, agent_config):
             continue
 
-        template = str(
-            rule.get("response_template")
-            or rule.get("deterministic_template")
-            or rule.get("safe_template")
-            or ""
-        ).strip()
-
+        template = completed_flow_template_from_rule_or_policy(rule, state)
         answer_draft = str(
             rule.get("answer_draft")
             or rule.get("template_key")
             or rule.get("answer_label")
             or ""
         ).strip()
-
-        if not template and answer_draft:
-            policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
-            if isinstance(policy, dict):
-                template = str(
-                    policy.get("response_template")
-                    or policy.get("deterministic_template")
-                    or policy.get("safe_template")
-                    or ""
-                ).strip()
-                if not template:
-                    examples = policy.get("safe_examples", [])
-                    if isinstance(examples, list):
-                        for example in examples:
-                            example_text = str(example or "").strip()
-                            if example_text:
-                                template = example_text
-                                break
         if not template:
             continue
 
@@ -10052,7 +10103,35 @@ def final_answer_terms_for_configured_path(agent_config: Dict[str, Any], path: s
     path_text = str(path or "").lower()
     if "branch" in path_text:
         terms.extend(final_answer_branch_terms_for_value(agent_config, value_text))
-    return dedupe_strings(terms, limit=80)
+    if "time" in path_text:
+        terms.extend(final_answer_time_terms_for_value(value_text))
+    return dedupe_strings(terms, limit=120)
+
+
+def final_answer_time_terms_for_value(value_text: str) -> List[str]:
+    """Generate display variants for configured time values without domain wording."""
+    text = str(value_text or "").strip()
+    terms = [text] if text else []
+    match = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?$", text)
+    if not match:
+        return terms
+    try:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    except Exception:
+        return terms
+    suffix = "AM" if hour < 12 else "PM"
+    hour12 = hour % 12 or 12
+    terms.extend([
+        f"{hour12}:{minute:02d} {suffix}",
+        f"{hour12} {suffix}",
+        f"{hour:02d}:{minute:02d}",
+        f"الساعة {hour12}",
+        f"ساعه {hour12}",
+    ])
+    eastern_digits = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+    terms.extend([item.translate(eastern_digits) for item in list(terms)])
+    return terms
 
 
 def final_answer_repeats_configured_detail_groups(text: str, rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, agent_config: Dict[str, Any]) -> bool:
@@ -10078,22 +10157,13 @@ def final_answer_repeats_configured_detail_groups(text: str, rule: Dict[str, Any
 
 
 def render_completed_flow_response_template(rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, current_answer: str = "") -> str:
-    template = str(
-        (rule or {}).get("response_template")
-        or (rule or {}).get("deterministic_template")
-        or (rule or {}).get("safe_template")
-        or ""
-    ).strip()
+    template = completed_flow_template_from_rule_or_policy(rule or {}, state)
     answer_draft = str(
         (rule or {}).get("answer_draft")
         or (rule or {}).get("template_key")
         or (rule or {}).get("answer_label")
         or ""
     ).strip()
-    if not template and answer_draft:
-        policy = get_template_policy_for_answer_draft(state.get("agent_config", {}) or {}, answer_draft)
-        if isinstance(policy, dict):
-            template = str(policy.get("response_template") or policy.get("deterministic_template") or policy.get("safe_template") or "").strip()
     if not template:
         return ""
     render_variables = completed_flow_template_variables_from_config(variables, state, rule, template)
@@ -10108,22 +10178,45 @@ def render_completed_flow_response_template(rule: Dict[str, Any], variables: Dic
     return rendered
 
 
+def repair_completed_flow_repeat_message_from_config(text: str, state: AgentState) -> str:
+    """
+    Final-answer boundary for completed workflow repeat messages. If the user
+    message matches a configured post-completion direct-response rule and the
+    configured completion facts are present, render the configured short answer
+    regardless of which upstream path generated the current text.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    for rule in completed_flow_rules_from_config(agent_config):
+        repair = rule.get("final_answer_repair", {}) if isinstance(rule.get("final_answer_repair", {}), dict) else {}
+        force_on_message = bool(
+            repair.get("force_on_message_match_after_completion")
+            or rule.get("force_direct_response")
+            or rule.get("force_before_quality_guard")
+        )
+        if not force_on_message:
+            continue
+        if completed_flow_rule_skip_for_answer_draft(rule, state):
+            continue
+        if not final_answer_completed_rule_is_satisfied(rule, variables, state):
+            continue
+        if not completed_flow_rule_matches_current_message(rule, state, agent_config):
+            continue
+        rendered = render_completed_flow_response_template(rule, variables, state, text)
+        if rendered:
+            return rendered
+    return text
+
+
 def repair_completed_flow_repeated_details_from_config(text: str, state: AgentState) -> str:
     agent_config = state.get("agent_config", {}) or {}
     variables = state.get("variables", {}) or {}
-    guardrails = agent_config.get("routing_guardrails", {})
-    if not isinstance(guardrails, dict):
-        return text
-    rules = guardrails.get("completed_flow_direct_responses", [])
-    if isinstance(rules, dict):
-        rules = list(rules.values())
-    if not isinstance(rules, list):
+    rules = completed_flow_rules_from_config(agent_config)
+    if not rules:
         return text
 
     answer_draft = get_tool_answer_draft(state)
     for rule in rules:
-        if not isinstance(rule, dict) or rule.get("enabled", False) is False:
-            continue
         repair = rule.get("final_answer_repair", {})
         if not isinstance(repair, dict) or repair.get("enabled", False) is False:
             if not rule.get("suppress_full_booking_repeat"):
@@ -10205,8 +10298,10 @@ def apply_configured_final_answer_repairs(text: str, state: AgentState) -> str:
     repaired = str(text or "").strip()
     if not repaired:
         return repaired
+    repaired = repair_completed_flow_repeat_message_from_config(repaired, state)
     repaired = repair_completed_flow_repeated_details_from_config(repaired, state)
     repaired = repair_unsupported_operational_fact_from_config(repaired, state)
+    repaired = repair_completed_flow_repeat_message_from_config(repaired, state)
     return repaired.strip()
 
 def enforce_answer_safety(answer: str, state: AgentState) -> str:
