@@ -30,6 +30,7 @@ from app.subagents.base import (
 # Architecture patch: 6.51-configured-marker-remainder-control-no-hardcoding
 # Architecture patch: 6.54-slot-change-preempts-hold-and-vehicle-swap-no-hardcoding
 # Architecture patch: 6.56-configured-date-candidate-priority-no-hardcoding
+# Architecture patch: 6.75-configured-slot-selection-advisor-no-hardcoding
 # Architecture patch: 6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding
 # Architecture patch: 6.74-token-named-month-date-resolution-no-hardcoding
 # Architecture patch: 6.72-comprehensive-configured-date-resolution-no-hardcoding
@@ -503,6 +504,17 @@ class BookingSubagent:
                     observations=observations,
                     tool_calls_used=tool_calls_used
                 )
+
+            slot_advice_result = self.handle_slot_selection_advice_if_needed(
+                context=context,
+                config=config,
+                variables=variables,
+                observations=observations,
+                tool_calls_used=tool_calls_used
+            )
+
+            if slot_advice_result:
+                return slot_advice_result
 
             if self.message_contains_time_intent_without_stored_context(
                 context.user_message,
@@ -1246,6 +1258,309 @@ class BookingSubagent:
             observations=observations,
             tool_calls_used=tool_calls_used
         )
+
+
+
+    def handle_slot_selection_advice_if_needed(
+        self,
+        context: SubagentContext,
+        config: Dict[str, Any],
+        variables: Dict[str, Any],
+        observations: List[Dict[str, Any]],
+        tool_calls_used: int
+    ) -> Optional[SubagentResult]:
+        """
+        Help a hesitant customer choose from already-returned slots without
+        selecting a slot on their behalf.
+
+        This is config-driven and multi-tenant safe:
+        - trigger phrases come from slot_selection_advice and shared
+          hesitation_detection config
+        - recommendation strategy, reason text, and response template come from
+          config
+        - the selected advisory slot is not written as booking.pending.time
+        """
+        advice_config = config.get("slot_selection_advice", {})
+        if not isinstance(advice_config, dict):
+            advice_config = {}
+
+        if advice_config.get("enabled") is False:
+            return None
+
+        slots = deep_get(variables, config.get("available_slots_path", "available_slots"), [])
+        if not isinstance(slots, list) or not slots:
+            return None
+
+        normalization = context.assistant_config.get("normalization", {})
+
+        # A time/ordinal message is an actual selection, not a request for advice.
+        selected_slot = self.resolve_slot_selection(
+            context=context,
+            config=config,
+            variables=variables
+        )
+        if selected_slot:
+            return None
+
+        if self.message_contains_time_intent_without_stored_context(
+            context.user_message,
+            config,
+            normalization
+        ):
+            return None
+
+        if not self.message_requests_slot_selection_advice(
+            message=context.user_message,
+            config=config,
+            assistant_config=context.assistant_config,
+            normalization=normalization
+        ):
+            return None
+
+        slot_advice = self.build_slot_selection_advice(
+            slots=slots,
+            variables=variables,
+            config=config,
+            normalization=normalization
+        )
+
+        if not slot_advice:
+            return None
+
+        updates: Dict[str, Any] = {}
+        state_path = str(advice_config.get("state_path") or "booking.slot_advice").strip()
+        if state_path:
+            updates[state_path] = slot_advice
+
+        if bool(advice_config.get("mirror_to_root", True)):
+            updates["slot_advice"] = slot_advice
+
+        patched = apply_variable_patch(variables, updates, []) if updates else variables
+
+        templates = config.get("templates", {}) if isinstance(config.get("templates", {}), dict) else {}
+        template = str(
+            advice_config.get("response_template")
+            or templates.get(str(advice_config.get("template_key") or "slot_selection_advice"), "")
+            or templates.get("choose_slot_again", "")
+            or ""
+        )
+
+        answer = render_template(
+            template,
+            {
+                "variables": patched,
+                "message": context.user_message,
+                "slot_advice": slot_advice,
+            }
+        )
+
+        observations.append({
+            "subagent": self.name,
+            "ok": True,
+            "event": "slot_selection_advice_offered",
+            "recommended_time": slot_advice.get("time"),
+            "recommended_time_text": slot_advice.get("time_text"),
+            "recommended_branch": slot_advice.get("branch"),
+            "strategy": slot_advice.get("strategy"),
+        })
+
+        return SubagentResult(
+            handled=True,
+            action="ask_user",
+            answer=answer,
+            variable_updates=patched,
+            selected_subagent=self.name,
+            observations=observations,
+            tool_calls_used=tool_calls_used,
+            notes="slot selection advice offered without selecting a slot"
+        )
+
+
+    def message_requests_slot_selection_advice(
+        self,
+        message: str,
+        config: Dict[str, Any],
+        assistant_config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> bool:
+        advice_config = config.get("slot_selection_advice", {})
+        if not isinstance(advice_config, dict):
+            advice_config = {}
+
+        phrase_groups: List[Any] = []
+        phrase_groups.append(advice_config.get("phrases", []))
+
+        for path in advice_config.get("phrase_sources", []):
+            if not isinstance(path, str):
+                continue
+            value = deep_get({"config": config, "assistant_config": assistant_config}, path)
+            if value:
+                phrase_groups.append(value)
+
+        # Backward-compatible generic sources. These are config paths, not
+        # domain phrases in Python.
+        for value in [
+            config.get("hesitation_detection", {}).get("phrases", []) if isinstance(config.get("hesitation_detection", {}), dict) else [],
+            assistant_config.get("hesitation_detection", {}).get("phrases", []) if isinstance(assistant_config.get("hesitation_detection", {}), dict) else [],
+            assistant_config.get("smartness", {}).get("hesitation_detection", {}).get("phrases", []) if isinstance(assistant_config.get("smartness", {}), dict) else [],
+        ]:
+            if value:
+                phrase_groups.append(value)
+
+        phrases: List[str] = []
+        for group in phrase_groups:
+            if isinstance(group, list):
+                phrases.extend([str(item) for item in group if str(item or "").strip()])
+            elif isinstance(group, str) and group.strip():
+                phrases.append(group)
+
+        if phrases and matches_any(message, phrases, normalization):
+            return True
+
+        regexes = advice_config.get("regexes", [])
+        if not isinstance(regexes, list):
+            regexes = []
+
+        normalized = normalize_text(str(message or ""), normalization)
+        for regex in regexes:
+            try:
+                if re.search(str(regex), normalized, flags=re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+
+        return False
+
+
+    def build_slot_selection_advice(
+        self,
+        slots: List[Dict[str, Any]],
+        variables: Dict[str, Any],
+        config: Dict[str, Any],
+        normalization: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        advice_config = config.get("slot_selection_advice", {})
+        if not isinstance(advice_config, dict):
+            advice_config = {}
+
+        clean_slots = [slot for slot in slots if isinstance(slot, dict)]
+        if not clean_slots:
+            return {}
+
+        strategy = str(advice_config.get("strategy") or "prefer_matching_section_then_earliest").strip()
+
+        preferred_section = self.first_non_empty_from_paths(
+            variables=variables,
+            paths=self.get_configured_path_list(
+                config=advice_config,
+                key_path="preferred_section_paths",
+                default=["service_needed", "booking.pending.section"]
+            )
+        )
+
+        recommended = None
+        reason_key = "generic"
+
+        if preferred_section and strategy in [
+            "prefer_matching_section_then_earliest",
+            "prefer_matching_section",
+            "service_match_then_earliest"
+        ]:
+            preferred_norm = self.norm_section(str(preferred_section))
+            for slot in clean_slots:
+                if self.norm_section(str(slot.get("section") or "")) == preferred_norm:
+                    recommended = slot
+                    reason_key = "service_match"
+                    break
+
+        if recommended is None:
+            recommended = self.choose_slot_by_configured_strategy(clean_slots, advice_config)
+            reason_key = "earliest" if strategy in ["earliest", "prefer_matching_section_then_earliest", "service_match_then_earliest"] else "generic"
+
+        if not isinstance(recommended, dict):
+            return {}
+
+        time_value = str(recommended.get("time") or "").strip()
+        time_text = self.format_time_for_display(time_value, config) or time_value
+        branch = str(
+            recommended.get("branch")
+            or self.get_known_branch(variables, config)
+            or ""
+        ).strip()
+        section = str(recommended.get("section") or "").strip()
+        date_value = str(
+            recommended.get("date")
+            or deep_get(variables, config.get("appointment_date_path", "appointment_date"))
+            or deep_get(variables, "date")
+            or ""
+        ).strip()
+        date_text = str(
+            recommended.get("date_text")
+            or deep_get(variables, config.get("date_text_path", "date_text"))
+            or date_value
+        ).strip()
+
+        reason_templates = advice_config.get("reason_templates", {})
+        if not isinstance(reason_templates, dict):
+            reason_templates = {}
+
+        reason = render_template(
+            str(reason_templates.get(reason_key) or reason_templates.get("generic") or ""),
+            {
+                "variables": variables,
+                "slot": recommended,
+                "slot_advice": {
+                    "time": time_value,
+                    "time_text": time_text,
+                    "branch": branch,
+                    "section": section,
+                    "date": date_value,
+                    "date_text": date_text,
+                    "preferred_section": preferred_section or "",
+                }
+            }
+        )
+
+        return {
+            "time": time_value,
+            "time_text": time_text,
+            "branch": branch,
+            "section": section,
+            "date": date_value,
+            "date_text": date_text,
+            "reason": reason,
+            "reason_key": reason_key,
+            "strategy": strategy,
+            "advisory_only": True,
+        }
+
+
+    def choose_slot_by_configured_strategy(
+        self,
+        slots: List[Dict[str, Any]],
+        advice_config: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if not slots:
+            return None
+
+        strategy = str(advice_config.get("strategy") or "earliest").strip().lower()
+
+        if strategy in ["latest", "last"]:
+            return slots[-1]
+
+        preferred_index = advice_config.get("preferred_index")
+        if preferred_index is not None:
+            try:
+                index = int(preferred_index)
+                if 0 <= index < len(slots):
+                    return slots[index]
+            except Exception:
+                pass
+
+        # Generic fallback: choose the earliest time-like slot by the configured
+        # order already returned by the source-of-truth tool. This is advisory
+        # only and does not select the slot.
+        return slots[0]
 
 
     def handle_existing_slot_selection_if_present(
