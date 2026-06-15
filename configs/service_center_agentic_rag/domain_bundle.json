@@ -425,8 +425,8 @@
         {
           "id": "booking_already_confirmed_repeat_confirmation",
           "enabled": true,
-          "version": "6.81-completed-direct-response-state-fallback-no-hardcoding",
-          "description": "After a booking is already confirmed, repeated confirmation requests are rendered directly from configured completion facts found in variables or top-level graph state, without repeating branch/date/time.",
+          "version": "6.82-completed-direct-response-quality-guard-bypass-no-hardcoding",
+          "description": "After a booking is already confirmed, repeated confirmation requests are rendered directly from configured completion facts before response, pre-response, and quality-guard stages, so generic handoff/LLM responses cannot repeat branch/date/time.",
           "completion_id_paths": [
             "visit_id",
             "booking.confirmed.visit_id",
@@ -454,7 +454,13 @@
           "template_context_paths": [
             "visit_id",
             "booking.confirmed.visit_id"
-          ]
+          ],
+          "apply_in_nodes": [
+            "response_node",
+            "pre_response_guardrail_node",
+            "quality_guard_node"
+          ],
+          "force_before_quality_guard": true
         }
       ]
     },
@@ -9986,7 +9992,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding | 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding | 6.81-completed-direct-response-state-fallback-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding | 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding | 6.81-completed-direct-response-state-fallback-no-hardcoding | 6.82-completed-direct-response-quality-guard-bypass-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
