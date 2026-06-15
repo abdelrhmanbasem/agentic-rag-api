@@ -425,8 +425,8 @@
         {
           "id": "booking_already_confirmed_repeat_confirmation",
           "enabled": true,
-          "version": "6.86-terminal-final-answer-boundary-no-hardcoding",
-          "description": "Terminal final-answer boundary rule: after configured completion evidence exists, repeated confirmation messages or verbose completed-action repeats render a short idempotent answer after all generation, handoff, and quality paths.",
+          "version": "6.87-deterministic-repeat-confirm-routing-and-terminal-date-repair",
+          "description": "After configured completion evidence exists, repeated confirmation/control messages must route deterministically to the short idempotent confirmed-booking response and must also be repairable at the terminal final-answer boundary.",
           "completion_id_paths": [
             "visit_id",
             "booking.confirmed.visit_id",
@@ -435,7 +435,9 @@
             "booking.confirmed.arguments.visit_id",
             "tool_result.booking.visit_id",
             "tool_result.result.visit_id",
-            "tool_result.observations.*.result.booking.visit_id"
+            "tool_result.observations.*.result.booking.visit_id",
+            "tool_result.visit_id",
+            "tool_result.observations.*.result.visit_id"
           ],
           "completion_status_paths": [
             "booking_status",
@@ -450,7 +452,9 @@
           ],
           "message_regex": [
             "(?i)(تمام\\s*)?(أكد|اكد|تأكيد|confirm|confirmed).{0,24}(الحجز|booking)?",
-            "(?i)(الحجز|booking).{0,24}(متأكد|مؤكد|confirmed)"
+            "(?i)(الحجز|booking).{0,24}(متأكد|مؤكد|confirmed)",
+            "(?i)(تمام\\s*)?(أكد|اكد|أكده|اكده|تأكيد|confirm|confirmed).{0,24}(الحجز|booking)?",
+            "(?i)(تمام\\s*)?(اكمل|أكمل|كمل|كمّل).{0,24}(الحجز|booking)?"
           ],
           "answer_draft": "BOOKING_ALREADY_CONFIRMED",
           "response_template": "الحجز متأكد بالفعل. رقم الحجز: {{variables.visit_id}}.",
@@ -509,8 +513,8 @@
           ],
           "final_answer_repair": {
             "enabled": true,
-            "version": "6.86-terminal-final-answer-boundary-no-hardcoding",
-            "description": "At the terminal final-answer boundary, if completion evidence exists and either the current user message matches or the generated answer repeats completed booking facts, render the short idempotent template.",
+            "version": "6.87-deterministic-repeat-confirm-routing-and-terminal-date-repair",
+            "description": "At the terminal final-answer boundary, if completion evidence exists and the current user message matches a repeat-confirmation/control phrase or the generated answer repeats completed booking facts, render the short idempotent template.",
             "skip_when_answer_draft_in": [
               "BOOKING_CONFIRMED"
             ],
@@ -531,7 +535,8 @@
             "force_after_handoff": true,
             "terminal_repeat_answer_regex": [
               "(?is)(فرع|branch).{0,80}(يوم|date).{0,80}(الساعة|AM|PM|[0-9]{1,2}:[0-9]{2})",
-              "(?is)(اتأكد|مؤكد|متأكد|confirmed).{0,120}(فرع|branch).{0,120}(رقم الحجز|visit|VIS)"
+              "(?is)(اتأكد|مؤكد|متأكد|confirmed).{0,120}(فرع|branch).{0,120}(رقم الحجز|visit|VIS)",
+              "(?is)(يوم\\s+[^\\n]{0,40})(الساعة|الساعه|AM|PM|[0-9]{1,2}:[0-9]{2}).{0,120}(رقم الحجز|visit|VIS)"
             ]
           },
           "force_final_answer_boundary": true,
@@ -550,7 +555,18 @@
               "tool_result.observations.*.result.booking.visit_id"
             ]
           },
-          "force_terminal_answer_boundary": true
+          "force_terminal_answer_boundary": true,
+          "target_subagent_id": "booking",
+          "message_sources": [
+            {
+              "subagent_id": "booking",
+              "paths": [
+                "duplicate_confirmation_phrases",
+                "confirmation_phrases"
+              ]
+            }
+          ],
+          "runtime_version": "6.87-deterministic-repeat-confirm-routing-and-terminal-date-repair"
         }
       ]
     },
@@ -1842,7 +1858,13 @@
           "اه كمل",
           "أه كمل",
           "اه كمل الحجز",
-          "أه كمل الحجز"
+          "أه كمل الحجز",
+          "أكد الحجز",
+          "اكد الحجز",
+          "تمام أكد الحجز",
+          "تمام اكد الحجز",
+          "أكده",
+          "اكده"
         ],
         "duplicate_confirmation_phrases": [
           "اكد",
@@ -1873,7 +1895,13 @@
           "اه كمل",
           "أه كمل",
           "اه كمل الحجز",
-          "أه كمل الحجز"
+          "أه كمل الحجز",
+          "أكد الحجز",
+          "اكد الحجز",
+          "تمام أكد الحجز",
+          "تمام اكد الحجز",
+          "أكده",
+          "اكده"
         ],
         "closing_phrases": [
           "شكرا",
