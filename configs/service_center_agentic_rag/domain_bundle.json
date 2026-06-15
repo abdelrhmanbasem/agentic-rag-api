@@ -7431,7 +7431,7 @@
         "date_resolution_runtime_version": "6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding",
         "slot_selection_advice": {
           "enabled": true,
-          "version": "6.75-configured-slot-selection-advisor-no-hardcoding",
+          "version": "6.78-graph-fallback-slot-selection-advisor-no-hardcoding",
           "state_path": "booking.slot_advice",
           "mirror_to_root": true,
           "template_key": "slot_selection_advice",
@@ -7480,7 +7480,13 @@
             "earliest": "ده أول معاد متاح وهيخلّصك بدري",
             "generic": "ده اختيار عملي من المواعيد المتاحة"
           },
-          "response_template": "لو عايز رأيي، أرشح {{slot_advice.time_text}} في فرع {{slot_advice.branch}} لأن {{slot_advice.reason}}. القرار ليك، ولو مناسب قولي اختاره أو اختار أي معاد تاني من اللي فوق."
+          "response_template": "لو عايز رأيي، أرشح {{slot_advice.time_text}} في فرع {{slot_advice.branch}} لأن {{slot_advice.reason}}. القرار ليك، ولو مناسب قولي اختاره أو اختار أي معاد تاني من اللي فوق.",
+          "stage_path": "booking.stage",
+          "stage_value": "slot_selection",
+          "graph_fallback_enabled": true,
+          "graph_fallback_answer_draft_labels": [
+            "BOOKING_SLOT_SELECTION_UNCLEAR"
+          ]
         }
       },
       "troubleshooting": {
@@ -9302,6 +9308,10 @@
       },
       "BOOKING_SLOT_SELECTION_ADVICE": {
         "state": "slot_selection_advisor_mode",
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "لو عايز رأيي، أرشح {{slot_advice.time_text}} في فرع {{slot_advice.branch}} لأن {{slot_advice.reason}}. القرار ليك، ولو مناسب قولي اختاره أو اختار أي معاد تاني من اللي فوق.",
         "must_do": [
           "recommend one grounded slot from variables.slot_advice",
           "make clear this is advice, not a selected booking",
@@ -9313,6 +9323,36 @@
           "do not select the slot for the customer",
           "do not ask for branch/date again when known",
           "do not move to customer details until the customer selects a slot"
+        ]
+      },
+      "BOOKING_MISSING_CUSTOMER_VEHICLE_DETAILS": {
+        "state": "collecting_customer_and_vehicle_details",
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، عشان أكمل الحجز محتاج اسمك، رقم العربية، ماركة العربية، الفئة، وموديل السنة.",
+        "must_do": [
+          "ask for all still-missing required customer and vehicle details in one concise question",
+          "do not imply booking has been created before create_booking succeeds"
+        ],
+        "must_not_do": [
+          "do not say حجزتلك before create_booking succeeds",
+          "do not ask only for car type when name and plate are still missing"
+        ]
+      },
+      "BOOKING_MISSING_VEHICLE_DETAILS": {
+        "state": "collecting_vehicle_details",
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، عندي البيانات دي. باقي محتاج ماركة العربية، الفئة، وموديل السنة عشان أكمل الحجز.",
+        "must_do": [
+          "ask for remaining vehicle details together",
+          "preserve already-known name/phone/plate"
+        ],
+        "must_not_do": [
+          "do not ask for name or plate again when already captured",
+          "do not imply booking has been created before create_booking succeeds"
         ]
       }
     },
@@ -9884,7 +9924,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -9897,7 +9937,10 @@
       "BOOKING_DATE_RESOLVED",
       "BOOKING_REQUESTED_TIME_NOT_AVAILABLE",
       "BOOKING_REQUESTED_TIME_AMBIGUOUS",
-      "BOOKING_COMPLETED_CLOSING"
+      "BOOKING_COMPLETED_CLOSING",
+      "BOOKING_SLOT_SELECTION_ADVICE",
+      "BOOKING_MISSING_CUSTOMER_VEHICLE_DETAILS",
+      "BOOKING_MISSING_VEHICLE_DETAILS"
     ],
     "request_handling": {
       "max_stored_messages": 80,
