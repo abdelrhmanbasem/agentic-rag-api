@@ -1,4 +1,5 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
+# Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 # Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
@@ -8264,6 +8265,19 @@ def render_policy_template_answer(state: AgentState) -> str:
         or ""
     ).strip()
 
+    # 6.80: Config-driven branch-aware template selection.
+    # Some missing-input labels can be more helpful when a completed upstream
+    # action already grounded a value (for example, nearest branch found but
+    # date still missing). Python only reads configured paths/templates; the
+    # domain-specific wording and paths live in the bundle.
+    branch_template = str(policy.get("response_template_with_branch") or "").strip()
+    branch_paths = policy.get("branch_paths") if isinstance(policy.get("branch_paths"), list) else []
+    if branch_template and branch_paths:
+        for branch_path in branch_paths:
+            if graph_dotted_get(variables, str(branch_path or ""), None) not in [None, "", [], {}]:
+                template = branch_template
+                break
+
     if not template:
         safe_examples = policy.get("safe_examples", []) if isinstance(policy, dict) else []
         if isinstance(safe_examples, list):
@@ -8333,6 +8347,116 @@ def maybe_policy_template_answer(state: AgentState) -> str:
 
     return render_policy_template_answer(state)
 
+
+
+def completed_flow_direct_response_from_config(state: AgentState) -> str:
+    """
+    Render configured direct responses after a workflow is already complete.
+
+    This is used for idempotent post-completion messages such as a repeated
+    confirmation request. It is generic: completion paths, matching rules, and
+    templates are all configured in the assistant bundle.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    message = last_user_message(state)
+
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return ""
+
+    rules = guardrails.get("completed_flow_direct_responses", [])
+    if isinstance(rules, dict):
+        rules = list(rules.values())
+    if not isinstance(rules, list):
+        return ""
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+            continue
+
+        id_paths = rule.get("completion_id_paths", [])
+        if not isinstance(id_paths, list):
+            id_paths = []
+        status_paths = rule.get("completion_status_paths", [])
+        if not isinstance(status_paths, list):
+            status_paths = []
+        completed_statuses = {
+            str(item or "").strip().lower()
+            for item in rule.get("completed_statuses", []) or []
+            if str(item or "").strip()
+        }
+
+        completed = False
+        for path in id_paths:
+            if graph_dotted_get(variables, str(path or ""), None) not in [None, "", [], {}]:
+                completed = True
+                break
+        if not completed:
+            for path in status_paths:
+                value = str(graph_dotted_get(variables, str(path or ""), "") or "").strip().lower()
+                if value and (not completed_statuses or value in completed_statuses):
+                    completed = True
+                    break
+        if not completed:
+            continue
+
+        sources = rule.get("message_sources") or []
+        regexes = rule.get("message_regex") or []
+        if sources and semantic_sources_match(message, agent_config, sources):
+            matched = True
+        elif regexes and regex_list_matches(message, regexes):
+            matched = True
+        else:
+            matched = False
+        if not matched:
+            continue
+
+        template = str(
+            rule.get("response_template")
+            or rule.get("deterministic_template")
+            or rule.get("safe_template")
+            or ""
+        ).strip()
+
+        answer_draft = str(
+            rule.get("answer_draft")
+            or rule.get("template_key")
+            or rule.get("answer_label")
+            or ""
+        ).strip()
+
+        if not template and answer_draft:
+            policy = get_template_policy_for_answer_draft(agent_config, answer_draft)
+            if isinstance(policy, dict):
+                template = str(
+                    policy.get("response_template")
+                    or policy.get("deterministic_template")
+                    or policy.get("safe_template")
+                    or ""
+                ).strip()
+                if not template:
+                    examples = policy.get("safe_examples", [])
+                    if isinstance(examples, list):
+                        for example in examples:
+                            example_text = str(example or "").strip()
+                            if example_text:
+                                template = example_text
+                                break
+        if not template:
+            continue
+
+        rendered = render_template(template, {
+            "variables": variables,
+            "manifest": state.get("manifest", {}) or {},
+            "tool_result": state.get("tool_result", {}) or {},
+            "latest_user_message": message,
+            "answer_draft": answer_draft,
+        }).strip()
+        if rendered:
+            return rendered
+
+    return ""
 
 def completed_flow_closing_response_from_config(state: AgentState) -> str:
     """
@@ -8521,6 +8645,31 @@ def build_layered_response_rules(agent_config: Dict[str, Any]) -> Dict[str, List
 
 
 def simple_response_node(state: AgentState):
+    configured_direct_answer = completed_flow_direct_response_from_config(state)
+    if configured_direct_answer:
+        configured_direct_answer = enforce_answer_safety(configured_direct_answer, state)
+        agent_config_for_direct = state.get("agent_config", {}) or {}
+        manifest_for_direct = state.get("manifest", {}) or {}
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=manifest_for_direct,
+            funnel_stage=str(state.get("funnel_stage", "") or manifest_for_direct.get("funnel_stage", "")),
+            last_offered_options=derive_last_offered_options_from_state(state),
+            agent_config=agent_config_for_direct,
+        )
+        return {
+            "messages": [AIMessage(content=configured_direct_answer)],
+            "final_answer": configured_direct_answer,
+            "variables": mirrored_variables,
+            "quality": {
+                "pass_check": True,
+                "skipped": False,
+                "simple_response_mode": True,
+                "node": "simple_response_completed_flow_direct_response",
+                "deterministic_template_used": True,
+            },
+        }
+
     configured_closing_answer = completed_flow_closing_response_from_config(state)
     if configured_closing_answer:
         configured_closing_answer = enforce_answer_safety(configured_closing_answer, state)
@@ -8928,6 +9077,32 @@ def maybe_graph_slot_selection_advisor_response(state: AgentState) -> Dict[str, 
 
 def response_node(state: AgentState):
     derived_last_offered_options = derive_last_offered_options_from_state(state)
+    configured_direct_answer = completed_flow_direct_response_from_config(state)
+
+    if configured_direct_answer:
+        configured_direct_answer = enforce_answer_safety(configured_direct_answer, state)
+        result = {
+            "messages": [AIMessage(content=configured_direct_answer)],
+            "final_answer": configured_direct_answer,
+            "quality": {
+                "node": "response_completed_flow_direct_response",
+                "pre_quality_guard": True,
+                "deterministic_template_used": True,
+            },
+        }
+        mirrored_variables = mirror_runtime_metadata_into_variables(
+            state.get("variables", {}) or {},
+            manifest=state.get("manifest", {}) or {},
+            funnel_stage=str(state.get("funnel_stage", "") or (state.get("manifest", {}) or {}).get("funnel_stage", "")),
+            last_offered_options=derived_last_offered_options,
+            agent_config=state.get("agent_config", {}) or {},
+        )
+        if mirrored_variables != (state.get("variables", {}) or {}):
+            result["variables"] = mirrored_variables
+        if derived_last_offered_options:
+            result["last_offered_options"] = derived_last_offered_options
+        return result
+
     configured_closing_answer = completed_flow_closing_response_from_config(state)
 
     if configured_closing_answer:
