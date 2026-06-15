@@ -1,3 +1,4 @@
+# Architecture patch: 6.87-completed-flow-direct-response-routing-and-date-repeat-repair-no-hardcoding
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
 # Architecture patch: 6.83-final-answer-operational-fact-repairs-no-hardcoding
@@ -3283,6 +3284,15 @@ def get_active_configured_flow_subagent_id(
     if not isinstance(guardrails, dict):
         return ""
 
+    direct_response_target = completed_flow_direct_response_target_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+        manifest=manifest,
+    )
+    if direct_response_target:
+        return direct_response_target
+
     closing_target = completed_flow_closing_subagent_id(
         agent_config=agent_config,
         variables=variables,
@@ -5435,6 +5445,12 @@ def unified_manifest_node(state: AgentState):
             agent_config=agent_config,
             variables=variables,
         )
+        parsed = apply_completed_flow_direct_response_guardrails(
+            manifest=parsed,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
         parsed = apply_active_deterministic_flow_guardrails(
             manifest=parsed,
             message=message,
@@ -5567,6 +5583,12 @@ def unified_manifest_node(state: AgentState):
         }
 
         manifest = apply_routing_guardrails(
+            manifest=manifest,
+            message=message,
+            agent_config=agent_config,
+            variables=variables,
+        )
+        manifest = apply_completed_flow_direct_response_guardrails(
             manifest=manifest,
             message=message,
             agent_config=agent_config,
@@ -8382,46 +8404,104 @@ def completed_flow_value_from_variables_or_state(variables: Dict[str, Any], stat
     return default
 
 
-def current_user_message_for_direct_response(state: AgentState) -> str:
-    """
-    Return the current user message for deterministic post-completion response
-    rules.
+def normalize_runtime_text_for_config_match(text: Any, agent_config: Dict[str, Any]) -> str:
+    normalization = agent_config.get("normalization", {}) or {}
+    digit_map = normalization.get("digit_map", {}) if isinstance(normalization, dict) else {}
+    replacements = normalization.get("replacements", {}) if isinstance(normalization, dict) else {}
 
-    v6.86: never fall back to an assistant message. In late graph nodes the
-    state messages list may contain only the generated AIMessage update, and
-    the previous implementation could accidentally treat that assistant answer
-    as the current user message. Post-completion routing must be based only on
-    HumanMessage content or explicitly persisted user-message fields.
+    output = graph_normalize_digits(str(text or ""), digit_map)
+
+    if isinstance(replacements, dict):
+        for old, new in replacements.items():
+            output = output.replace(str(old), str(new))
+
+    output = re.sub(r"\s+", " ", output)
+    return output.strip().lower()
+
+
+def user_message_candidates_for_direct_response(state: AgentState) -> List[str]:
     """
+    Collect plausible current-user-message candidates for deterministic direct
+    response guards.
+
+    v6.87: some late nodes can lose the most recent HumanMessage in the merged
+    state, or keep it only in an auxiliary field. Post-completion routing should
+    therefore consider all persisted user-message mirrors, never assistant text.
+    """
+    candidates: List[str] = []
+
     for msg in reversed(state.get("messages", []) or []):
         if isinstance(msg, HumanMessage):
             message = str(getattr(msg, "content", "") or "").strip()
             if message:
-                return message
+                candidates.append(message)
 
-    for key in ["latest_user_message", "user_message", "message", "input", "current_user_message"]:
-        value = str(state.get(key, "") or "").strip()
-        if value:
-            return value
+    for container in [
+        state,
+        state.get("manifest", {}) if isinstance(state.get("manifest", {}), dict) else {},
+        state.get("variables", {}) if isinstance(state.get("variables", {}), dict) else {},
+        state.get("request_metadata", {}) if isinstance(state.get("request_metadata", {}), dict) else {},
+    ]:
+        if not isinstance(container, dict):
+            continue
 
-    manifest = state.get("manifest", {}) if isinstance(state.get("manifest", {}), dict) else {}
-    for key in ["latest_user_message", "user_message", "message", "current_user_message"]:
-        value = str(manifest.get(key, "") or "").strip()
-        if value:
-            return value
-    return ""
+        for key in [
+            "latest_user_message",
+            "user_message",
+            "message",
+            "input",
+            "current_user_message",
+            "latest_message",
+            "last_user_message",
+        ]:
+            value = str(container.get(key, "") or "").strip()
+            if value:
+                candidates.append(value)
+
+    return dedupe_strings(candidates, limit=12)
+
+
+def current_user_message_for_direct_response(state: AgentState) -> str:
+    """
+    Return the best current-user-message candidate for deterministic
+    post-completion response rules.
+
+    The helper still prefers the latest HumanMessage, but it now falls back to
+    explicitly persisted user-message mirrors instead of returning an empty
+    string when late-node state compaction drops the HumanMessage.
+    """
+    candidates = user_message_candidates_for_direct_response(state)
+    return candidates[0] if candidates else ""
 
 
 def completed_flow_rule_matches_current_message(rule: Dict[str, Any], state: AgentState, agent_config: Dict[str, Any]) -> bool:
-    message = current_user_message_for_direct_response(state)
-    if not message:
+    messages = user_message_candidates_for_direct_response(state)
+    if not messages:
         return False
+
     sources = rule.get("message_sources") or []
     regexes = rule.get("message_regex") or []
-    if sources and semantic_sources_match(message, agent_config, sources):
-        return True
-    if regexes and regex_list_matches(message, regexes):
-        return True
+
+    for message in messages:
+        variants = dedupe_strings([
+            str(message or "").strip(),
+            normalize_runtime_text_for_config_match(message, agent_config),
+        ], limit=4)
+
+        if sources and any(
+            semantic_sources_match(candidate, agent_config, sources)
+            for candidate in variants
+            if candidate
+        ):
+            return True
+
+        if regexes and any(
+            regex_list_matches(candidate, regexes)
+            for candidate in variants
+            if candidate
+        ):
+            return True
+
     return False
 
 
@@ -8612,6 +8692,133 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
             return rendered
 
     return ""
+
+
+def completed_flow_direct_response_target_subagent_id(
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+    message: str,
+    manifest: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Resolve a deterministic executor target for repeated post-completion
+    confirmation/control turns.
+
+    This prevents planner drift to unrelated subagents such as handoff when a
+    completed-flow direct response rule already proves the reply should be
+    idempotent and short.
+    """
+    if not str(message or "").strip():
+        return ""
+
+    state: AgentState = {
+        "agent_config": agent_config or {},
+        "variables": variables or {},
+        "manifest": manifest or {},
+        "messages": [HumanMessage(content=str(message))],
+    }
+
+    guardrails = agent_config.get("routing_guardrails", {}) or {}
+    closing_rule = (
+        guardrails.get("completed_flow_closing")
+        or guardrails.get("completed_flow_closing_routing")
+        or {}
+    ) if isinstance(guardrails, dict) else {}
+    closing_target = unify_subagent_id(
+        str(
+            closing_rule.get("target_subagent_id")
+            or closing_rule.get("subagent_id")
+            or ""
+        ).strip()
+    ) if isinstance(closing_rule, dict) else ""
+
+    for rule in completed_flow_rules_from_config(agent_config):
+        if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+            continue
+        if not final_answer_completed_rule_is_satisfied(rule, variables or {}, state):
+            continue
+        if not completed_flow_rule_matches_current_message(rule, state, agent_config or {}):
+            continue
+
+        for key in [
+            "target_subagent_id",
+            "subagent_id",
+            "selected_subagent_id",
+            "executor_subagent_id",
+        ]:
+            target = unify_subagent_id(str(rule.get(key) or "").strip())
+            if target:
+                return target
+
+        if closing_target:
+            return closing_target
+
+    return ""
+
+
+def apply_completed_flow_direct_response_guardrails(
+    manifest: Dict[str, Any],
+    message: str,
+    agent_config: Dict[str, Any],
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Deterministically route repeated post-completion confirmation turns away
+    from planner/handoff drift and toward the direct-response boundary.
+
+    The reply itself is still rendered by the configured completed-flow direct
+    response template; this guard only stabilizes routing and avoids unnecessary
+    tool/executor work.
+    """
+    target = completed_flow_direct_response_target_subagent_id(
+        agent_config=agent_config,
+        variables=variables,
+        message=message,
+        manifest=manifest,
+    )
+    if not target:
+        return manifest
+
+    patched = dict(manifest or {})
+    patched["selected_subagent_id"] = unify_subagent_id(target)
+    patched["chained_subagent_id"] = ""
+    patched["simple_response_mode"] = False
+    patched["needs_tool"] = False
+    patched["needs_subagent_reasoning"] = False
+    patched["needs_quality_guard"] = True
+    patched["needs_style_repair"] = True
+    patched["conversation_stage"] = str(
+        patched.get("conversation_stage") or "completed_flow_direct_response"
+    )
+    patched["workflow_stage"] = str(
+        patched.get("workflow_stage") or "completed_flow_direct_response"
+    )
+
+    response_synthesis = (
+        patched.get("response_synthesis")
+        if isinstance(patched.get("response_synthesis"), dict)
+        else {}
+    )
+    response_synthesis["completed_flow_direct_response_candidate"] = True
+    patched["response_synthesis"] = response_synthesis
+
+    brief = patched.get("response_brief")
+    if not isinstance(brief, dict):
+        brief = {}
+
+    brief["must_do"] = append_unique(brief.get("must_do", []), [
+        "use the configured short idempotent completed-flow response",
+        "keep the reply brief and do not repeat already confirmed operational details",
+    ])
+    brief["must_not_do"] = append_unique(brief.get("must_not_do", []), [
+        "do not repeat branch, date, or time unless the user explicitly asks for them",
+        "do not route this turn to handoff or another unrelated executor",
+    ])
+    if not str(brief.get("next_move") or "").strip():
+        brief["next_move"] = "Acknowledge the already completed action briefly and stop."
+
+    patched["response_brief"] = brief
+    return patched
 
 def completed_flow_closing_response_from_config(state: AgentState) -> str:
     """
@@ -10039,16 +10246,34 @@ def final_answer_configured_path_value(variables: Dict[str, Any], state: AgentSt
     return default
 
 
-def final_answer_text_contains_any(text: str, terms: Any) -> bool:
-    haystack = str(text or "")
+def final_answer_text_contains_any(text: str, terms: Any, agent_config: Optional[Dict[str, Any]] = None) -> bool:
+    haystacks = dedupe_strings([
+        str(text or ""),
+        normalize_runtime_text_for_config_match(text, agent_config or {}),
+    ], limit=4)
+
     if isinstance(terms, str):
         terms = [terms]
     if not isinstance(terms, list):
         return False
+
+    needles: List[str] = []
     for term in terms:
         needle = str(term or "").strip()
-        if needle and needle in haystack:
-            return True
+        if not needle:
+            continue
+        needles.extend([
+            needle,
+            normalize_runtime_text_for_config_match(needle, agent_config or {}),
+        ])
+
+    for haystack in haystacks:
+        if not haystack:
+            continue
+        for needle in dedupe_strings(needles, limit=400):
+            if needle and needle in haystack:
+                return True
+
     return False
 
 
@@ -10069,6 +10294,141 @@ def final_answer_branch_terms_for_value(agent_config: Dict[str, Any], value: Any
                 terms.extend(all_terms)
     return dedupe_strings(terms, limit=80)
 
+
+
+def final_answer_iso_date_variants(value_text: str) -> List[str]:
+    text = str(value_text or "").strip()
+    if not looks_like_iso_date(text):
+        return []
+
+    try:
+        year_text, month_text, day_text = text.split("-", 2)
+        year = int(year_text)
+        month = int(month_text)
+        day = int(day_text)
+    except Exception:
+        return [text]
+
+    english_months = {
+        1: ["January", "Jan"],
+        2: ["February", "Feb"],
+        3: ["March", "Mar"],
+        4: ["April", "Apr"],
+        5: ["May"],
+        6: ["June", "Jun"],
+        7: ["July", "Jul"],
+        8: ["August", "Aug"],
+        9: ["September", "Sep", "Sept"],
+        10: ["October", "Oct"],
+        11: ["November", "Nov"],
+        12: ["December", "Dec"],
+    }
+    arabic_months = {
+        1: ["يناير"],
+        2: ["فبراير"],
+        3: ["مارس"],
+        4: ["ابريل", "أبريل", "إبريل"],
+        5: ["مايو"],
+        6: ["يونيو", "يونيه"],
+        7: ["يوليو", "يوليه"],
+        8: ["اغسطس", "أغسطس", "اوغسطس", "أوغسطس"],
+        9: ["سبتمبر"],
+        10: ["اكتوبر", "أكتوبر", "إكتوبر"],
+        11: ["نوفمبر"],
+        12: ["ديسمبر"],
+    }
+    arabic_day_words = {
+        1: ["واحد", "واحده", "الأول", "الاول", "اول"],
+        2: ["اتنين", "اثنين", "الثاني", "التاني"],
+        3: ["ثلاثة", "تلاتة", "الثالث", "التالت"],
+        4: ["اربعة", "أربعة", "الرابع"],
+        5: ["خمسة", "الخامس"],
+        6: ["ستة", "السادس"],
+        7: ["سبعة", "السابع"],
+        8: ["ثمانية", "تمانية", "الثامن"],
+        9: ["تسعة", "التاسع"],
+        10: ["عشرة", "العاشر"],
+        11: ["حداشر", "أحد عشر", "احد عشر", "الحادي عشر"],
+        12: ["اتناشر", "اثنا عشر", "إثنا عشر", "الثاني عشر"],
+        13: ["تلاتتاشر", "ثلاثة عشر", "الثالث عشر"],
+        14: ["اربعتاشر", "أربعة عشر", "الرابع عشر"],
+        15: ["خمستاشر", "خمسة عشر", "الخامس عشر"],
+        16: ["ستاشر", "ستة عشر", "السادس عشر"],
+        17: ["سبعتاشر", "سبعة عشر", "السابع عشر"],
+        18: ["تمانتاشر", "ثمانية عشر", "الثامن عشر"],
+        19: ["تسعتاشر", "تسعة عشر", "التاسع عشر"],
+        20: ["عشرين", "العشرون"],
+        21: ["واحد وعشرين", "واحد و عشرين", "الحادي والعشرون"],
+        22: ["اتنين وعشرين", "اثنين وعشرين", "الثاني والعشرون"],
+        23: ["تلاتة وعشرين", "ثلاثة وعشرين", "الثالث والعشرون"],
+        24: ["اربعة وعشرين", "أربعة وعشرين", "الرابع والعشرون"],
+        25: ["خمسة وعشرين", "الخامس والعشرون"],
+        26: ["ستة وعشرين", "السادس والعشرون"],
+        27: ["سبعة وعشرين", "السابع والعشرون"],
+        28: ["تمانية وعشرين", "ثمانية وعشرين", "الثامن والعشرون"],
+        29: ["تسعة وعشرين", "التاسع والعشرون"],
+        30: ["ثلاثين", "التلاتين", "الثلاثون"],
+        31: ["واحد وتلاتين", "واحد و تلاتين", "الحادي والثلاثون"],
+    }
+
+    day_numeric_terms = [
+        str(day),
+        f"{day:02d}",
+    ]
+    year_numeric_terms = [
+        str(year),
+        f"{year:04d}",
+    ]
+
+    eastern_digits = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+    month_name_terms = (english_months.get(month, []) or []) + (arabic_months.get(month, []) or [])
+    day_word_terms = arabic_day_words.get(day, [])
+
+    terms = [text]
+    terms.extend([
+        f"{year:04d}-{month:02d}-{day:02d}",
+        f"{day}/{month}/{year}",
+        f"{day:02d}/{month:02d}/{year:04d}",
+        f"{day}-{month}-{year}",
+        f"{day:02d}-{month:02d}-{year:04d}",
+    ])
+
+    for month_name in month_name_terms:
+        for day_term in day_numeric_terms + day_word_terms:
+            day_term = str(day_term or "").strip()
+            if not day_term:
+                continue
+            terms.extend([
+                f"{day_term} {month_name}",
+                f"يوم {day_term} {month_name}",
+                f"{day_term} من {month_name}",
+            ])
+            for year_term in year_numeric_terms:
+                year_term = str(year_term or "").strip()
+                terms.extend([
+                    f"{day_term} {month_name} {year_term}",
+                    f"{day_term} {month_name} سنة {year_term}",
+                ])
+
+    translated_terms = []
+    for term in list(terms):
+        translated_terms.append(term.translate(eastern_digits))
+
+    return dedupe_strings(terms + translated_terms, limit=240)
+
+
+def final_answer_date_terms_for_value(value_text: str) -> List[str]:
+    text = str(value_text or "").strip()
+    if not text:
+        return []
+
+    terms = [text]
+    terms.extend(final_answer_iso_date_variants(text))
+
+    eastern_digits = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+    terms.append(text.translate(eastern_digits))
+
+    return dedupe_strings(terms, limit=240)
 
 def final_answer_configured_branch_alias_terms(agent_config: Dict[str, Any], rule: Dict[str, Any]) -> List[str]:
     terms: List[str] = []
@@ -10202,7 +10562,9 @@ def final_answer_terms_for_configured_path(agent_config: Dict[str, Any], path: s
         terms.extend(final_answer_branch_terms_for_value(agent_config, value_text))
     if "time" in path_text:
         terms.extend(final_answer_time_terms_for_value(value_text))
-    return dedupe_strings(terms, limit=120)
+    if "date" in path_text:
+        terms.extend(final_answer_date_terms_for_value(value_text))
+    return dedupe_strings(terms, limit=240)
 
 
 def final_answer_time_terms_for_value(value_text: str) -> List[str]:
@@ -10248,7 +10610,7 @@ def final_answer_repeats_configured_detail_groups(text: str, rule: Dict[str, Any
         group_terms = dedupe_strings(group_terms, limit=120)
         if not group_terms:
             return False
-        if not final_answer_text_contains_any(text, group_terms):
+        if not final_answer_text_contains_any(text, group_terms, agent_config):
             return False
     return True
 
@@ -10373,7 +10735,7 @@ def repair_unsupported_operational_fact_from_config(text: str, state: AgentState
             continue
 
         terms = final_answer_configured_branch_alias_terms(agent_config, rule)
-        if not terms or not final_answer_text_contains_any(text, terms):
+        if not terms or not final_answer_text_contains_any(text, terms, agent_config):
             continue
 
         template = str(rule.get("response_template") or rule.get("safe_template") or "").strip()
@@ -10648,7 +11010,11 @@ def compact_graph_messages_for_memory(messages: Sequence[BaseMessage], limit: in
     return output
 
 
-def final_answer_matches_completed_repeat_regex_from_config(text: str, rule: Dict[str, Any]) -> bool:
+def final_answer_matches_completed_repeat_regex_from_config(
+    text: str,
+    rule: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Config-driven terminal detector for verbose repeated completed-action answers."""
     if not isinstance(rule, dict):
         return False
@@ -10665,7 +11031,15 @@ def final_answer_matches_completed_repeat_regex_from_config(text: str, rule: Dic
             value = [value]
         if isinstance(value, list):
             regexes.extend([str(item or "").strip() for item in value if str(item or "").strip()])
-    return bool(regexes and regex_list_matches(str(text or ""), regexes))
+
+    if not regexes:
+        return False
+
+    variants = dedupe_strings([
+        str(text or ""),
+        normalize_runtime_text_for_config_match(text, agent_config or {}),
+    ], limit=4)
+    return any(regex_list_matches(candidate, regexes) for candidate in variants if candidate)
 
 
 def terminal_completed_flow_response_from_config(state: AgentState) -> str:
@@ -10693,7 +11067,7 @@ def terminal_completed_flow_response_from_config(state: AgentState) -> str:
 
         message_matches = completed_flow_rule_matches_current_message(rule, state, agent_config)
         detail_repeat_matches = final_answer_repeats_configured_detail_groups(current_answer, rule, variables, state, agent_config)
-        regex_repeat_matches = final_answer_matches_completed_repeat_regex_from_config(current_answer, rule)
+        regex_repeat_matches = final_answer_matches_completed_repeat_regex_from_config(current_answer, rule, agent_config)
 
         if not (message_matches or detail_repeat_matches or regex_repeat_matches):
             continue
