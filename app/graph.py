@@ -1,6 +1,6 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
-# Architecture patch: 6.82-completed-direct-response-quality-guard-bypass-no-hardcoding
+# Architecture patch: 6.83-final-answer-operational-fact-repairs-no-hardcoding
 # Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
@@ -9941,6 +9941,274 @@ def render_configured_visit_id_append(
 
     return f"{text}\n{addition}".strip()
 
+
+def final_answer_configured_path_value(variables: Dict[str, Any], state: AgentState, path: str, default: Any = None) -> Any:
+    path_text = str(path or "").strip()
+    if not path_text:
+        return default
+    if path_text.startswith("variables."):
+        path_text = path_text[len("variables."):]
+
+    for source in [variables, state, state.get("variables", {}) or {}]:
+        if not isinstance(source, dict):
+            continue
+        value = graph_dotted_get(source, path_text, None)
+        if value not in [None, "", [], {}]:
+            return value
+    return default
+
+
+def final_answer_text_contains_any(text: str, terms: Any) -> bool:
+    haystack = str(text or "")
+    if isinstance(terms, str):
+        terms = [terms]
+    if not isinstance(terms, list):
+        return False
+    for term in terms:
+        needle = str(term or "").strip()
+        if needle and needle in haystack:
+            return True
+    return False
+
+
+def final_answer_branch_terms_for_value(agent_config: Dict[str, Any], value: Any) -> List[str]:
+    value_text = str(value or "").strip()
+    terms: List[str] = []
+    if value_text:
+        terms.append(value_text)
+
+    aliases = agent_config.get("branch_aliases", {})
+    if isinstance(aliases, dict):
+        for canonical, alias_values in aliases.items():
+            canonical_text = str(canonical or "").strip()
+            alias_list = alias_values if isinstance(alias_values, list) else []
+            all_terms = [canonical_text] + [str(item or "").strip() for item in alias_list]
+            all_terms = [item for item in all_terms if item]
+            if value_text and value_text in all_terms:
+                terms.extend(all_terms)
+    return dedupe_strings(terms, limit=80)
+
+
+def final_answer_configured_branch_alias_terms(agent_config: Dict[str, Any], rule: Dict[str, Any]) -> List[str]:
+    terms: List[str] = []
+    configured_terms = rule.get("terms", []) if isinstance(rule, dict) else []
+    if isinstance(configured_terms, str):
+        configured_terms = [configured_terms]
+    if isinstance(configured_terms, list):
+        terms.extend([str(item or "").strip() for item in configured_terms if str(item or "").strip()])
+
+    alias_source = str((rule or {}).get("alias_source") or "branch_aliases").strip()
+    if alias_source == "branch_aliases":
+        aliases = agent_config.get("branch_aliases", {})
+        if isinstance(aliases, dict):
+            for canonical, alias_values in aliases.items():
+                if str(canonical or "").strip():
+                    terms.append(str(canonical).strip())
+                if isinstance(alias_values, list):
+                    terms.extend([str(item or "").strip() for item in alias_values if str(item or "").strip()])
+    return dedupe_strings(terms, limit=200)
+
+
+def final_answer_has_any_grounded_path(variables: Dict[str, Any], state: AgentState, paths: Any) -> bool:
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, list):
+        return False
+    for path in paths:
+        if final_answer_configured_path_value(variables, state, str(path or ""), None) not in [None, "", [], {}]:
+            return True
+    return False
+
+
+def final_answer_completed_rule_is_satisfied(rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState) -> bool:
+    id_paths = rule.get("completion_id_paths", []) if isinstance(rule, dict) else []
+    if isinstance(id_paths, str):
+        id_paths = [id_paths]
+    status_paths = rule.get("completion_status_paths", []) if isinstance(rule, dict) else []
+    if isinstance(status_paths, str):
+        status_paths = [status_paths]
+    completed_statuses = {
+        str(item or "").strip().lower()
+        for item in (rule.get("completed_statuses", []) if isinstance(rule, dict) else []) or []
+        if str(item or "").strip()
+    }
+
+    for path in id_paths if isinstance(id_paths, list) else []:
+        if final_answer_configured_path_value(variables, state, str(path or ""), None) not in [None, "", [], {}]:
+            return True
+
+    for path in status_paths if isinstance(status_paths, list) else []:
+        value = str(final_answer_configured_path_value(variables, state, str(path or ""), "") or "").strip().lower()
+        if value and (not completed_statuses or value in completed_statuses):
+            return True
+    return False
+
+
+def final_answer_terms_for_configured_path(agent_config: Dict[str, Any], path: str, value: Any) -> List[str]:
+    value_text = str(value or "").strip()
+    if not value_text:
+        return []
+    terms = [value_text]
+    path_text = str(path or "").lower()
+    if "branch" in path_text:
+        terms.extend(final_answer_branch_terms_for_value(agent_config, value_text))
+    return dedupe_strings(terms, limit=80)
+
+
+def final_answer_repeats_configured_detail_groups(text: str, rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, agent_config: Dict[str, Any]) -> bool:
+    groups = rule.get("repeat_detail_path_groups", []) if isinstance(rule, dict) else []
+    if not isinstance(groups, list) or not groups:
+        return False
+
+    for group in groups:
+        paths = group if isinstance(group, list) else [group]
+        group_terms: List[str] = []
+        for path in paths:
+            path_text = str(path or "").strip()
+            value = final_answer_configured_path_value(variables, state, path_text, None)
+            if value in [None, "", [], {}]:
+                continue
+            group_terms.extend(final_answer_terms_for_configured_path(agent_config, path_text, value))
+        group_terms = dedupe_strings(group_terms, limit=120)
+        if not group_terms:
+            return False
+        if not final_answer_text_contains_any(text, group_terms):
+            return False
+    return True
+
+
+def render_completed_flow_response_template(rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, current_answer: str = "") -> str:
+    template = str(
+        (rule or {}).get("response_template")
+        or (rule or {}).get("deterministic_template")
+        or (rule or {}).get("safe_template")
+        or ""
+    ).strip()
+    answer_draft = str(
+        (rule or {}).get("answer_draft")
+        or (rule or {}).get("template_key")
+        or (rule or {}).get("answer_label")
+        or ""
+    ).strip()
+    if not template and answer_draft:
+        policy = get_template_policy_for_answer_draft(state.get("agent_config", {}) or {}, answer_draft)
+        if isinstance(policy, dict):
+            template = str(policy.get("response_template") or policy.get("deterministic_template") or policy.get("safe_template") or "").strip()
+    if not template:
+        return ""
+    render_variables = completed_flow_template_variables_from_config(variables, state, rule, template)
+    rendered = render_template(template, {
+        "variables": render_variables,
+        "manifest": state.get("manifest", {}) or {},
+        "tool_result": state.get("tool_result", {}) or {},
+        "latest_user_message": last_user_message(state),
+        "current_answer": current_answer,
+        "answer_draft": answer_draft,
+    }).strip()
+    return rendered
+
+
+def repair_completed_flow_repeated_details_from_config(text: str, state: AgentState) -> str:
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    guardrails = agent_config.get("routing_guardrails", {})
+    if not isinstance(guardrails, dict):
+        return text
+    rules = guardrails.get("completed_flow_direct_responses", [])
+    if isinstance(rules, dict):
+        rules = list(rules.values())
+    if not isinstance(rules, list):
+        return text
+
+    answer_draft = get_tool_answer_draft(state)
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+            continue
+        repair = rule.get("final_answer_repair", {})
+        if not isinstance(repair, dict) or repair.get("enabled", False) is False:
+            if not rule.get("suppress_full_booking_repeat"):
+                continue
+            repair = rule
+
+        skip_drafts = as_string_list(repair.get("skip_when_answer_draft_in", []) or rule.get("skip_when_answer_draft_in", []))
+        if answer_draft and answer_draft in skip_drafts:
+            continue
+
+        if not final_answer_completed_rule_is_satisfied(rule, variables, state):
+            continue
+
+        current_answer_patterns = repair.get("current_answer_regex", [])
+        if current_answer_patterns and not regex_list_matches(text, current_answer_patterns):
+            continue
+
+        if not final_answer_repeats_configured_detail_groups(text, rule, variables, state, agent_config):
+            continue
+
+        rendered = render_completed_flow_response_template(rule, variables, state, text)
+        if rendered:
+            return rendered
+    return text
+
+
+def repair_unsupported_operational_fact_from_config(text: str, state: AgentState) -> str:
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    safety_config = agent_config.get("answer_safety", {}) or {}
+    guard = safety_config.get("unsupported_operational_fact_guard", {})
+    if not isinstance(guard, dict) or guard.get("enabled", False) is False:
+        return text
+
+    rules = guard.get("rules", [])
+    if isinstance(rules, dict):
+        rules = list(rules.values())
+    if not isinstance(rules, list):
+        return text
+
+    tool_result = state.get("tool_result", {}) if isinstance(state.get("tool_result", {}), dict) else {}
+    tool_operation = str(tool_result.get("operation") or tool_result.get("tool_operation") or "").strip()
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled", False) is False:
+            continue
+        fact_type = str(rule.get("fact_type") or "").strip().lower()
+        if fact_type != "branch":
+            continue
+
+        allowed_operations = as_string_list(rule.get("allowed_tool_operations", []))
+        if allowed_operations and tool_operation in allowed_operations:
+            continue
+
+        grounding_paths = rule.get("grounded_value_paths") or rule.get("known_value_paths") or []
+        if final_answer_has_any_grounded_path(variables, state, grounding_paths):
+            continue
+
+        terms = final_answer_configured_branch_alias_terms(agent_config, rule)
+        if not terms or not final_answer_text_contains_any(text, terms):
+            continue
+
+        template = str(rule.get("response_template") or rule.get("safe_template") or "").strip()
+        if not template:
+            continue
+        rendered = render_template(template, {
+            "variables": variables,
+            "manifest": state.get("manifest", {}) or {},
+            "tool_result": tool_result,
+            "latest_user_message": last_user_message(state),
+            "current_answer": text,
+        }).strip()
+        if rendered:
+            return rendered
+    return text
+
+
+def apply_configured_final_answer_repairs(text: str, state: AgentState) -> str:
+    repaired = str(text or "").strip()
+    if not repaired:
+        return repaired
+    repaired = repair_completed_flow_repeated_details_from_config(repaired, state)
+    repaired = repair_unsupported_operational_fact_from_config(repaired, state)
+    return repaired.strip()
+
 def enforce_answer_safety(answer: str, state: AgentState) -> str:
     text = str(answer or "").strip()
     agent_config = state.get("agent_config", {}) or {}
@@ -10006,6 +10274,9 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
         and visit_id not in text
     ):
         text = render_configured_visit_id_append(text, visit_id, state)
+
+    text = apply_configured_final_answer_repairs(text, state)
+    text = re.sub(r"\s{2,}", " ", text).strip()
 
     return text
 
