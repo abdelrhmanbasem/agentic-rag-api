@@ -1,6 +1,7 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.76-completed-flow-state-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
+# Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
@@ -8433,6 +8434,303 @@ Smartness instructions:
         },
     }
 
+
+
+def graph_format_time_for_display(time_value: str) -> str:
+    """
+    Lightweight display formatter for configured slot advice. This is generic
+    HH:MM -> 12-hour text; no business/domain phrase is encoded here.
+    """
+    value = str(time_value or "").strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})", value)
+    if not match:
+        return value
+    try:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    except Exception:
+        return value
+    suffix = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute:02d} {suffix}"
+
+
+def graph_collect_slot_advisor_phrases(
+    advice_config: Dict[str, Any],
+    booking_config: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> List[str]:
+    phrases: List[str] = []
+
+    direct = advice_config.get("phrases", []) if isinstance(advice_config, dict) else []
+    if isinstance(direct, list):
+        phrases.extend([str(item) for item in direct if str(item or "").strip()])
+    elif isinstance(direct, str) and direct.strip():
+        phrases.append(direct)
+
+    source_root = {
+        "config": booking_config,
+        "assistant_config": agent_config,
+    }
+    sources = advice_config.get("phrase_sources", []) if isinstance(advice_config, dict) else []
+    if not isinstance(sources, list):
+        sources = []
+    for source in sources:
+        if not isinstance(source, str) or not source.strip():
+            continue
+        value = graph_dotted_get(source_root, source.strip(), None)
+        if isinstance(value, list):
+            phrases.extend([str(item) for item in value if str(item or "").strip()])
+        elif isinstance(value, str) and value.strip():
+            phrases.append(value)
+
+    for value in [
+        booking_config.get("hesitation_detection", {}).get("phrases", []) if isinstance(booking_config.get("hesitation_detection", {}), dict) else [],
+        agent_config.get("hesitation_detection", {}).get("phrases", []) if isinstance(agent_config.get("hesitation_detection", {}), dict) else [],
+        agent_config.get("smartness", {}).get("hesitation_detection", {}).get("phrases", []) if isinstance(agent_config.get("smartness", {}), dict) else [],
+    ]:
+        if isinstance(value, list):
+            phrases.extend([str(item) for item in value if str(item or "").strip()])
+        elif isinstance(value, str) and value.strip():
+            phrases.append(value)
+
+    output: List[str] = []
+    seen = set()
+    for phrase in phrases:
+        phrase_text = str(phrase or "").strip()
+        if not phrase_text or phrase_text in seen:
+            continue
+        seen.add(phrase_text)
+        output.append(phrase_text)
+    return output
+
+
+def graph_message_requests_slot_selection_advice(
+    message: str,
+    advice_config: Dict[str, Any],
+    booking_config: Dict[str, Any],
+    agent_config: Dict[str, Any],
+) -> bool:
+    normalization = agent_config.get("normalization", {}) if isinstance(agent_config, dict) else {}
+    phrases = graph_collect_slot_advisor_phrases(advice_config, booking_config, agent_config)
+    if phrases and matches_any(message, phrases, normalization):
+        return True
+
+    regexes = advice_config.get("regexes", []) if isinstance(advice_config, dict) else []
+    if not isinstance(regexes, list):
+        regexes = []
+    normalized_message = str(message or "")
+    for regex in regexes:
+        try:
+            if re.search(str(regex), normalized_message, flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def graph_choose_advisory_slot(
+    slots: List[Dict[str, Any]],
+    variables: Dict[str, Any],
+    booking_config: Dict[str, Any],
+    advice_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    clean_slots = [slot for slot in slots if isinstance(slot, dict)]
+    if not clean_slots:
+        return {}
+
+    strategy = str(advice_config.get("strategy") or "prefer_matching_section_then_earliest").strip().lower()
+    preferred_paths = advice_config.get("preferred_section_paths", ["service_needed", "booking.pending.section"])
+    if not isinstance(preferred_paths, list):
+        preferred_paths = ["service_needed", "booking.pending.section"]
+
+    preferred_section = ""
+    for path in preferred_paths:
+        value = graph_dotted_get(variables, str(path or ""), None)
+        if is_present(value):
+            preferred_section = str(value).strip()
+            break
+
+    recommended: Dict[str, Any] = {}
+    reason_key = "generic"
+    if preferred_section and strategy in {"prefer_matching_section_then_earliest", "prefer_matching_section", "service_match_then_earliest"}:
+        preferred_norm = re.sub(r"\s+", " ", preferred_section.lower()).strip()
+        for slot in clean_slots:
+            slot_section = re.sub(r"\s+", " ", str(slot.get("section") or "").lower()).strip()
+            if slot_section and slot_section == preferred_norm:
+                recommended = slot
+                reason_key = "service_match"
+                break
+
+    if not recommended:
+        if strategy in {"latest", "last"}:
+            recommended = clean_slots[-1]
+        else:
+            preferred_index = advice_config.get("preferred_index")
+            if preferred_index is not None:
+                try:
+                    index = int(preferred_index)
+                    if 0 <= index < len(clean_slots):
+                        recommended = clean_slots[index]
+                except Exception:
+                    recommended = {}
+            if not recommended:
+                recommended = clean_slots[0]
+        reason_key = "earliest" if strategy in {"earliest", "prefer_matching_section_then_earliest", "service_match_then_earliest"} else "generic"
+
+    if not isinstance(recommended, dict):
+        return {}
+
+    time_value = str(recommended.get("time") or "").strip()
+    time_text = str(recommended.get("time_text") or "").strip() or graph_format_time_for_display(time_value)
+    branch = str(
+        recommended.get("branch")
+        or graph_dotted_get(variables, "booking.pending.branch")
+        or variables.get("selected_branch")
+        or variables.get("location_branch")
+        or variables.get("nearest_branch")
+        or ""
+    ).strip()
+    section = str(recommended.get("section") or "").strip()
+    date_value = str(recommended.get("date") or variables.get("appointment_date") or variables.get("date") or graph_dotted_get(variables, "booking.pending.date") or "").strip()
+    date_text = str(recommended.get("date_text") or variables.get("date_text") or graph_dotted_get(variables, "booking.pending.date_text") or date_value).strip()
+
+    reason_templates = advice_config.get("reason_templates", {}) if isinstance(advice_config.get("reason_templates", {}), dict) else {}
+    reason_template = str(reason_templates.get(reason_key) or reason_templates.get("generic") or "").strip()
+    partial_advice = {
+        "time": time_value,
+        "time_text": time_text,
+        "branch": branch,
+        "section": section,
+        "date": date_value,
+        "date_text": date_text,
+        "preferred_section": preferred_section,
+    }
+    reason = render_template(reason_template, {
+        "variables": variables,
+        "slot": recommended,
+        "slot_advice": partial_advice,
+    }).strip()
+
+    return {
+        **partial_advice,
+        "reason": reason,
+        "reason_key": reason_key,
+        "strategy": str(advice_config.get("strategy") or "prefer_matching_section_then_earliest"),
+        "advisory_only": True,
+    }
+
+
+def maybe_graph_slot_selection_advisor_response(state: AgentState) -> Dict[str, Any]:
+    """
+    Graph-level safety fallback for slot-selection advice.
+
+    The booking executor is still the primary implementation, but this repairs
+    deployments where the executor falls back to BOOKING_SLOT_SELECTION_UNCLEAR
+    even though the customer is explicitly asking for help choosing among
+    already-grounded slots. All triggers, templates, and storage paths come from
+    assistant config; no domain/test phrases are embedded in code.
+    """
+    agent_config = state.get("agent_config", {}) or {}
+    booking_config = get_subagent_config(agent_config, "booking") or {}
+    advice_config = booking_config.get("slot_selection_advice", {}) if isinstance(booking_config, dict) else {}
+    if not isinstance(advice_config, dict) or advice_config.get("enabled") is False:
+        return {}
+
+    fallback_labels = advice_config.get("graph_fallback_answer_draft_labels", ["BOOKING_SLOT_SELECTION_UNCLEAR"])
+    if isinstance(fallback_labels, str):
+        fallback_labels = [fallback_labels]
+    if not isinstance(fallback_labels, list):
+        fallback_labels = ["BOOKING_SLOT_SELECTION_UNCLEAR"]
+    fallback_set = {str(item or "").strip() for item in fallback_labels if str(item or "").strip()}
+
+    tool_result = state.get("tool_result", {}) or {}
+    answer_draft = str(tool_result.get("answer_draft") or "").strip() if isinstance(tool_result, dict) else ""
+    if fallback_set and answer_draft not in fallback_set:
+        return {}
+
+    variables = state.get("variables", {}) or {}
+    if not isinstance(variables, dict):
+        return {}
+
+    slots_path = str(booking_config.get("available_slots_path") or "available_slots").strip()
+    slots = graph_dotted_get(variables, slots_path, [])
+    if not isinstance(slots, list) or not slots:
+        return {}
+
+    if graph_dotted_get(variables, "booking.pending.time") or variables.get("appointment_time"):
+        return {}
+
+    message = last_user_message(state)
+    if not graph_message_requests_slot_selection_advice(message, advice_config, booking_config, agent_config):
+        return {}
+
+    slot_advice = graph_choose_advisory_slot(slots, variables, booking_config, advice_config)
+    if not slot_advice:
+        return {}
+
+    updates: Dict[str, Any] = {}
+    state_path = str(advice_config.get("state_path") or "booking.slot_advice").strip()
+    if state_path:
+        updates[state_path] = slot_advice
+    if advice_config.get("mirror_to_root", True) is not False:
+        updates["slot_advice"] = slot_advice
+    stage_path = str(advice_config.get("stage_path") or "booking.stage").strip()
+    if stage_path:
+        updates[stage_path] = str(advice_config.get("stage_value") or "slot_selection")
+
+    patched_variables = apply_subagent_variable_patch(variables, updates, []) if updates else variables
+
+    template = str(
+        advice_config.get("response_template")
+        or (booking_config.get("templates", {}) or {}).get(str(advice_config.get("template_key") or "slot_selection_advice"), "")
+        or ""
+    ).strip()
+    if not template:
+        policy = get_template_policy_for_answer_draft(agent_config, "BOOKING_SLOT_SELECTION_ADVICE")
+        template = str(policy.get("response_template") or policy.get("safe_template") or "").strip()
+    if not template:
+        return {}
+
+    answer = render_template(template, {
+        "variables": patched_variables,
+        "slot_advice": slot_advice,
+        "message": message,
+    }).strip()
+    if not answer:
+        return {}
+
+    repaired_tool_result = dict(tool_result) if isinstance(tool_result, dict) else {}
+    repaired_tool_result.update({
+        "ok": True,
+        "action": "ask_user",
+        "answer_draft": "BOOKING_SLOT_SELECTION_ADVICE",
+        "notes": "graph slot-selection advisor fallback offered advice without selecting a slot",
+    })
+    observations = repaired_tool_result.get("observations") if isinstance(repaired_tool_result.get("observations"), list) else []
+    observations = list(observations) + [{
+        "subagent": "booking",
+        "ok": True,
+        "event": "graph_slot_selection_advice_offered",
+        "recommended_time": slot_advice.get("time"),
+        "recommended_time_text": slot_advice.get("time_text"),
+        "recommended_branch": slot_advice.get("branch"),
+        "strategy": slot_advice.get("strategy"),
+    }]
+    repaired_tool_result["observations"] = observations
+
+    return {
+        "messages": [AIMessage(content=enforce_answer_safety(answer, state))],
+        "final_answer": enforce_answer_safety(answer, state),
+        "variables": patched_variables,
+        "tool_result": repaired_tool_result,
+        "quality": {
+            "node": "response_graph_slot_selection_advisor_fallback",
+            "pre_quality_guard": True,
+            "deterministic_template_used": True,
+        },
+    }
+
 def response_node(state: AgentState):
     derived_last_offered_options = derive_last_offered_options_from_state(state)
     configured_closing_answer = completed_flow_closing_response_from_config(state)
@@ -8460,6 +8758,11 @@ def response_node(state: AgentState):
         if derived_last_offered_options:
             result["last_offered_options"] = derived_last_offered_options
         return result
+
+
+    graph_slot_advisor_result = maybe_graph_slot_selection_advisor_response(state)
+    if graph_slot_advisor_result:
+        return graph_slot_advisor_result
 
     deterministic_answer = maybe_policy_template_answer(state)
 
