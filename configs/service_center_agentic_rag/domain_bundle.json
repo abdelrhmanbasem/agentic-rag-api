@@ -420,7 +420,39 @@
           "do not say no slots",
           "do not end without a date question"
         ]
-      }
+      },
+      "completed_flow_direct_responses": [
+        {
+          "id": "booking_already_confirmed_repeat_confirmation",
+          "enabled": true,
+          "version": "6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding",
+          "description": "After a booking is already confirmed, repeated confirmation requests should acknowledge idempotently without repeating the full branch/date/time details.",
+          "completion_id_paths": [
+            "visit_id",
+            "booking.confirmed.visit_id",
+            "booking.confirmed.id"
+          ],
+          "completion_status_paths": [
+            "booking_status",
+            "booking.stage",
+            "booking.confirmed.status",
+            "booking.confirmed.booking_status"
+          ],
+          "completed_statuses": [
+            "confirmed",
+            "booking_confirmed",
+            "booked"
+          ],
+          "message_regex": [
+            "(?i)(تمام\\s*)?(أكد|اكد|تأكيد|confirm|confirmed).{0,24}(الحجز|booking)?",
+            "(?i)(الحجز|booking).{0,24}(متأكد|مؤكد|confirmed)"
+          ],
+          "answer_draft": "BOOKING_ALREADY_CONFIRMED",
+          "response_template": "الحجز متأكد بالفعل. رقم الحجز: {{variables.visit_id||variables.booking.confirmed.visit_id}}.",
+          "force_direct_response": true,
+          "suppress_full_booking_repeat": true
+        }
+      ]
     },
     "response_rules": [
       "The final user-facing answer must be written by the graph response node, not by subagent templates.",
@@ -8804,13 +8836,19 @@
       "BOOKING_ALREADY_CONFIRMED": {
         "state": "already_confirmed_non_closing",
         "must_do": [
-          "only use when the customer tries to confirm again or asks about existing booking",
-          "include visit_id only if useful and not a thanks/closing message"
+          "acknowledge the existing confirmed booking briefly",
+          "include visit_id once if useful",
+          "do not repeat branch/date/time after they were already confirmed"
         ],
         "must_not_do": [
-          "do not use for thanks/closing messages",
-          "do not repeat visit_id after a simple شكرا/thanks"
-        ]
+          "do not repeat the full booking details",
+          "do not call create_booking again",
+          "do not use for thanks/closing messages"
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "الحجز متأكد بالفعل. رقم الحجز: {{variables.visit_id||variables.booking.confirmed.visit_id}}."
       },
       "BOOKING_MISSING_PHONE": {
         "state": "collecting_phone",
@@ -9012,11 +9050,19 @@
         "must_use_grounded_template": true,
         "response_template": "محتاج أعرف اليوم أو التاريخ اللي يناسبك عشان أشوف المواعيد المتاحة.",
         "must_do": [
-          "ask only for date"
+          "ask only for date",
+          "if a branch is already known, mention the resolved branch before asking for the date"
         ],
         "must_not_do": [
           "do not ask for name or plate when date is missing"
-        ]
+        ],
+        "branch_paths": [
+          "selected_branch",
+          "location_branch",
+          "nearest_branch",
+          "booking.pending.branch"
+        ],
+        "response_template_with_branch": "أقرب فرع ليك هو فرع {{variables.selected_branch||variables.location_branch||variables.nearest_branch||variables.booking.pending.branch}}. محتاج أعرف اليوم أو التاريخ اللي يناسبك عشان أشوف المواعيد المتاحة."
       },
       "BOOKING_MISSING_BRANCH": {
         "deterministic_response": true,
@@ -9936,7 +9982,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding | 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -12700,7 +12746,10 @@
         "normalized_date",
         "received_date"
       ]
-    }
+    },
+    "safety_rules": [
+      "If nearest_branch/location_branch/selected_branch is known and date is missing, mention the known branch before asking for date."
+    ]
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
