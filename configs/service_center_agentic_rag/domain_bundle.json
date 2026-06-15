@@ -569,7 +569,9 @@
       "Before final booking creation, if vehicle details are missing and configured as required, ask for ماركة العربية، الفئة/النسخة، وموديل السنة. Do not confirm booking until they are present.",
       "For yearless named-month dates like 7 يونيو or ٧ يونيو, booking.date_resolution.yearless_date_resolution.candidate_years controls which year to use before rolling to next year. For this assistant, prefer the configured availability calendar year so 7 يونيو resolves to 2026-06-07 instead of a future year with no sheet rows.",
       "Date understanding must support configured Arabic/English natural date forms: digits, Arabic digits, named months, English month names/abbreviations, day-month/month-day order, ordinal suffixes like 7th, Arabic/English number words, and word-numeric day/month forms when configured. Python must read these forms from date_resolution config, not hardcode demo dates.",
-      "If a customer provides a configured word-based named-month date such as سبعة يونيو or السابع من يونيو during awaiting_date, normalize it to appointment_date and check availability for the known branch instead of asking for the date again."
+      "If a customer provides a configured word-based named-month date such as سبعة يونيو or السابع من يونيو during awaiting_date, normalize it to appointment_date and check availability for the known branch instead of asking for the date again.",
+      "For BOOKING_SLOT_SELECTION_ADVICE, give advisory help only: recommend one grounded slot from variables.slot_advice, do not select it, and ask the customer to confirm or choose another returned slot.",
+      "For BOOKING_CONFIRMED after create_booking ok=true, use confirmed wording only and never ask the customer to confirm again in the same answer."
     ],
     "fallback_messages": {
       "empty_answer": "ممكن توضحلي أكتر؟",
@@ -2092,7 +2094,8 @@
           "field_help_car_brand": "BOOKING_FIELD_HELP_CAR_BRAND",
           "field_help_car_class": "BOOKING_FIELD_HELP_CAR_CLASS",
           "field_help_car_model_year": "BOOKING_FIELD_HELP_CAR_MODEL_YEAR",
-          "hold_for_license": "BOOKING_HOLD_FOR_LICENSE_OR_DOCUMENTS"
+          "hold_for_license": "BOOKING_HOLD_FOR_LICENSE_OR_DOCUMENTS",
+          "slot_selection_advice": "BOOKING_SLOT_SELECTION_ADVICE"
         },
         "slot_context_carryover": {
           "enabled": true,
@@ -7425,7 +7428,60 @@
           "plate_number",
           "customer_confirmed_booking"
         ],
-        "date_resolution_runtime_version": "6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding"
+        "date_resolution_runtime_version": "6.73-comprehensive-date-resolution-deploy-guard-no-hardcoding",
+        "slot_selection_advice": {
+          "enabled": true,
+          "version": "6.75-configured-slot-selection-advisor-no-hardcoding",
+          "state_path": "booking.slot_advice",
+          "mirror_to_root": true,
+          "template_key": "slot_selection_advice",
+          "strategy": "prefer_matching_section_then_earliest",
+          "preferred_section_paths": [
+            "service_needed",
+            "booking.pending.section"
+          ],
+          "phrases": [
+            "مش عارف",
+            "مش عارفة",
+            "مش متأكد",
+            "مش متأكدة",
+            "محتار",
+            "محتارة",
+            "ساعدني",
+            "ساعدنى",
+            "اختارلي",
+            "اختار لى",
+            "اختار لي",
+            "ارشحلي",
+            "رشحلي",
+            "انهي احسن",
+            "أنهي أحسن",
+            "انهي افضل",
+            "أنهي أفضل",
+            "ايه الافضل",
+            "إيه الأفضل",
+            "مش عارف اختار",
+            "مش عارف أختار",
+            "مش عارفه اختار",
+            "مش عارفة أختار",
+            "not sure",
+            "help me choose",
+            "which one",
+            "which is better",
+            "recommend"
+          ],
+          "phrase_sources": [
+            "assistant_config.hesitation_detection.phrases",
+            "assistant_config.smartness.hesitation_detection.phrases",
+            "config.hesitation_detection.phrases"
+          ],
+          "reason_templates": {
+            "service_match": "ده مناسب لنوع الكشف المطلوب",
+            "earliest": "ده أول معاد متاح وهيخلّصك بدري",
+            "generic": "ده اختيار عملي من المواعيد المتاحة"
+          },
+          "response_template": "لو عايز رأيي، أرشح {{slot_advice.time_text}} في فرع {{slot_advice.branch}} لأن {{slot_advice.reason}}. القرار ليك، ولو مناسب قولي اختاره أو اختار أي معاد تاني من اللي فوق."
+        }
       },
       "troubleshooting": {
         "id": "troubleshooting",
@@ -8690,7 +8746,9 @@
           "only use after create_booking returned ok=true",
           "include visit_id if returned",
           "include branch/date/time",
-          "use natural Egyptian Arabic"
+          "use natural Egyptian Arabic",
+          "use confirmed-booking wording only",
+          "do not ask the customer to confirm again after create_booking ok=true"
         ],
         "safe_examples": [
           "تمام، اتأكد حجزك في فرع مدينة نصر يوم الأحد الساعة 11:00. رقم الحجز: VISIT-123. هنستناك في المعاد."
@@ -8698,8 +8756,14 @@
         "must_not_do": [
           "do not use if tool_result is empty",
           "do not use if visit_id is missing",
-          "do not use while booking.stage is awaiting_customer_details"
-        ]
+          "do not use while booking.stage is awaiting_customer_details",
+          "do not say هحجزلك after create_booking succeeded",
+          "do not ask هل تحب أكمل الحجز after visit_id exists"
+        ],
+        "deterministic_response": true,
+        "force_template_answer": true,
+        "must_use_grounded_template": true,
+        "response_template": "تمام، اتأكد حجزك في فرع {{variables.selected_branch||variables.location_branch||variables.nearest_branch||variables.booking.pending.branch}} يوم {{variables.date_text||variables.booking.pending.date_text||variables.appointment_date}} الساعة {{variables.appointment_time_text||variables.booking.pending.time_text||variables.appointment_time||variables.booking.pending.time}}. رقم الحجز: {{variables.visit_id}}. هنستناك في المعاد."
       },
       "BOOKING_COMPLETED_CLOSING": {
         "state": "completed_flow_short_closing",
@@ -9234,6 +9298,21 @@
           "دلوقتي جيبنا لك المواعيد المتاحة هناك",
           "لو عايز نكمل على المواعيد المتاحة هناك، هنحدد معاد مناسب",
           "هشوفلك المواعيد المتاحة من غير تاريخ"
+        ]
+      },
+      "BOOKING_SLOT_SELECTION_ADVICE": {
+        "state": "slot_selection_advisor_mode",
+        "must_do": [
+          "recommend one grounded slot from variables.slot_advice",
+          "make clear this is advice, not a selected booking",
+          "ask the customer to confirm that slot or choose another returned slot",
+          "do not create booking or set final confirmation from advice alone"
+        ],
+        "must_not_do": [
+          "do not invent slots",
+          "do not select the slot for the customer",
+          "do not ask for branch/date again when known",
+          "do not move to customer details until the customer selects a slot"
         ]
       }
     },
@@ -12465,7 +12544,12 @@
     },
     "implementation_notes": [
       "6.71 adds config-driven yearless date resolution. BookingSubagent must read date_resolution.yearless_date_resolution / yearless_date_candidate_years and must not hardcode demo dates in Python."
-    ]
+    ],
+    "metadata": {
+      "patches": [
+        "6.75-configured-slot-selection-advisor-no-hardcoding"
+      ]
+    }
   },
   "schema": {
     "assistant_id": "service_center_agentic_rag",
