@@ -9,6 +9,7 @@
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 # Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
+# Architecture patch: 6.88-terminal-completed-flow-threshold-repeat-repair-no-hardcoding
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional, Tuple
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
@@ -10593,26 +10594,85 @@ def final_answer_time_terms_for_value(value_text: str) -> List[str]:
     return terms
 
 
+def final_answer_repeat_group_match_count(
+    text: str,
+    rule: Dict[str, Any],
+    variables: Dict[str, Any],
+    state: AgentState,
+    agent_config: Dict[str, Any],
+) -> int:
+    """
+    Count how many configured repeated-detail groups appear in the current answer.
+
+    v6.88 root fix: the terminal completed-flow boundary previously required
+    every configured detail group to match. That was too brittle for verbose
+    repeat confirmations because one rendered detail can vary while the answer
+    still clearly repeats already-confirmed operational facts. The terminal
+    boundary now counts matching groups and lets config declare a minimum
+    threshold.
+    """
+    groups = rule.get("repeat_detail_path_groups", []) if isinstance(rule, dict) else []
+    if not isinstance(groups, list) or not groups:
+        return 0
+
+    match_count = 0
+
+    for group in groups:
+        paths = group if isinstance(group, list) else [group]
+        group_terms: List[str] = []
+
+        for path in paths:
+            path_text = str(path or "").strip()
+            if not path_text:
+                continue
+
+            value = final_answer_configured_path_value(variables, state, path_text, None)
+            if value in [None, "", [], {}]:
+                continue
+
+            group_terms.extend(final_answer_terms_for_configured_path(agent_config, path_text, value))
+
+        group_terms = dedupe_strings(group_terms, limit=180)
+        if group_terms and final_answer_text_contains_any(text, group_terms, agent_config):
+            match_count += 1
+
+    return match_count
+
+
 def final_answer_repeats_configured_detail_groups(text: str, rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, agent_config: Dict[str, Any]) -> bool:
     groups = rule.get("repeat_detail_path_groups", []) if isinstance(rule, dict) else []
     if not isinstance(groups, list) or not groups:
         return False
 
-    for group in groups:
-        paths = group if isinstance(group, list) else [group]
-        group_terms: List[str] = []
-        for path in paths:
-            path_text = str(path or "").strip()
-            value = final_answer_configured_path_value(variables, state, path_text, None)
-            if value in [None, "", [], {}]:
-                continue
-            group_terms.extend(final_answer_terms_for_configured_path(agent_config, path_text, value))
-        group_terms = dedupe_strings(group_terms, limit=120)
-        if not group_terms:
-            return False
-        if not final_answer_text_contains_any(text, group_terms, agent_config):
-            return False
-    return True
+    repair = rule.get("final_answer_repair", {}) if isinstance(rule.get("final_answer_repair", {}), dict) else {}
+
+    match_count = final_answer_repeat_group_match_count(
+        text=text,
+        rule=rule,
+        variables=variables,
+        state=state,
+        agent_config=agent_config,
+    )
+
+    try:
+        configured_threshold = int(
+            repair.get("min_detail_group_matches")
+            or repair.get("detail_group_match_threshold")
+            or 0
+        )
+    except Exception:
+        configured_threshold = 0
+
+    if configured_threshold <= 0:
+        # Default to a safer threshold for completed records with an ID: repeating
+        # two operational detail groups is enough evidence that the answer is a
+        # verbose duplicate confirmation and should collapse to the configured
+        # short idempotent response.
+        configured_threshold = 2 if extract_visit_id_from_state(state) else len(groups)
+
+    configured_threshold = max(1, min(configured_threshold, len(groups)))
+
+    return match_count >= configured_threshold
 
 
 def render_completed_flow_response_template(rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState, current_answer: str = "") -> str:
@@ -11066,8 +11126,18 @@ def terminal_completed_flow_response_from_config(state: AgentState) -> str:
             continue
 
         message_matches = completed_flow_rule_matches_current_message(rule, state, agent_config)
-        detail_repeat_matches = final_answer_repeats_configured_detail_groups(current_answer, rule, variables, state, agent_config)
-        regex_repeat_matches = final_answer_matches_completed_repeat_regex_from_config(current_answer, rule, agent_config)
+        detail_repeat_matches = final_answer_repeats_configured_detail_groups(
+            current_answer,
+            rule,
+            variables,
+            state,
+            agent_config,
+        )
+        regex_repeat_matches = final_answer_matches_completed_repeat_regex_from_config(
+            current_answer,
+            rule,
+            agent_config,
+        )
 
         if not (message_matches or detail_repeat_matches or regex_repeat_matches):
             continue
