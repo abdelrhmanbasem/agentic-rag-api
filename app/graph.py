@@ -1,12 +1,13 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
 # Architecture patch: 6.83-final-answer-operational-fact-repairs-no-hardcoding
+# Architecture patch: 6.85-completed-response-canonical-completion-paths-no-hardcoding
 # Architecture patch: 6.84-final-completed-response-boundary-no-hardcoding
 # Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 # Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
-from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
+from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional, Tuple
 
 # Architecture batch: 6.36-manifest-history-limit-no-hardcoding-graph
 # Architecture patch: 6.39-previous-manifest-summary-no-hardcoding-graph
@@ -8502,6 +8503,31 @@ def completed_flow_template_variables_from_config(
         if value not in [None, "", [], {}]:
             set_dotted_path(rendered_variables, path_text, value)
 
+    aliases = rule.get("template_context_aliases", {}) if isinstance(rule, dict) else {}
+    if isinstance(aliases, dict):
+        for target_path, source_paths in aliases.items():
+            target_text = str(target_path or "").strip()
+            if target_text.startswith("variables."):
+                target_text = target_text[len("variables."):]
+            if not target_text:
+                continue
+            if graph_dotted_get(rendered_variables, target_text, None) not in [None, "", [], {}]:
+                continue
+            if isinstance(source_paths, str):
+                source_paths = [source_paths]
+            if not isinstance(source_paths, list):
+                continue
+            for source_path in source_paths:
+                source_text = str(source_path or "").strip()
+                if source_text.startswith("variables."):
+                    source_text = source_text[len("variables."):]
+                if not source_text:
+                    continue
+                value = completed_flow_value_from_variables_or_state(variables, state, source_text, None)
+                if value not in [None, "", [], {}]:
+                    set_dotted_path(rendered_variables, target_text, value)
+                    break
+
     return rendered_variables
 
 
@@ -8531,12 +8557,7 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
         if not isinstance(rule, dict) or rule.get("enabled", False) is False:
             continue
 
-        id_paths = rule.get("completion_id_paths", [])
-        if not isinstance(id_paths, list):
-            id_paths = []
-        status_paths = rule.get("completion_status_paths", [])
-        if not isinstance(status_paths, list):
-            status_paths = []
+        id_paths, status_paths = completed_flow_canonical_completion_paths(rule, agent_config)
         completed_statuses = {
             str(item or "").strip().lower()
             for item in rule.get("completed_statuses", []) or []
@@ -10071,24 +10092,91 @@ def final_answer_has_any_grounded_path(variables: Dict[str, Any], state: AgentSt
     return False
 
 
+def completed_flow_canonical_completion_paths(rule: Dict[str, Any], agent_config: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """
+    Build the canonical completion evidence paths for a completed-flow rule.
+
+    v6.85 root fix: previous completed-flow direct responses could miss a
+    completed booking because the rule-level completion paths were narrower than
+    the assistant's canonical confirmed record/id/status paths. That allowed late
+    handoff/quality responses to repeat completed booking facts. This helper
+    merges rule paths with configured global completion paths when the rule opts
+    in. The behavior remains config-driven: the global path lists come from the
+    assistant bundle, not from domain literals in code.
+    """
+    if not isinstance(rule, dict):
+        return [], []
+
+    id_paths: List[str] = []
+    status_paths: List[str] = []
+
+    for key in ["completion_id_paths"]:
+        values = rule.get(key, [])
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, list):
+            id_paths.extend([str(item or "").strip() for item in values if str(item or "").strip()])
+
+    for key in ["completion_status_paths"]:
+        values = rule.get(key, [])
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, list):
+            status_paths.extend([str(item or "").strip() for item in values if str(item or "").strip()])
+
+    inherit_global = bool(
+        rule.get("inherit_global_completion_paths", True)
+        or rule.get("use_canonical_completion_paths", False)
+        or rule.get("use_confirmed_action_paths", False)
+    )
+
+    if inherit_global and isinstance(agent_config, dict):
+        for key in ["confirmed_record_id_paths", "visit_id_paths", "confirmation_id_paths"]:
+            values = agent_config.get(key, [])
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                id_paths.extend([str(item or "").strip() for item in values if str(item or "").strip()])
+
+        for key in ["booking_status_paths", "confirmed_status_paths", "status_paths"]:
+            values = agent_config.get(key, [])
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                status_paths.extend([str(item or "").strip() for item in values if str(item or "").strip()])
+
+    # Some response templates deliberately pull the completion ID from a
+    # context path that is not listed in completion_id_paths. Treat configured
+    # ID-looking template/context paths as completion evidence too. This avoids
+    # rendering a verbose fallback when the ID exists only in a nested confirmed
+    # payload.
+    for key in ["template_context_paths", "response_context_paths"]:
+        values = rule.get(key, [])
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, list):
+            for item in values:
+                item_text = str(item or "").strip()
+                if item_text and "id" in item_text.lower():
+                    id_paths.append(item_text)
+
+    return dedupe_strings(id_paths, limit=120), dedupe_strings(status_paths, limit=120)
+
+
 def final_answer_completed_rule_is_satisfied(rule: Dict[str, Any], variables: Dict[str, Any], state: AgentState) -> bool:
-    id_paths = rule.get("completion_id_paths", []) if isinstance(rule, dict) else []
-    if isinstance(id_paths, str):
-        id_paths = [id_paths]
-    status_paths = rule.get("completion_status_paths", []) if isinstance(rule, dict) else []
-    if isinstance(status_paths, str):
-        status_paths = [status_paths]
+    agent_config = state.get("agent_config", {}) or {}
+    id_paths, status_paths = completed_flow_canonical_completion_paths(rule, agent_config)
     completed_statuses = {
         str(item or "").strip().lower()
         for item in (rule.get("completed_statuses", []) if isinstance(rule, dict) else []) or []
         if str(item or "").strip()
     }
 
-    for path in id_paths if isinstance(id_paths, list) else []:
+    for path in id_paths:
         if final_answer_configured_path_value(variables, state, str(path or ""), None) not in [None, "", [], {}]:
             return True
 
-    for path in status_paths if isinstance(status_paths, list) else []:
+    for path in status_paths:
         value = str(final_answer_configured_path_value(variables, state, str(path or ""), "") or "").strip().lower()
         if value and (not completed_statuses or value in completed_statuses):
             return True
