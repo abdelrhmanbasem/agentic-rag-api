@@ -425,8 +425,8 @@
         {
           "id": "booking_already_confirmed_repeat_confirmation",
           "enabled": true,
-          "version": "6.82-completed-direct-response-quality-guard-bypass-no-hardcoding",
-          "description": "After a booking is already confirmed, repeated confirmation requests are rendered directly from configured completion facts before response, pre-response, and quality-guard stages, so generic handoff/LLM responses cannot repeat branch/date/time.",
+          "version": "6.83-final-answer-operational-fact-repairs-no-hardcoding",
+          "description": "After a booking is already confirmed, repeated confirmation turns are compressed into a short idempotent answer. The final answer repair also catches verbose LLM/handoff answers that repeat branch/date/time after completion.",
           "completion_id_paths": [
             "visit_id",
             "booking.confirmed.visit_id",
@@ -460,7 +460,53 @@
             "pre_response_guardrail_node",
             "quality_guard_node"
           ],
-          "force_before_quality_guard": true
+          "force_before_quality_guard": true,
+          "repeat_detail_path_groups": [
+            [
+              "selected_branch",
+              "nearest_branch",
+              "location_branch",
+              "booking.pending.branch",
+              "booking.confirmed.branch",
+              "booking.confirmed.booking.branch"
+            ],
+            [
+              "date_text",
+              "appointment_date",
+              "date",
+              "booking.pending.date_text",
+              "booking.pending.date",
+              "booking.confirmed.date_text",
+              "booking.confirmed.date",
+              "booking.confirmed.booking.date_text",
+              "booking.confirmed.booking.date"
+            ],
+            [
+              "appointment_time_text",
+              "appointment_time",
+              "booking.pending.time_text",
+              "booking.pending.time",
+              "booking.confirmed.time_text",
+              "booking.confirmed.time",
+              "booking.confirmed.booking.time"
+            ]
+          ],
+          "final_answer_repair": {
+            "enabled": true,
+            "version": "6.83-final-answer-operational-fact-repairs-no-hardcoding",
+            "description": "If a post-completion final answer repeats branch/date/time and this was not the booking-created turn, replace it with the configured short idempotent response.",
+            "skip_when_answer_draft_in": [
+              "BOOKING_CONFIRMED"
+            ],
+            "current_answer_regex": [
+              "VIS-[A-Za-z0-9\\-]+|رقم الحجز|الحجز"
+            ],
+            "must_not_repeat_detail_groups": [
+              "branch",
+              "date",
+              "time"
+            ]
+          }
         }
       ]
     },
@@ -8501,6 +8547,35 @@
           "تحب أجيبلك أقرب فرع ومعاد مناسب؟",
           "تحب أرتبلك أقرب فرع للكشف؟"
         ]
+      },
+      "unsupported_operational_fact_guard": {
+        "enabled": true,
+        "version": "6.83-final-answer-operational-fact-repairs-no-hardcoding",
+        "description": "Final answer repair layer. If an answer names a configured operational branch while no branch is grounded in configured state paths, render a configured safe response instead of leaking an invented branch.",
+        "rules": [
+          {
+            "id": "branch_claim_without_grounded_branch",
+            "enabled": true,
+            "fact_type": "branch",
+            "alias_source": "branch_aliases",
+            "grounded_value_paths": [
+              "selected_branch",
+              "location_branch",
+              "nearest_branch",
+              "booking.pending.branch",
+              "appointment_branch"
+            ],
+            "allowed_tool_operations": [
+              "find_nearest_branch",
+              "list_branches"
+            ],
+            "response_template": "وعليكم السلام. صفارة جامدة مع الفرامل غالبًا بتكون من تيل الفرامل أو احتكاك/أتربة في الطنابير، وبما إن الموضوع متعلق بالفرامل فالأفضل نكشف عليها. تحب أجيبلك أقرب فرع ومعاد مناسب؟",
+            "must_not_do": [
+              "do not name a branch until a branch is grounded by state or a successful configured tool result",
+              "do not invent nearest branch from symptoms only"
+            ]
+          }
+        ]
       }
     },
     "private_structured_analysis_policy": {
@@ -9992,7 +10067,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding | 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding | 6.81-completed-direct-response-state-fallback-no-hardcoding | 6.82-completed-direct-response-quality-guard-bypass-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding | 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding | 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding | 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding | 6.81-completed-direct-response-state-fallback-no-hardcoding | 6.82-completed-direct-response-quality-guard-bypass-no-hardcoding | 6.83-final-answer-operational-fact-repairs-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -12658,7 +12733,11 @@
       }
     },
     "implementation_notes": [
-      "6.71 adds config-driven yearless date resolution. BookingSubagent must read date_resolution.yearless_date_resolution / yearless_date_candidate_years and must not hardcode demo dates in Python."
+      "6.71 adds config-driven yearless date resolution. BookingSubagent must read date_resolution.yearless_date_resolution / yearless_date_candidate_years and must not hardcode demo dates in Python.",
+      {
+        "version": "6.83-final-answer-operational-fact-repairs-no-hardcoding",
+        "note": "Final answer repair is config-driven and runs inside enforce_answer_safety, after quality/LLM/handoff layers, so late verbose rewrites cannot reintroduce unsupported branches or repeated completed-flow details."
+      }
     ],
     "metadata": {
       "patches": [
@@ -12758,7 +12837,9 @@
       ]
     },
     "safety_rules": [
-      "If nearest_branch/location_branch/selected_branch is known and date is missing, mention the known branch before asking for date."
+      "If nearest_branch/location_branch/selected_branch is known and date is missing, mention the known branch before asking for date.",
+      "Never name or imply a nearest branch before a branch is grounded by configured state paths or a successful branch lookup result.",
+      "After a booking is already confirmed, repeated confirmation requests must be short and idempotent; do not repeat branch/date/time again."
     ]
   },
   "schema": {
