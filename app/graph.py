@@ -1,5 +1,5 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
-# Architecture patch: 6.76-completed-flow-state-hygiene-no-hardcoding
+# Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 # Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
@@ -916,6 +916,37 @@ def delete_dotted_path(data: Dict[str, Any], path: str) -> Dict[str, Any]:
 
     return data
 
+
+
+
+def set_dotted_path(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
+    """
+    Set a dotted path in a dict copy. Paths come from assistant configuration
+    or generic runtime state rules; this helper is intentionally domain-neutral.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    path_text = str(path or "").strip()
+    if not path_text:
+        return data
+
+    parts = [part for part in path_text.split(".") if part]
+    if not parts:
+        return data
+
+    current: Any = data
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            return data
+        if not isinstance(current.get(part), dict):
+            current[part] = {}
+        current = current.get(part)
+
+    if isinstance(current, dict):
+        current[parts[-1]] = value
+
+    return data
 
 def configured_response_compaction(agent_config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -4813,6 +4844,152 @@ def attach_smartness_to_tool_update(
     return updated
 
 
+
+
+def get_operational_date_reconciliation_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Config-driven final-state/date reconciliation for debug and manifest payloads.
+
+    This prevents stale planner/tool-request candidate dates from leaking in the
+    returned debug payload after deterministic execution has already resolved a
+    canonical operational date. It is generic: Python only reconciles configured
+    paths to a canonical date already present in state/variables.
+    """
+    if not isinstance(agent_config, dict):
+        return {}
+
+    for key in [
+        "operational_date_reconciliation",
+        "runtime_date_reconciliation",
+        "debug_date_hygiene",
+    ]:
+        value = agent_config.get(key)
+        if isinstance(value, dict):
+            return value
+
+    smartness = agent_config.get("smartness", {})
+    if isinstance(smartness, dict):
+        value = smartness.get("operational_date_reconciliation")
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def looks_like_iso_date(value: Any) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value or "").strip()))
+
+
+def canonical_operational_date_from_values(values: Dict[str, Any], agent_config: Dict[str, Any]) -> str:
+    if not isinstance(values, dict):
+        return ""
+
+    cfg = get_operational_date_reconciliation_config(agent_config)
+    paths = as_string_list(cfg.get("canonical_date_paths")) or [
+        "appointment_date",
+        "date",
+        "booking.pending.date",
+        "booking.confirmed.date",
+        "booking.confirmed.normalized_date",
+        "booking.confirmed.arguments.date",
+    ]
+
+    for path in paths:
+        value = graph_dotted_get(values, path, None)
+        if looks_like_iso_date(value):
+            return str(value).strip()
+
+    return ""
+
+
+def reconcile_configured_date_paths_in_mapping(data: Dict[str, Any], canonical_date: str, paths: List[str]) -> Dict[str, Any]:
+    if not isinstance(data, dict) or not looks_like_iso_date(canonical_date):
+        return data
+
+    patched = json.loads(json.dumps(data, ensure_ascii=False))
+    for path in paths:
+        path_text = str(path or "").strip()
+        if not path_text:
+            continue
+        value = graph_dotted_get(patched, path_text, None)
+        if looks_like_iso_date(value) and str(value).strip() != canonical_date:
+            set_dotted_path(patched, path_text, canonical_date)
+    return patched
+
+
+def reconcile_recursive_date_keys(value: Any, canonical_date: str, key_names: set, *, max_depth: int = 8) -> Any:
+    """
+    Recursively replace configured date-key values that conflict with a known
+    canonical date. The key set is config-driven and defaults to operational
+    date field names only.
+    """
+    if max_depth < 0 or not looks_like_iso_date(canonical_date):
+        return value
+
+    if isinstance(value, list):
+        return [reconcile_recursive_date_keys(item, canonical_date, key_names, max_depth=max_depth - 1) for item in value]
+
+    if isinstance(value, dict):
+        patched: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key or "").strip()
+            if key_text in key_names and looks_like_iso_date(item) and str(item).strip() != canonical_date:
+                patched[key] = canonical_date
+            else:
+                patched[key] = reconcile_recursive_date_keys(item, canonical_date, key_names, max_depth=max_depth - 1)
+        return patched
+
+    return value
+
+
+def reconcile_operational_dates_in_update(update: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(update, dict):
+        return update
+
+    cfg = get_operational_date_reconciliation_config(agent_config)
+    if cfg.get("enabled") is False:
+        return update
+
+    variables = update.get("variables") if isinstance(update.get("variables"), dict) else update
+    canonical_date = canonical_operational_date_from_values(variables, agent_config)
+    if not looks_like_iso_date(canonical_date):
+        return update
+
+    patched = json.loads(json.dumps(update, ensure_ascii=False))
+
+    explicit_paths = as_string_list(cfg.get("explicit_paths")) or [
+        "manifest.tool_request_payload.date",
+        "manifest.tool_request_payload.appointment_date",
+        "tool_result.date",
+        "tool_result.appointment_date",
+        "tool_result.normalized_date",
+    ]
+    patched = reconcile_configured_date_paths_in_mapping(patched, canonical_date, explicit_paths)
+
+    if cfg.get("recursive_enabled", True) is not False:
+        key_names = set(as_string_list(cfg.get("recursive_date_keys")) or [
+            "date",
+            "appointment_date",
+            "normalized_date",
+            "received_date",
+        ])
+        scope_paths = as_string_list(cfg.get("recursive_scope_paths")) or [
+            "manifest",
+            "tool_result",
+            "multi_tool_results",
+            "variables.booking.confirmed",
+        ]
+        for path in scope_paths:
+            scoped = graph_dotted_get(patched, path, None)
+            if scoped not in [None, "", [], {}]:
+                set_dotted_path(
+                    patched,
+                    path,
+                    reconcile_recursive_date_keys(scoped, canonical_date, key_names),
+                )
+
+    return patched
+
 def get_completed_flow_state_hygiene_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Config-driven cleanup for state that is only meaningful while a workflow is
@@ -4930,6 +5107,17 @@ def apply_runtime_state_hygiene_to_variables(
         ):
             delete_dotted_path(patched, path)
 
+
+    booking_config = get_subagent_config(agent_config, "booking") or {}
+    if isinstance(booking_config, dict):
+        advice_config = booking_config.get("slot_selection_advice", {}) if isinstance(booking_config.get("slot_selection_advice", {}), dict) else {}
+        clear_cfg = advice_config.get("clear_when_time_selected", {}) if isinstance(advice_config.get("clear_when_time_selected", {}), dict) else {}
+        if clear_cfg.get("enabled", True) is not False:
+            time_paths = as_string_list(clear_cfg.get("time_paths")) or ["appointment_time", "booking.pending.time"]
+            if any(is_present(graph_dotted_get(patched, path, None)) for path in time_paths):
+                for path in as_string_list(clear_cfg.get("clear_paths")) or ["slot_advice", "booking.slot_advice"]:
+                    delete_dotted_path(patched, path)
+
     if not state_or_variables_has_completed_flow(patched, agent_config):
         return patched
 
@@ -4998,6 +5186,7 @@ def apply_runtime_state_hygiene(updated: Dict[str, Any], agent_config: Dict[str,
             else:
                 patched.pop(key, None)
 
+    patched = reconcile_operational_dates_in_update(patched, agent_config)
     return patched
 
 def derive_last_offered_options_from_state(state: AgentState) -> Dict[str, Any]:
@@ -8091,6 +8280,7 @@ def render_policy_template_answer(state: AgentState) -> str:
         "variables": variables,
         "tool_result": tool_result,
         "manifest": manifest,
+        "slot_advice": variables.get("slot_advice") or graph_dotted_get(variables, "booking.slot_advice", {}),
         "latest_user_message": last_user_message(state),
         "answer_draft": answer_draft,
     }).strip()
@@ -8719,9 +8909,14 @@ def maybe_graph_slot_selection_advisor_response(state: AgentState) -> Dict[str, 
     }]
     repaired_tool_result["observations"] = observations
 
+    patched_state_for_safety = dict(state)
+    patched_state_for_safety["variables"] = patched_variables
+    patched_state_for_safety["tool_result"] = repaired_tool_result
+    safe_answer = enforce_answer_safety(answer, patched_state_for_safety)
+
     return {
-        "messages": [AIMessage(content=enforce_answer_safety(answer, state))],
-        "final_answer": enforce_answer_safety(answer, state),
+        "messages": [AIMessage(content=safe_answer)],
+        "final_answer": safe_answer,
         "variables": patched_variables,
         "tool_result": repaired_tool_result,
         "quality": {
@@ -9765,6 +9960,7 @@ def memory_writer_node(state: AgentState):
         if mirrored_variables != (state.get("variables", {}) or {}):
             response["variables"] = mirrored_variables
 
+        response = reconcile_operational_dates_in_update(response, state.get("agent_config", {}) or {})
         return response
 
     except Exception as exc:
