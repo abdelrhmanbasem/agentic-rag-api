@@ -1,5 +1,6 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
+# Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 # Architecture patch: 6.78-graph-slot-advisor-and-missing-detail-templates-no-hardcoding
@@ -8349,6 +8350,77 @@ def maybe_policy_template_answer(state: AgentState) -> str:
 
 
 
+def completed_flow_value_from_variables_or_state(variables: Dict[str, Any], state: AgentState, path: str, default: Any = None) -> Any:
+    """
+    Read a configured dotted path from persisted variables first, then the
+    current graph state. Completion facts can exist in either place depending
+    on which node wrote them. The path itself remains assistant-configured.
+    """
+    path_text = str(path or "").strip()
+    if not path_text:
+        return default
+    if path_text.startswith("variables."):
+        path_text = path_text[len("variables."):]
+
+    value = graph_dotted_get(variables, path_text, None)
+    if value not in [None, "", [], {}]:
+        return value
+
+    value = graph_dotted_get(state, path_text, None)
+    if value not in [None, "", [], {}]:
+        return value
+
+    state_variables = state.get("variables", {}) or {}
+    value = graph_dotted_get(state_variables, path_text, None)
+    if value not in [None, "", [], {}]:
+        return value
+
+    return default
+
+
+def completed_flow_template_variables_from_config(
+    variables: Dict[str, Any],
+    state: AgentState,
+    rule: Dict[str, Any],
+    template: str,
+) -> Dict[str, Any]:
+    """
+    Build the template variable context from configured paths. This prevents a
+    completed-flow direct response from missing visit/status values that were
+    written at top-level state but not yet mirrored into variables.
+    """
+    try:
+        rendered_variables = json.loads(json.dumps(variables or {}, ensure_ascii=False))
+    except Exception:
+        rendered_variables = dict(variables or {})
+
+    configured_paths: List[str] = []
+    for key in ["completion_id_paths", "completion_status_paths", "template_context_paths", "response_context_paths"]:
+        values = rule.get(key, []) if isinstance(rule, dict) else []
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, list):
+            configured_paths.extend([str(item or "").strip() for item in values if str(item or "").strip()])
+
+    for match in re.findall(r"variables\.([A-Za-z0-9_\.]+)", str(template or "")):
+        if match:
+            configured_paths.append(match.strip("."))
+
+    for raw_path in dedupe_strings(configured_paths, limit=80):
+        path_text = str(raw_path or "").strip()
+        if path_text.startswith("variables."):
+            path_text = path_text[len("variables."):]
+        if not path_text:
+            continue
+        if graph_dotted_get(rendered_variables, path_text, None) not in [None, "", [], {}]:
+            continue
+        value = completed_flow_value_from_variables_or_state(variables, state, path_text, None)
+        if value not in [None, "", [], {}]:
+            set_dotted_path(rendered_variables, path_text, value)
+
+    return rendered_variables
+
+
 def completed_flow_direct_response_from_config(state: AgentState) -> str:
     """
     Render configured direct responses after a workflow is already complete.
@@ -8389,12 +8461,12 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
 
         completed = False
         for path in id_paths:
-            if graph_dotted_get(variables, str(path or ""), None) not in [None, "", [], {}]:
+            if completed_flow_value_from_variables_or_state(variables, state, str(path or ""), None) not in [None, "", [], {}]:
                 completed = True
                 break
         if not completed:
             for path in status_paths:
-                value = str(graph_dotted_get(variables, str(path or ""), "") or "").strip().lower()
+                value = str(completed_flow_value_from_variables_or_state(variables, state, str(path or ""), "") or "").strip().lower()
                 if value and (not completed_statuses or value in completed_statuses):
                     completed = True
                     break
@@ -8446,8 +8518,9 @@ def completed_flow_direct_response_from_config(state: AgentState) -> str:
         if not template:
             continue
 
+        render_variables = completed_flow_template_variables_from_config(variables, state, rule, template)
         rendered = render_template(template, {
-            "variables": variables,
+            "variables": render_variables,
             "manifest": state.get("manifest", {}) or {},
             "tool_result": state.get("tool_result", {}) or {},
             "latest_user_message": message,
