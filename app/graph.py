@@ -3271,7 +3271,8 @@ def get_active_configured_flow_subagent_id(
     agent_config: Dict[str, Any],
     variables: Dict[str, Any],
     manifest: Optional[Dict[str, Any]] = None,
-    message: str = ""
+    message: str = "",
+    state: Optional[AgentState] = None,
 ) -> str:
     """
     Config-driven deterministic-flow lock.
@@ -3289,6 +3290,7 @@ def get_active_configured_flow_subagent_id(
         variables=variables,
         message=message,
         manifest=manifest,
+        state=state,
     )
     if direct_response_target:
         return direct_response_target
@@ -3378,7 +3380,8 @@ def apply_active_deterministic_flow_guardrails(
     manifest: Dict[str, Any],
     message: str,
     agent_config: Dict[str, Any],
-    variables: Dict[str, Any]
+    variables: Dict[str, Any],
+    state: Optional[AgentState] = None,
 ) -> Dict[str, Any]:
     """
     Patch the manifest when config says a deterministic subagent owns the active
@@ -3390,6 +3393,7 @@ def apply_active_deterministic_flow_guardrails(
         variables=variables,
         manifest=manifest,
         message=message,
+        state=state,
     )
 
     if not target:
@@ -3426,6 +3430,7 @@ def active_deterministic_flow_subagent_id_from_state(state: AgentState) -> str:
         variables=state.get("variables", {}) or {},
         manifest=state.get("manifest", {}) or {},
         message=last_user_message(state),
+        state=state,
     )
 
 
@@ -5450,12 +5455,14 @@ def unified_manifest_node(state: AgentState):
             message=message,
             agent_config=agent_config,
             variables=variables,
+            state=state,
         )
         parsed = apply_active_deterministic_flow_guardrails(
             manifest=parsed,
             message=message,
             agent_config=agent_config,
             variables=variables,
+            state=state,
         )
         parsed = apply_dependent_intent_chain_guardrails(
             manifest=parsed,
@@ -5593,12 +5600,14 @@ def unified_manifest_node(state: AgentState):
             message=message,
             agent_config=agent_config,
             variables=variables,
+            state=state,
         )
         manifest = apply_active_deterministic_flow_guardrails(
             manifest=manifest,
             message=message,
             agent_config=agent_config,
             variables=variables,
+            state=state,
         )
         manifest = apply_dependent_intent_chain_guardrails(
             manifest=manifest,
@@ -8699,6 +8708,7 @@ def completed_flow_direct_response_target_subagent_id(
     variables: Dict[str, Any],
     message: str,
     manifest: Optional[Dict[str, Any]] = None,
+    state: Optional[AgentState] = None,
 ) -> str:
     """
     Resolve a deterministic executor target for repeated post-completion
@@ -8707,16 +8717,31 @@ def completed_flow_direct_response_target_subagent_id(
     This prevents planner drift to unrelated subagents such as handoff when a
     completed-flow direct response rule already proves the reply should be
     idempotent and short.
+
+    Important: prefer the real graph state when available so completion
+    evidence stored at top-level state (for example visit_id, booking_status,
+    and tool_result) is visible to the completed-flow rule checks.
     """
     if not str(message or "").strip():
         return ""
 
-    state: AgentState = {
-        "agent_config": agent_config or {},
-        "variables": variables or {},
-        "manifest": manifest or {},
-        "messages": [HumanMessage(content=str(message))],
-    }
+    if state is not None:
+        working_state: AgentState = dict(state)
+        working_state["agent_config"] = agent_config or {}
+        working_state["variables"] = variables or {}
+        working_state["manifest"] = manifest or {}
+
+        existing_messages = list(working_state.get("messages", []) or [])
+        if not user_message_candidates_for_direct_response(working_state):
+            existing_messages.append(HumanMessage(content=str(message)))
+            working_state["messages"] = existing_messages
+    else:
+        working_state = {
+            "agent_config": agent_config or {},
+            "variables": variables or {},
+            "manifest": manifest or {},
+            "messages": [HumanMessage(content=str(message))],
+        }
 
     guardrails = agent_config.get("routing_guardrails", {}) or {}
     closing_rule = (
@@ -8735,9 +8760,9 @@ def completed_flow_direct_response_target_subagent_id(
     for rule in completed_flow_rules_from_config(agent_config):
         if not isinstance(rule, dict) or rule.get("enabled", False) is False:
             continue
-        if not final_answer_completed_rule_is_satisfied(rule, variables or {}, state):
+        if not final_answer_completed_rule_is_satisfied(rule, variables or {}, working_state):
             continue
-        if not completed_flow_rule_matches_current_message(rule, state, agent_config or {}):
+        if not completed_flow_rule_matches_current_message(rule, working_state, agent_config or {}):
             continue
 
         for key in [
@@ -8761,6 +8786,7 @@ def apply_completed_flow_direct_response_guardrails(
     message: str,
     agent_config: Dict[str, Any],
     variables: Dict[str, Any],
+    state: Optional[AgentState] = None,
 ) -> Dict[str, Any]:
     """
     Deterministically route repeated post-completion confirmation turns away
@@ -8775,6 +8801,7 @@ def apply_completed_flow_direct_response_guardrails(
         variables=variables,
         message=message,
         manifest=manifest,
+        state=state,
     )
     if not target:
         return manifest
