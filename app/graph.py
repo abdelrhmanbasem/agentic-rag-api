@@ -1,5 +1,6 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
 # Architecture patch: 6.80-branch-aware-missing-date-and-repeat-confirm-no-hardcoding
+# Architecture patch: 6.82-completed-direct-response-quality-guard-bypass-no-hardcoding
 # Architecture patch: 6.81-completed-direct-response-state-fallback-no-hardcoding
 # Architecture patch: 6.79-slot-advisor-template-and-debug-date-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
@@ -9490,7 +9491,25 @@ def pre_response_guardrail_node(state: AgentState):
 
     Currently it can append the configured confirmed record ID line when an
     action has just been confirmed and the response omitted that ID.
+
+    v6.82: before any generic post-response repair, honor configured completed-flow
+    direct responses as a last deterministic gate. This prevents a downstream
+    response/handoff answer from repeating operational booking facts after the
+    flow is already completed. The matching rules, completion paths, and response
+    templates remain assistant-configured.
     """
+    configured_direct_answer = completed_flow_direct_response_from_config(state)
+    if configured_direct_answer:
+        configured_direct_answer = enforce_answer_safety(configured_direct_answer, state)
+        return {
+            "final_answer": configured_direct_answer,
+            "messages": [AIMessage(content=configured_direct_answer)],
+            "pre_response_guardrail": {
+                "node": "pre_response_completed_flow_direct_response",
+                "deterministic_template_used": True,
+            },
+        }
+
     answer = str(state.get("final_answer", "") or "").strip()
 
     if not answer:
@@ -9991,6 +10010,20 @@ def enforce_answer_safety(answer: str, state: AgentState) -> str:
     return text
 
 def quality_guard_node(state: AgentState):
+    configured_direct_answer = completed_flow_direct_response_from_config(state)
+    if configured_direct_answer:
+        configured_direct_answer = enforce_answer_safety(configured_direct_answer, state)
+        return {
+            "messages": [AIMessage(content=configured_direct_answer)],
+            "final_answer": configured_direct_answer,
+            "quality": {
+                "pass_check": True,
+                "skipped": True,
+                "node": "quality_guard_completed_flow_direct_response",
+                "deterministic_template_used": True,
+            },
+        }
+
     if not should_run_quality_guard(state):
         final_answer = enforce_answer_safety(state.get("final_answer", ""), state)
 
