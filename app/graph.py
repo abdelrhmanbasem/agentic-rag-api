@@ -1,4 +1,5 @@
 # Architecture patch: 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding
+# Architecture patch: 6.76-completed-flow-state-hygiene-no-hardcoding
 # Architecture patch: 6.70-persist-post-tool-required-input-continuation-no-hardcoding-graph
 from typing import TypedDict, Annotated, Sequence, Dict, Any, List, Optional
 
@@ -2367,6 +2368,17 @@ def build_last_offered_options_from_variables(
     for rule in rules:
         if not isinstance(rule, dict) or rule.get("enabled", True) is False:
             continue
+
+        labels = rule.get("answer_draft_labels", [])
+        require_matching_answer_draft = bool(
+            rule.get(
+                "variable_fallback_requires_matching_answer_draft",
+                cfg.get("variable_fallback_requires_matching_answer_draft", True)
+            )
+        )
+        if require_matching_answer_draft and isinstance(labels, list) and labels:
+            if answer_draft not in {str(item) for item in labels}:
+                continue
 
         result_path = str(rule.get("result_path") or "").strip()
         if not result_path:
@@ -4795,15 +4807,191 @@ def attach_smartness_to_tool_update(
         if progressive:
             updated["progressive_display_context"] = progressive
 
+    updated = apply_runtime_state_hygiene(updated, agent_config)
+
     return updated
 
+
+def get_completed_flow_state_hygiene_config(agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Config-driven cleanup for state that is only meaningful while a workflow is
+    still open. This prevents stale prompts/options/continuations from leaking
+    into future turns after a booking or other flow is completed.
+    """
+    if not isinstance(agent_config, dict):
+        return {}
+
+    for key in ["completed_flow_state_hygiene", "completed_state_hygiene", "workflow_completion_state_hygiene"]:
+        value = agent_config.get(key)
+        if isinstance(value, dict):
+            return value
+
+    smartness = agent_config.get("smartness", {})
+    if isinstance(smartness, dict):
+        value = smartness.get("completed_flow_state_hygiene")
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def state_or_variables_has_completed_flow(values: Dict[str, Any], agent_config: Dict[str, Any]) -> bool:
+    if not isinstance(values, dict):
+        return False
+
+    cfg = get_completed_flow_state_hygiene_config(agent_config)
+    if cfg.get("enabled") is False:
+        return False
+
+    id_paths = as_string_list(cfg.get("completion_id_paths")) or [
+        "visit_id",
+        "booking.confirmed.visit_id",
+    ]
+    for path in id_paths:
+        if is_present(graph_dotted_get(values, path, None)):
+            return True
+
+    completed_values = {str(item).strip().lower() for item in (cfg.get("completed_status_values") or ["confirmed", "booked", "booking_confirmed"])}
+    status_paths = as_string_list(cfg.get("completion_status_paths")) or [
+        "booking_status",
+        "booking.stage",
+        "booking.confirmed.status",
+        "booking.confirmed.booking_status",
+    ]
+    for path in status_paths:
+        value = graph_dotted_get(values, path, None)
+        if str(value or "").strip().lower() in completed_values:
+            return True
+
+    return False
+
+
+def continuation_missing_inputs_resolved(
+    continuation: Dict[str, Any],
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    tool_result: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if not isinstance(continuation, dict) or not isinstance(variables, dict):
+        return False
+
+    operation = str(continuation.get("operation") or "").strip()
+    tool_name = str(continuation.get("tool_name") or "").strip()
+    arguments = continuation.get("arguments") if isinstance(continuation.get("arguments"), dict) else {}
+
+    if operation and isinstance(tool_result, dict):
+        if str(tool_result.get("operation") or "").strip() == operation and tool_result.get("ok") is not False:
+            return True
+        for obs in tool_result.get("observations", []) or []:
+            if not isinstance(obs, dict):
+                continue
+            result = obs.get("result") if isinstance(obs.get("result"), dict) else {}
+            if str(obs.get("operation") or result.get("operation") or "").strip() == operation and result.get("ok") is not False:
+                return True
+
+    if not operation or not tool_name:
+        return False
+
+    try:
+        validation = validate_direct_tool_request(
+            tool_name=tool_name,
+            operation=operation,
+            arguments=dict(arguments),
+            variables=variables,
+            agent_config=agent_config,
+        )
+        return not bool(validation.get("missing_inputs"))
+    except Exception:
+        return False
+
+
+def apply_runtime_state_hygiene_to_variables(
+    variables: Dict[str, Any],
+    agent_config: Dict[str, Any],
+    tool_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(variables, dict):
+        return variables
+
+    patched = json.loads(json.dumps(variables, ensure_ascii=False))
+    cfg = get_completed_flow_state_hygiene_config(agent_config)
+
+    for path in configured_post_tool_continuation_state_paths(agent_config):
+        continuation = graph_dotted_get(patched, path, None)
+        if isinstance(continuation, dict) and continuation_missing_inputs_resolved(
+            continuation=continuation,
+            variables=patched,
+            agent_config=agent_config,
+            tool_result=tool_result,
+        ):
+            delete_dotted_path(patched, path)
+
+    if not state_or_variables_has_completed_flow(patched, agent_config):
+        return patched
+
+    clear_paths = as_string_list(cfg.get("clear_variable_paths")) or [
+        "post_tool_required_input_continuation",
+        "last_offered_options",
+        "slot_advice",
+        "booking.slot_advice",
+        "progressive_display_context",
+        "failure_recovery_context",
+        "pending",
+    ]
+
+    for path in clear_paths:
+        delete_dotted_path(patched, path)
+
+    return patched
+
+
+def apply_runtime_state_hygiene(updated: Dict[str, Any], agent_config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(updated, dict):
+        return updated
+
+    patched = dict(updated)
+    tool_result = patched.get("tool_result") if isinstance(patched.get("tool_result"), dict) else {}
+    variables = patched.get("variables") if isinstance(patched.get("variables"), dict) else {}
+
+    if isinstance(variables, dict):
+        cleaned_variables = apply_runtime_state_hygiene_to_variables(
+            variables=variables,
+            agent_config=agent_config,
+            tool_result=tool_result,
+        )
+        patched["variables"] = cleaned_variables
+    else:
+        cleaned_variables = {}
+
+    cfg = get_completed_flow_state_hygiene_config(agent_config)
+    completed = state_or_variables_has_completed_flow(cleaned_variables, agent_config) or state_or_variables_has_completed_flow(patched, agent_config)
+
+    if completed:
+        for key in as_string_list(cfg.get("clear_state_keys")) or [
+            "post_tool_required_input_continuation",
+            "last_offered_options",
+            "slot_advice",
+            "progressive_display_context",
+            "failure_recovery_context",
+            "pending",
+        ]:
+            if "." in key:
+                delete_dotted_path(patched, key)
+            else:
+                patched.pop(key, None)
+
+    return patched
+
 def derive_last_offered_options_from_state(state: AgentState) -> Dict[str, Any]:
+    agent_config = state.get("agent_config", {}) or {}
+    variables = state.get("variables", {}) or {}
+    if state_or_variables_has_completed_flow(variables, agent_config) or state_or_variables_has_completed_flow(state, agent_config):
+        return {}
+
     existing = state.get("last_offered_options", {}) or {}
     if isinstance(existing, dict) and existing:
         return existing
 
-    agent_config = state.get("agent_config", {}) or {}
-    variables = state.get("variables", {}) or {}
     tool_result = state.get("tool_result", {}) or {}
 
     if isinstance(tool_result, dict):
