@@ -23,6 +23,7 @@ from app.subagents.base import (
 
 
 # Architecture batch: 6.30-skip-early-slot-guard-in-detail-stage-no-hardcoding
+# Architecture patch: 6.76-completed-flow-state-hygiene-no-hardcoding
 # Architecture patch: 6.43-deterministic-vehicle-detail-correction-no-hardcoding
 # Architecture patch: 6.44-semantic-detail-safety-no-hardcoding
 # Architecture patch: 6.47-runtime-detail-safety-no-hardcoding
@@ -2210,6 +2211,25 @@ class BookingSubagent:
 
         if date_text:
             repair_updates[config.get("date_text_path", "date_text")] = date_text
+
+        # Keep the pending booking customer profile aligned with the actual
+        # create_booking arguments. This is schema/config driven via the
+        # configured customer detail target paths; Python does not know a
+        # tenant-specific vehicle schema.
+        pending_path = str(config.get("pending_booking_path") or "booking.pending")
+        for field_config in self.get_customer_detail_field_configs(config):
+            target_path = self.strip_variables_prefix(str(field_config.get("target_path") or "").strip())
+            if not target_path.startswith("customer_profile."):
+                continue
+            field_name = target_path.split(".", 1)[1].strip()
+            if not field_name:
+                continue
+            value = arguments.get(field_name)
+            if value in [None, "", [], {}]:
+                continue
+            repair_updates[f"customer_profile.{field_name}"] = value
+            repair_updates[f"{pending_path}.customer_profile.{field_name}"] = value
+            repair_updates[f"booking.customer_profile.{field_name}"] = value
 
         if repair_updates:
             updated_variables = apply_variable_patch(updated_variables, repair_updates, [])
