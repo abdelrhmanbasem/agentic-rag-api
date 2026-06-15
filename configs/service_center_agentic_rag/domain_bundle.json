@@ -9884,7 +9884,7 @@
         "problem_triage"
       ]
     },
-    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding",
+    "architecture_version": "6.31-semantic-variable-extraction-config-no-hardcoding | 6.46-root-regression-fixes-no-hardcoding-config | 6.47-runtime-detail-safety-config-no-hardcoding | 6.48-configured-detail-validation-tightening-no-hardcoding | 6.50-completed-closing-and-class-boundary-config-no-hardcoding | 6.51-help-gated-class-extraction-and-closing-id-skip-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-and-vehicle-swap-config-no-hardcoding | 6.54-active-flow-stage-union-emotion-mirror-slot-change-and-vehicle-swap-no-hardcoding | 6.56-configured-date-candidate-priority-no-hardcoding | 6.57-configured-smart-clarification-fallback-no-hardcoding | 6.58-explicit-smartness-policy-enabled-no-hardcoding | 6.59-configured-booking-executor-lock-and-required-create-alignment-no-hardcoding | 6.60-create-required-contract-alignment-no-hardcoding | 6.61-code-expert-completion-no-hardcoding | 6.61-gpt-mini-only | 6.62-code-expert-final-gap-closure-no-hardcoding | 6.63-configured-legacy-tool-argument-fallback-and-gpt-mini-only-no-hardcoding | 6.66-natural-troubleshooting-inspection-first-config-no-hardcoding | 6.67-named-month-date-ack-and-required-vehicle-details-config-no-hardcoding | 6.68-missing-date-after-nearest-branch-config-no-hardcoding | 6.76-completed-flow-state-hygiene-no-hardcoding | 6.77-completed-flow-deep-state-hygiene-no-hardcoding",
     "deterministic_answer_draft_labels": [
       "BOOKING_SLOTS_FOUND",
       "BOOKING_CONFIRM_SELECTED_SLOT",
@@ -12549,13 +12549,14 @@
     ],
     "metadata": {
       "patches": [
-        "6.75-configured-slot-selection-advisor-no-hardcoding"
+        "6.75-configured-slot-selection-advisor-no-hardcoding",
+        "6.77-completed-flow-deep-state-hygiene-no-hardcoding"
       ]
     },
     "completed_flow_state_hygiene": {
       "enabled": true,
-      "version": "6.76-completed-flow-state-hygiene-no-hardcoding",
-      "description": "Config-driven cleanup for active-flow runtime state after a workflow is completed or after a blocked post-tool continuation is resolved.",
+      "version": "6.77-completed-flow-deep-state-hygiene-no-hardcoding",
+      "description": "Config-driven cleanup for active-flow runtime state after a workflow is completed, including deep booking drafts, stale availability lists, and per-turn extraction changes.",
       "completion_id_paths": [
         "visit_id",
         "booking.confirmed.visit_id",
@@ -12579,7 +12580,14 @@
         "booking.slot_advice",
         "progressive_display_context",
         "failure_recovery_context",
-        "pending"
+        "pending",
+        "selected_slot",
+        "available_slots",
+        "available_slots_text",
+        "slots_found",
+        "booking.pending",
+        "booking.pending_summary",
+        "variable_changes_this_turn"
       ],
       "clear_state_keys": [
         "post_tool_required_input_continuation",
@@ -12587,7 +12595,14 @@
         "slot_advice",
         "progressive_display_context",
         "failure_recovery_context",
-        "pending"
+        "pending",
+        "selected_slot",
+        "available_slots",
+        "available_slots_text",
+        "slots_found",
+        "booking.pending",
+        "booking.pending_summary",
+        "variable_changes_this_turn"
       ]
     },
     "post_tool_required_input_continuation_state": {
