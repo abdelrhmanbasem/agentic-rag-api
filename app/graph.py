@@ -4817,6 +4817,9 @@ def get_completed_flow_state_hygiene_config(agent_config: Dict[str, Any]) -> Dic
     Config-driven cleanup for state that is only meaningful while a workflow is
     still open. This prevents stale prompts/options/continuations from leaking
     into future turns after a booking or other flow is completed.
+
+    v6.77 extends this to deep active-flow artifacts such as stale available
+    slots, pending booking drafts, and per-turn change lists.
     """
     if not isinstance(agent_config, dict):
         return {}
@@ -4937,6 +4940,13 @@ def apply_runtime_state_hygiene_to_variables(
         "progressive_display_context",
         "failure_recovery_context",
         "pending",
+        "selected_slot",
+        "available_slots",
+        "available_slots_text",
+        "slots_found",
+        "booking.pending",
+        "booking.pending_summary",
+        "variable_changes_this_turn",
     ]
 
     for path in clear_paths:
@@ -4974,6 +4984,13 @@ def apply_runtime_state_hygiene(updated: Dict[str, Any], agent_config: Dict[str,
             "progressive_display_context",
             "failure_recovery_context",
             "pending",
+            "selected_slot",
+            "available_slots",
+            "available_slots_text",
+            "slots_found",
+            "booking.pending",
+            "booking.pending_summary",
+            "variable_changes_this_turn",
         ]:
             if "." in key:
                 delete_dotted_path(patched, key)
